@@ -8,12 +8,23 @@ class V1Tunings:
     def __init__(self, N=180, kappa_exc=15.0, kappa_norm=4.0):
         self.N = N
         self.theta = np.linspace(0, np.pi, N, endpoint=False)
-        self.b0 = np.ones(N) * 0.2  # Initialize at your target_b0
+        self.b0 = np.ones(N) * 0.2
         
-        # Initialize Kernels
-        self.W_rec = self._make_dist_weights(kappa_exc, normalize_by='max')
-        # Use SUM normalization for W_norm so the decorrelation drive is stable
+        # --- FIX 1: Weight Scaling ---
+        # We scale W_rec by 0.15. Without this, the sum of recurrent inputs 
+        # (which is ~integral of the Gaussian) is massive (~20x input), 
+        # causing the activity to explode and spread to 45-degree neurons.
+        self.W_rec = self._make_dist_weights(kappa_exc, normalize_by='max') * 0.15
+        
+        # W_norm uses sum-normalization to act as a proper pool average
         self.W_norm = self._make_dist_weights(kappa_norm, normalize_by='sum')
+
+    def _make_dist_weights(self, kappa, normalize_by='max'):
+        W = np.zeros((self.N, self.N))
+        for i in range(self.N):
+            d = np.abs(self.theta - self.theta[i])
+            d = np.minimum(d, np.pi - d)
+            W[i, :] = np.exp(kappa * np.cos(2*d))
 
     def _make_dist_weights(self, kappa, normalize_by='max'):
         W = np.zeros((self.N, self.N))
@@ -43,7 +54,7 @@ class StimulusGenerator:
 # --- 2. Main Dynamics Engine ---
 
 class V1Dynamics:
-    def __init__(self, v1_model, dt=1.0, tau_v=1.0, tau_a=2.0, tau_u=1.0, tau_adapt=200):
+    def __init__(self, v1_model, dt=1.0, tau_v=1.0, tau_a=2.0, tau_u=1.0, tau_adapt=100):
         """
         ORGaNICs Dynamics Engine.
         """
@@ -56,7 +67,7 @@ class V1Dynamics:
         
         # YOUR CUSTOM PARAMETERS
         self.alpha = 0.15          # Local Fatigue
-        self.beta = 0.01           # Global Homeostasis (Whitening)
+        self.beta = 0.005           # Global Homeostasis (Whitening)
         self.target_b0 = 0.2       # Resting gain (Low baseline)
         self.sigma_noise = 0.1     # Spontaneous drive
         
@@ -111,7 +122,7 @@ class V1Dynamics:
             decorrelation_drive = self.v1.W_norm @ y
             
             db0 = ((self.target_b0 - b0)            # Restoration
-                   - (self.alpha * y)               # Local Fatigue
+                   - (self.alpha * z)               # Local Fatigue
                    - (self.beta * decorrelation_drive) # Lateral Whitening
                   ) / self.tau_adapt
             
@@ -130,14 +141,13 @@ if __name__ == "__main__":
     tunings = V1Tunings(N=180, kappa_exc=15.0, kappa_norm=4.0)
     stim_gen = StimulusGenerator(N=180)
     
-    # We pass tau_adapt=1000.0 here to see the slow history effects in the plot
-    engine = V1Dynamics(tunings, dt=1.0, tau_adapt=200.0) 
+    engine = V1Dynamics(tunings, dt=1.0, tau_adapt=100.0) 
     
     # 2. Define Experiment
     regimes = [
-        {'n_steps': 200, 'contrast': 1.0, 'orientation': np.pi/2}, # Adapt 90
-        {'n_steps': 100, 'contrast': 0.2, 'orientation': np.pi/2}, # Test 90
-        {'n_steps': 200, 'contrast': 0.6, 'orientation': 0.0},     # Control 0
+        {'n_steps': 500, 'contrast': 1.0, 'orientation': np.pi/2}, # Adapt 90
+        {'n_steps': 500, 'contrast': 0.2, 'orientation': np.pi/2}, # Test 90
+        {'n_steps': 500, 'contrast': 0.6, 'orientation': 0.0},     # Control 0
     ]
     inputs = stim_gen.generate_sequence(regimes)
     
@@ -163,7 +173,7 @@ if __name__ == "__main__":
                           vmin=0.0, vmax=0.6)
     axes[2].set_ylabel("Neuron Pref (Deg)")
     axes[2].set_xlabel("Time (ms)")
-    axes[2].set_title("(C) Input Gain ($b_0$) | Rest = 0.2")
+    axes[2].set_title(f"(C) Input Gain ($b_0$) | tau_adapt={engine.tau_adapt}")
     plt.colorbar(im_b, ax=axes[2], label="Gain", fraction=0.046, pad=0.04)
     
     t = 0
@@ -174,37 +184,41 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    # --- 5. NEW PLOT: Two Neurons (First 100 Steps) ---
+    # --- 5. NEW PLOT: Three Neurons (First 100 Steps) ---
     
     # Settings
     zoom_steps = 100
-    idx_stim = 90  # Neuron preferred 90 deg (Driven)
-    idx_orth = 0   # Neuron preferred 0 deg (Not Driven)
+    idx_stim = 90  # Driven (Peak)
+    idx_flank = 45 # Flank (45 deg away)
+    idx_orth = 0   # Orthogonal (90 deg away)
 
-    # Setup Figure with 2 Subplots
-    fig2, ax2 = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+    # Setup Figure with 3 Subplots for clarity
+    fig2, ax2 = plt.subplots(3, 1, figsize=(7, 8), sharex=True)
 
     # Subplot 1: The Driven Neuron (90 deg)
     ax2[0].plot(range(zoom_steps), rates[idx_stim, :zoom_steps], 
-                color='crimson', linewidth=2, label=f"Neuron {idx_stim}°")
-    ax2[0].set_title(f"Driven Neuron ({idx_stim}°): Onset Transient")
+                color='crimson', linewidth=2, label=f"Peak {idx_stim}°")
+    ax2[0].set_title(f"Peak Driven Neuron ({idx_stim}°)")
     ax2[0].set_ylabel("Firing Rate ($y$)")
     ax2[0].grid(True, alpha=0.3)
     ax2[0].legend(loc='upper right')
 
-    # Subplot 2: The Orthogonal Neuron (0 deg)
-    ax2[1].plot(range(zoom_steps), rates[idx_orth, :zoom_steps], 
-                color='navy', linewidth=2, label=f"Neuron {idx_orth}°")
-    ax2[1].set_title(f"Orthogonal Neuron ({idx_orth}°): Suppression Check")
+    # Subplot 2: The Flank Neuron (45 deg)
+    ax2[1].plot(range(zoom_steps), rates[idx_flank, :zoom_steps], 
+                color='forestgreen', linewidth=2, label=f"Flank {idx_flank}°")
+    ax2[1].set_title(f"Flank Neuron ({idx_flank}°) - 45° off-peak")
     ax2[1].set_ylabel("Firing Rate ($y$)")
-    ax2[1].set_xlabel("Time (ms)")
     ax2[1].grid(True, alpha=0.3)
-    
-    # Force y-axis to be small for the second plot so we can see noise
-    # (Or keep auto if activity is high)
-    # ax2[1].set_ylim(-0.01, 0.1) 
-
     ax2[1].legend(loc='upper right')
+
+    # Subplot 3: The Orthogonal Neuron (0 deg)
+    ax2[2].plot(range(zoom_steps), rates[idx_orth, :zoom_steps], 
+                color='navy', linewidth=2, label=f"Ortho {idx_orth}°")
+    ax2[2].set_title(f"Orthogonal Neuron ({idx_orth}°) - Suppression Zone")
+    ax2[2].set_ylabel("Firing Rate ($y$)")
+    ax2[2].set_xlabel("Time (ms)")
+    ax2[2].grid(True, alpha=0.3)
+    ax2[2].legend(loc='upper right')
     
     plt.tight_layout()
     plt.show()
