@@ -44,9 +44,10 @@ class StimulusGenerator:
 # --- 2. Main Dynamics Engine ---
 
 class V1Dynamics:
-    def __init__(self, v1_model, dt=1.0, tau_v=1.0, tau_a=2.0, tau_u=1.0, tau_adapt=100.0):
+    def __init__(self, v1_model, gains, dt=1.0, tau_v=1.0, tau_a=2.0, tau_u=1.0, tau_adapt=100.0):
         self.v1 = v1_model
         self.dt = dt
+        self.gains = gains
         self.tau_v = tau_v
         self.tau_a = tau_a
         self.tau_u = tau_u
@@ -109,9 +110,11 @@ class V1Dynamics:
             
             # want gain to increase when signal is distinct but low and decrease when high. right now gain only decreases
             
-            db0 = ((self.target_b0 - b0)            
-                   - (self.alpha * z)
-                   - (self.theta * y)               
+            W = # overcomplete frame, somewhat optimized for natural visual stimuli
+            b0 = W.T @ v
+            
+            ((self.target_b0 - b0)  # right now b_0 is an interneuron. Maybe it should be a gain-modulated interneuron instead?   
+                   - (self.alpha * z)              
                   ) / self.tau_adapt
             
             b0 += db0 * self.dt

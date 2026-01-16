@@ -110,8 +110,7 @@ class V1Dynamics:
             # want gain to increase when signal is distinct but low and decrease when high. right now gain only decreases
             
             db0 = ((self.target_b0 - b0)            
-                   - (self.alpha * z)
-                   - (self.theta * y)               
+                   - (self.alpha * z)              
                   ) / self.tau_adapt
             
             b0 += db0 * self.dt
