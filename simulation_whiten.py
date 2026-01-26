@@ -37,7 +37,7 @@ class Frame:
 # --- 2. Dependencies (Tunings & Stimuli) ---
 
 class V1Tunings:
-    def __init__(self, N=180, kappa_exc=15.0, kappa_norm=0.05):
+    def __init__(self, N=60, kappa_exc=45.0, kappa_norm=0.15):
         self.N = N
         self.theta = np.linspace(0, np.pi, N, endpoint=False)
         self.W_yy = self._make_dist_weights(kappa_exc, normalize_by='max') * 0.15
@@ -54,14 +54,14 @@ class V1Tunings:
         return W / np.max(W)
 
 class StimulusGenerator:
-    def __init__(self, N=180):
+    def __init__(self, N=60):
         self.N = N
         self.theta = np.linspace(0, np.pi, N, endpoint=False)
         
     def generate_sequence(self, regimes):
         seq = []
         for r in regimes:
-            profile = np.exp(8.0 * np.cos(2*(self.theta - r['orientation'])))
+            profile = np.exp(24.0 * np.cos(2*(self.theta - r['orientation'])))
             profile = profile / np.max(profile) * r['contrast']
             seq.append(np.tile(profile, (r['n_steps'], 1)).T)
         return np.hstack(seq)
@@ -70,7 +70,7 @@ class StimulusGenerator:
 
 class V1DynamicsScipy:
     def __init__(self, v1_model, frame, dt=1.0, tau_y=1.0, tau_a=2.0, 
-                 tau_u=1.0, tau_q=1.0, tau_g=250.0):
+                 tau_u=1.0, tau_q=1.0, tau_g=10.0):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt
@@ -199,10 +199,10 @@ if __name__ == "__main__":
     # 1. Initialize (smaller network for faster testing)
     N_NEURONS = 60  # Reduced from 180 -> K = 1830 instead of 16110
     print("Initializing model components...")
-    tunings = V1Tunings(N=N_NEURONS, kappa_exc=15.0, kappa_norm=0.05)
+    tunings = V1Tunings(N=N_NEURONS, kappa_exc=45.0, kappa_norm=0.15)
     frame = Frame(dim=N_NEURONS)
     stim_gen = StimulusGenerator(N=N_NEURONS)
-    engine = V1DynamicsScipy(tunings, frame, dt=1.0, tau_g=250.0)
+    engine = V1DynamicsScipy(tunings, frame, dt=1.0, tau_g=10.0)
     
     # 2. Define Experiment (shorter regimes)
     regimes = [
