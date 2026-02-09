@@ -24,7 +24,7 @@ class V1Dynamics:
         self.tau_y = 1.0      # Time constant of primary neurons
         self.tau_a = 5.0      # Time constant of inhibitory divisive neurons
         self.tau_u = 2.0      # Time constant of normalization pool neurons
-        self.tau_g = 200.0   # Time constant of gain adaptation
+        self.tau_g = 300.0   # Time constant of gain adaptation
         
         self.beta = 1.0 
         self.sigma = 0.05     # Semi-saturation constant
@@ -65,7 +65,9 @@ class V1Dynamics:
         dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
-        dg_dt = (v_t * v_t - 1) / self.tau_g  # Uses normalized projection
+        target = np.sum((y) ** 2) / N  # Adaptive target: scales with actual energy plus some noise 
+        #target = 1
+        dg_dt = (v_t * v_t - target - 0.5*g) / self.tau_g
         
         return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
         
@@ -128,16 +130,16 @@ if __name__ == "__main__":
     
     regimes = [
         {'n_steps': 5000, 'contrast': 0.75, 'orientation': np.pi/2, 'label': 'Bright 90°'},
-        {'n_steps': 5000, 'contrast': 0.2, 'orientation': np.pi/2, 'label': 'Dim 90°'},
-        {'n_steps': 5000, 'contrast': 0.5, 'orientation': 0.0, 'label': 'Medium 0°'},
+        {'n_steps': 5000, 'contrast': 0.5, 'orientation': 0.0, 'label': 'Dim 90°'},
+        {'n_steps': 5000, 'contrast': 0.5, 'orientation': np.pi/2, 'label': 'Medium 0°'},
     ]
     inputs = stim_gen.generate_sequence(regimes)
     
     rates, gains = engine.run_simulation(inputs)
     
     # --- PLOTTING ---
-    fig, axes = plt.subplots(4, 1, figsize=(8, 10), sharex=True, 
-                             gridspec_kw={'height_ratios': [1, 2, 1, 2]})
+    fig, axes = plt.subplots(3, 1, figsize=(8, 8), sharex=True, 
+                             gridspec_kw={'height_ratios': [1, 2, 1]})
     
     axes[0].imshow(inputs, aspect='auto', cmap='binary', origin='lower')
     axes[0].set_ylabel("Orientation")

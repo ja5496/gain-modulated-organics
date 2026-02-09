@@ -4,20 +4,53 @@ import matplotlib.pyplot as plt
 '''
 ---- stimuli_whiten.py ----
 Generates V1-tuned responses to LGN outputs using raised cosine functions. 
-
+Now supports additive white noise to simulate broad-spectrum suppression effects.
 '''
 
 class StimulusGenerator:
     def __init__(self, N=60):
         self.N = N
+        # Preferred orientations from 0 to pi
         self.theta = np.linspace(0, np.pi, N, endpoint=False)
 
     def generate_sequence(self, regimes):
+        '''
+        Generates a sequence of neural responses based on a list of regimes.
+        
+        Args:
+            regimes (list of dict): Each dict corresponds to a time block and can contain:
+                - 'orientation': (float) Stimulus orientation in radians
+                - 'contrast': (float) Stimulus contrast magnitude
+                - 'n_steps': (int) Duration of the block in time steps
+                - 'noise_level': (float, optional) Std dev of additive Gaussian white noise
+        '''
         seq = []
         for r in regimes:
+            # 1. Generate the base tuning profile (Von Mises / Raised Cosine)
+            # This represents the "signal" drive to the population
             profile = np.exp(6.0 * np.cos(2*(self.theta - r['orientation'])))
-            profile = 2*profile / np.max(profile) * r['contrast'] # Added a 2 so that 0.5 contrast would correspond to the turning point of gains
-            seq.append(np.tile(profile, (r['n_steps'], 1)).T)
+            
+            # Normalize and scale by contrast
+            # Added a 2 so that 0.5 contrast roughly corresponds to turning point of gains
+            profile = 2 * profile / np.max(profile) * r['contrast']
+            
+            # 2. Tile across time: Shape becomes (N_neurons, n_steps)
+            block = np.tile(profile, (r['n_steps'], 1)).T
+            
+            # 3. Add White Noise
+            # "Theoretically... suppress tunings besides the peak" 
+            # This works because noise increases the denominator in divisive normalization
+            noise_level = r.get('noise_level', 0.0)
+            if noise_level > 0:
+                # Generate noise for every neuron at every time step independently
+                noise = np.random.normal(loc=0.0, scale=noise_level, size=block.shape)
+                block = block + noise
+                
+                # Rectification: Ensure drive doesn't go below zero (standard for firing rates/energy)
+                block = np.maximum(0, block)
+
+            seq.append(block)
+            
         return np.hstack(seq)
 
     def plot_tuning_curves(self):
@@ -47,7 +80,38 @@ class StimulusGenerator:
         plt.tight_layout()
         plt.show()
 
-
 if __name__ == "__main__":
+    # --- Example Usage ---
     stim_gen = StimulusGenerator(N=60)
-    stim_gen.plot_tuning_curves()
+    
+    # Define a sequence: 
+    # 1. Clean stimulus
+    # 2. Noisy stimulus (same orientation)
+    regimes = [
+        {
+            'orientation': np.pi/2, # 90 degrees
+            'contrast': 1.0, 
+            'n_steps': 50,
+            'noise_level': 0.0      # Clean
+        },
+        {
+            'orientation': np.pi/2, 
+            'contrast': 1.0, 
+            'n_steps': 50,
+            'noise_level': 0.1      # Added White Noise
+        }
+    ]
+
+    # Generate data
+    data = stim_gen.generate_sequence(regimes)
+    
+    # --- Quick Visualization of the Output Matrix ---
+    plt.figure(figsize=(12, 6))
+    plt.imshow(data, aspect='auto', cmap='hot', origin='lower')
+    plt.colorbar(label='Input Drive')
+    plt.xlabel('Time Step')
+    plt.ylabel('Neuron Index (Preferred Orientation)')
+    plt.title('V1 Input Drive: Clean vs. Noisy Stimulus')
+    plt.axvline(x=50, color='white', linestyle='--', linewidth=2, label='Noise Onset')
+    plt.legend()
+    plt.show()

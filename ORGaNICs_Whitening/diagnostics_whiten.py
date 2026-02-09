@@ -544,6 +544,561 @@ def diagnostic_6b(tunings, frame, stim_gen):
     plt.show()
 
 
+# ================================================================
+#                  GAIN ADAPTATION DIAGNOSTICS
+# ================================================================
+#
+# Diagnostics 7–11 investigate why the 1830 gain variables collapse
+# to zero instead of adapting to whiten neural output.  The core
+# issue is that the gain update rule  dg/dt = (v_t^2 - 1) / tau_g
+# requires v_t^2 ≈ 1, but the overcomplete frame spreads energy so
+# that mean(v_t^2) ≈ ||y||^2 / N, which is << 1 for sparse activity.
+# ================================================================
+
+
+def _run_no_gain_steady_state(tunings, frame, stim_gen, regime_idx=0):
+    """Run a simulation with gains forced to zero and return the
+    steady-state y vector for the given regime."""
+
+    class V1DynamicsNoGain(V1Dynamics):
+        def _derivatives(self, state, z_t):
+            N, K = self.v1.N, self.frame.K
+            y  = state[0:N]
+            u  = state[N:2*N]
+            a  = state[2*N:3*N]
+
+            u_plus = self.gaussian_rectify(u)
+            y_plus = self.gaussian_rectify(y)
+            a_plus = self.gaussian_rectify(a)
+            sqrt_y_plus = np.sqrt(y_plus)
+
+            recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
+            input_drive = (self.beta * z_t) / 2
+
+            sigma_term = self.sigma ** 2
+            pool_term  = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
+
+            dy_dt = (-y + input_drive + recurrent_drive) / self.tau_y
+            du_dt = (-u + sigma_term + pool_term) / self.tau_u
+            da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
+            dg_dt = np.zeros(K)
+
+            return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
+
+    regime = DEFAULT_REGIMES[regime_idx]
+    inputs = stim_gen.generate_sequence([regime])
+
+    eng = V1DynamicsNoGain(tunings, frame, dt=0.05)
+    rates, _ = eng.run_simulation(inputs)
+
+    y_ss = rates[:, -1]  # last timestep (already rectified by max(y,0))
+    return y_ss
+
+
+# ────────────────────────────────────────────────────────────────────
+# DIAGNOSTIC 7 — v_t^2 Magnitude and Energy Budget
+# ────────────────────────────────────────────────────────────────────
+
+def diagnostic_7(tunings, frame, stim_gen):
+    """Quantify why dg/dt < 0: the frame energy budget makes v_t^2 = 1
+    unreachable given the actual ||y||^2."""
+    print("\n" + "=" * 60)
+    print("DIAGNOSTIC 7: v_t^2 Energy Budget")
+    print("=" * 60)
+
+    y_ss = _run_no_gain_steady_state(tunings, frame, stim_gen, regime_idx=0)
+
+    N = tunings.N
+    K = frame.K
+    W = frame.W
+
+    v_t = W.T @ y_ss
+    v_t_sq = v_t ** 2
+
+    y_norm_sq = np.sum(y_ss ** 2)
+    sum_vt_sq = np.sum(v_t_sq)
+    mean_vt_sq = np.mean(v_t_sq)
+    frame_ratio = K / N
+    needed_y_norm_sq = N  # for mean(v_t^2) = 1
+
+    print(f"\n  Steady-state (no gains, Bright 90° regime):")
+    print(f"    ||y_ss||^2                     = {y_norm_sq:.4f}")
+    print(f"    ||y_ss||^2 / N                 = {y_norm_sq / N:.4f}")
+    print(f"    mean(v_t^2)                    = {mean_vt_sq:.6f}")
+    print(f"    sum(v_t^2)                     = {sum_vt_sq:.4f}")
+    print(f"    (K/N) * ||y||^2                = {frame_ratio * y_norm_sq:.4f}")
+    print(f"    Tight frame check (ratio):       {sum_vt_sq / (frame_ratio * y_norm_sq):.4f}  (should be ~1)")
+    print(f"    Target: mean(v_t^2) = 1")
+    print(f"    Required ||y||^2 for target:    {needed_y_norm_sq:.1f}")
+    print(f"    Shortfall factor:                {needed_y_norm_sq / y_norm_sq:.2f}x")
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    axes[0].hist(v_t_sq, bins=80, color='steelblue', alpha=0.7, edgecolor='white')
+    axes[0].axvline(1.0, color='red', ls='--', lw=2, label='Target v_t^2 = 1')
+    axes[0].axvline(mean_vt_sq, color='orange', ls='-', lw=2, label=f'mean = {mean_vt_sq:.4f}')
+    axes[0].set_title("Distribution of v_t^2 (no-gain steady state)")
+    axes[0].set_xlabel("v_t^2")
+    axes[0].set_ylabel("Count")
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    theta_deg = tunings.theta * 180 / np.pi
+    axes[1].bar(theta_deg, y_ss, width=180 / N * 0.8, color='steelblue', alpha=0.7)
+    axes[1].axhline(0, color='gray', ls='-', alpha=0.3)
+    axes[1].set_title(f"y_ss profile  (||y||^2 = {y_norm_sq:.2f}, need {needed_y_norm_sq})")
+    axes[1].set_xlabel("Preferred Orientation (deg)")
+    axes[1].set_ylabel("y")
+    axes[1].grid(True, alpha=0.3)
+
+    plt.suptitle("DIAGNOSTIC 7: v_t^2 Energy Budget")
+    plt.tight_layout()
+    plt.show()
+
+    return y_ss  # reuse in diagnostic_8
+
+
+# ────────────────────────────────────────────────────────────────────
+# DIAGNOSTIC 8 — Centering Analysis
+# ────────────────────────────────────────────────────────────────────
+
+def diagnostic_8(tunings, frame, y_ss):
+    """Test whether centering y before projection moves v_t^2 closer to 1."""
+    print("\n" + "=" * 60)
+    print("DIAGNOSTIC 8: Centering Analysis")
+    print("=" * 60)
+
+    N = tunings.N
+    W = frame.W
+
+    y_mean = np.mean(y_ss)
+    y_centered = y_ss - y_mean
+
+    v_t_raw = W.T @ y_ss
+    v_t_cen = W.T @ y_centered
+
+    raw_sq = v_t_raw ** 2
+    cen_sq = v_t_cen ** 2
+
+    y_norm_sq = np.sum(y_ss ** 2)
+    y_cen_norm_sq = np.sum(y_centered ** 2)
+    dc_energy = N * y_mean ** 2
+
+    print(f"\n  mean(y_ss)                  = {y_mean:.4f}")
+    print(f"  ||y_ss||^2                  = {y_norm_sq:.4f}")
+    print(f"  ||y_centered||^2            = {y_cen_norm_sq:.4f}")
+    print(f"  DC energy (N * mean^2)      = {dc_energy:.4f}  ({100 * dc_energy / y_norm_sq:.1f}% of total)")
+    print(f"  mean(v_t_raw^2)             = {np.mean(raw_sq):.6f}")
+    print(f"  mean(v_t_centered^2)        = {np.mean(cen_sq):.6f}")
+    print(f"  ||y_centered||^2 / N        = {y_cen_norm_sq / N:.6f}")
+    print(f"  Target                      = 1.0")
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    bins = np.linspace(0, max(np.max(raw_sq), np.max(cen_sq), 1.2), 80)
+    axes[0].hist(raw_sq, bins=bins, alpha=0.5, color='red', label=f'Raw  mean={np.mean(raw_sq):.4f}')
+    axes[0].hist(cen_sq, bins=bins, alpha=0.5, color='blue', label=f'Centered  mean={np.mean(cen_sq):.4f}')
+    axes[0].axvline(1.0, color='black', ls='--', lw=2, label='Target = 1')
+    axes[0].set_title("v_t^2 distributions: raw vs centered")
+    axes[0].set_xlabel("v_t^2")
+    axes[0].set_ylabel("Count")
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    theta_deg = tunings.theta * 180 / np.pi
+    axes[1].bar(theta_deg - 0.8, y_ss, width=1.4, color='red', alpha=0.5, label='Raw y_ss')
+    axes[1].bar(theta_deg + 0.8, y_centered, width=1.4, color='blue', alpha=0.5, label='Centered y_ss')
+    axes[1].axhline(0, color='gray', ls='-', alpha=0.5)
+    axes[1].axhline(y_mean, color='red', ls=':', alpha=0.7, label=f'mean = {y_mean:.3f}')
+    axes[1].set_title("y_ss: raw vs centered")
+    axes[1].set_xlabel("Preferred Orientation (deg)")
+    axes[1].set_ylabel("y")
+    axes[1].legend(fontsize=8)
+    axes[1].grid(True, alpha=0.3)
+
+    plt.suptitle("DIAGNOSTIC 8: Centering Analysis")
+    plt.tight_layout()
+    plt.show()
+
+
+# ────────────────────────────────────────────────────────────────────
+# DIAGNOSTIC 9 — Gain Dynamics Trajectory
+# ────────────────────────────────────────────────────────────────────
+
+def diagnostic_9(tunings, frame, stim_gen):
+    """Visualize the gain collapse: track mean(g), mean(v_t^2), mean(dg/dt),
+    and ||y||^2 at every timestep."""
+    print("\n" + "=" * 60)
+    print("DIAGNOSTIC 9: Gain Dynamics Trajectory")
+    print("=" * 60)
+
+    inputs = stim_gen.generate_sequence(DEFAULT_REGIMES)
+    N, n_steps = inputs.shape
+    K = frame.K
+
+    engine = V1Dynamics(tunings, frame, dt=0.05)
+
+    state = np.zeros(3 * N + K)
+    state[3 * N:3 * N + K] = 0.0  # gains start at 0 (matches current simulation_whiten.py)
+
+    mean_g    = np.zeros(n_steps)
+    mean_vtsq = np.zeros(n_steps)
+    mean_dgdt = np.zeros(n_steps)
+    y_norm_sq = np.zeros(n_steps)
+
+    print("Running gain trajectory simulation...")
+    for t in tqdm(range(n_steps)):
+        z_t = inputs[:, t]
+
+        y = state[0:N]
+        g = state[3 * N:3 * N + K]
+
+        v_t = frame.W.T @ y
+        dg = (v_t * v_t - 1) / engine.tau_g
+
+        mean_g[t]    = np.mean(g)
+        mean_vtsq[t] = np.mean(v_t ** 2)
+        mean_dgdt[t] = np.mean(dg)
+        y_norm_sq[t] = np.sum(y ** 2)
+
+        # RK4 step
+        k1 = engine._derivatives(state, z_t)
+        k2 = engine._derivatives(state + 0.5 * engine.dt * k1, z_t)
+        k3 = engine._derivatives(state + 0.5 * engine.dt * k2, z_t)
+        k4 = engine._derivatives(state + engine.dt * k3, z_t)
+        state += (engine.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        state[3 * N:3 * N + K] = np.maximum(state[3 * N:3 * N + K], 0.0)
+
+    fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
+
+    traces_data   = [mean_g,    mean_vtsq,    mean_dgdt,    y_norm_sq]
+    traces_titles = ['mean(g)',  'mean(v_t^2)', 'mean(dg/dt)', '||y||^2']
+    ref_lines     = [None,       1.0,           0.0,           N]
+    ref_labels    = [None,       'target = 1',  'dg/dt = 0',   f'||y||^2 = N = {N}']
+    colors        = ['purple',   'teal',        'crimson',     'steelblue']
+
+    for ax, data, title, ref, ref_lbl, clr in zip(
+            axes, traces_data, traces_titles, ref_lines, ref_labels, colors):
+        ax.plot(data, color=clr, lw=1.5)
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        if ref is not None:
+            ax.axhline(ref, color='gray', ls='--', lw=1.5, label=ref_lbl)
+            ax.legend(loc='upper right', fontsize=8)
+
+        t_cursor = 0
+        for r in DEFAULT_REGIMES:
+            t_cursor += r['n_steps']
+            ax.axvline(t_cursor, color='gray', ls='--', alpha=0.4)
+
+    axes[-1].set_xlabel("Time step")
+    plt.suptitle("DIAGNOSTIC 9: Gain Dynamics Trajectory")
+    plt.tight_layout()
+    plt.show()
+
+    print(f"\n  Final mean(g):      {mean_g[-1]:.6f}")
+    print(f"  Final mean(v_t^2):  {mean_vtsq[-1]:.6f}")
+    print(f"  Final ||y||^2:      {y_norm_sq[-1]:.4f}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# DIAGNOSTIC 10 — Mean-Subtracted Projection Ablation
+# ────────────────────────────────────────────────────────────────────
+
+def diagnostic_10(tunings, frame, stim_gen):
+    """Compare original v_t = W.T @ y  vs  centered v_t = W.T @ (y - mean(y)).
+    Does centering fix gain adaptation?"""
+    print("\n" + "=" * 60)
+    print("DIAGNOSTIC 10: Mean-Subtracted Projection Ablation")
+    print("=" * 60)
+
+    class V1DynamicsCentered(V1Dynamics):
+        def _derivatives(self, state, z_t):
+            N, K = self.v1.N, self.frame.K
+            y = state[0:N]
+            u = state[N:2 * N]
+            a = state[2 * N:3 * N]
+            g = state[3 * N:3 * N + K]
+
+            u_plus = self.gaussian_rectify(u)
+            y_plus = self.gaussian_rectify(y)
+            a_plus = self.gaussian_rectify(a)
+            sqrt_y_plus = np.sqrt(y_plus)
+
+            # KEY CHANGE: center y before frame projection
+            v_t = self.frame.W.T @ (y - np.mean(y))
+
+            gain_feedback = self.frame.W @ (g * v_t)
+            recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
+            input_drive = (self.beta * z_t) / 2
+
+            sigma_term = self.sigma ** 2
+            pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
+
+            dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
+            du_dt = (-u + sigma_term + pool_term) / self.tau_u
+            da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
+            dg_dt = (v_t * v_t - 1) / self.tau_g
+
+            return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
+
+    inputs = stim_gen.generate_sequence(DEFAULT_REGIMES)
+    N, n_steps = inputs.shape
+    K = frame.K
+
+    # --- Run original ---
+    eng_orig = V1Dynamics(tunings, frame, dt=0.05)
+    _, gains_orig = eng_orig.run_simulation(inputs)
+
+    # Collect mean(v_t^2) for original
+    state_orig = np.zeros(3 * N + K)
+    vtsq_orig = np.zeros(n_steps)
+    for t in range(n_steps):
+        z_t = inputs[:, t]
+        k1 = eng_orig._derivatives(state_orig, z_t)
+        k2 = eng_orig._derivatives(state_orig + 0.5 * eng_orig.dt * k1, z_t)
+        k3 = eng_orig._derivatives(state_orig + 0.5 * eng_orig.dt * k2, z_t)
+        k4 = eng_orig._derivatives(state_orig + eng_orig.dt * k3, z_t)
+        state_orig += (eng_orig.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        state_orig[3 * N:3 * N + K] = np.maximum(state_orig[3 * N:3 * N + K], 0.0)
+        v = frame.W.T @ state_orig[0:N]
+        vtsq_orig[t] = np.mean(v ** 2)
+
+    # --- Run centered ---
+    eng_cen = V1DynamicsCentered(tunings, frame, dt=0.05)
+    _, gains_cen = eng_cen.run_simulation(inputs)
+
+    state_cen = np.zeros(3 * N + K)
+    vtsq_cen = np.zeros(n_steps)
+    for t in range(n_steps):
+        z_t = inputs[:, t]
+        k1 = eng_cen._derivatives(state_cen, z_t)
+        k2 = eng_cen._derivatives(state_cen + 0.5 * eng_cen.dt * k1, z_t)
+        k3 = eng_cen._derivatives(state_cen + 0.5 * eng_cen.dt * k2, z_t)
+        k4 = eng_cen._derivatives(state_cen + eng_cen.dt * k3, z_t)
+        state_cen += (eng_cen.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        state_cen[3 * N:3 * N + K] = np.maximum(state_cen[3 * N:3 * N + K], 0.0)
+        y_c = state_cen[0:N]
+        v = frame.W.T @ (y_c - np.mean(y_c))
+        vtsq_cen[t] = np.mean(v ** 2)
+
+    # --- Plot ---
+    subset_k = np.linspace(0, K - 1, 10, dtype=int)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8), sharex=True)
+
+    axes[0, 0].plot(gains_orig[subset_k, :].T, alpha=0.6)
+    axes[0, 0].set_title("Gain evolution — Original")
+    axes[0, 0].set_ylabel("g (subset)")
+    axes[0, 0].grid(True, alpha=0.3)
+
+    axes[0, 1].plot(gains_cen[subset_k, :].T, alpha=0.6)
+    axes[0, 1].set_title("Gain evolution — Centered v_t")
+    axes[0, 1].grid(True, alpha=0.3)
+
+    axes[1, 0].plot(vtsq_orig, color='red', lw=1.5)
+    axes[1, 0].axhline(1.0, color='gray', ls='--', label='target = 1')
+    axes[1, 0].set_title("mean(v_t^2) — Original")
+    axes[1, 0].set_ylabel("mean(v_t^2)")
+    axes[1, 0].set_xlabel("Time step")
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+
+    axes[1, 1].plot(vtsq_cen, color='blue', lw=1.5)
+    axes[1, 1].axhline(1.0, color='gray', ls='--', label='target = 1')
+    axes[1, 1].set_title("mean(v_t^2) — Centered")
+    axes[1, 1].set_xlabel("Time step")
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3)
+
+    for ax_row in axes:
+        for ax in ax_row:
+            t_cursor = 0
+            for r in DEFAULT_REGIMES:
+                t_cursor += r['n_steps']
+                ax.axvline(t_cursor, color='gray', ls='--', alpha=0.4)
+
+    plt.suptitle("DIAGNOSTIC 10: Original vs Centered Projection")
+    plt.tight_layout()
+    plt.show()
+
+    print(f"\n  Original — final gain range:  [{np.min(gains_orig[:, -1]):.6f}, {np.max(gains_orig[:, -1]):.6f}]")
+    print(f"  Centered — final gain range:  [{np.min(gains_cen[:, -1]):.6f}, {np.max(gains_cen[:, -1]):.6f}]")
+    print(f"  Original — final mean(v_t^2): {vtsq_orig[-1]:.6f}")
+    print(f"  Centered — final mean(v_t^2): {vtsq_cen[-1]:.6f}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# DIAGNOSTIC 11 — Gain Rule Variants
+# ────────────────────────────────────────────────────────────────────
+
+def diagnostic_11(tunings, frame, stim_gen):
+    """Compare three gain rule variants to find one that produces
+    stable, nonzero gains:
+      (a) Centered projection, target = 1
+      (b) Raw projection, adaptive target = ||y||^2 / N
+      (c) Centered projection, adaptive target = ||y_cen||^2 / N
+    """
+    print("\n" + "=" * 60)
+    print("DIAGNOSTIC 11: Gain Rule Variants")
+    print("=" * 60)
+
+    N = tunings.N
+    K = frame.K
+    inputs = stim_gen.generate_sequence(DEFAULT_REGIMES)
+    n_steps = inputs.shape[1]
+
+    # --- Variant (a): Centered, target = 1 ---
+    class VariantA(V1Dynamics):
+        def _derivatives(self, state, z_t):
+            NN, KK = self.v1.N, self.frame.K
+            y = state[0:NN]; u = state[NN:2*NN]; a = state[2*NN:3*NN]; g = state[3*NN:3*NN+KK]
+            u_plus = self.gaussian_rectify(u)
+            y_plus = self.gaussian_rectify(y)
+            a_plus = self.gaussian_rectify(a)
+            sqrt_y_plus = np.sqrt(y_plus)
+            v_t = self.frame.W.T @ (y - np.mean(y))  # centered
+            gain_feedback = self.frame.W @ (g * v_t)
+            recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
+            input_drive = (self.beta * z_t) / 2
+            sigma_term = self.sigma ** 2
+            pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
+            dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
+            du_dt = (-u + sigma_term + pool_term) / self.tau_u
+            da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
+            dg_dt = (v_t * v_t - 1) / self.tau_g  # target = 1
+            return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
+
+    # --- Variant (b): Raw, adaptive target ---
+    class VariantB(V1Dynamics):
+        def _derivatives(self, state, z_t):
+            NN, KK = self.v1.N, self.frame.K
+            y = state[0:NN]; u = state[NN:2*NN]; a = state[2*NN:3*NN]; g = state[3*NN:3*NN+KK]
+            u_plus = self.gaussian_rectify(u)
+            y_plus = self.gaussian_rectify(y)
+            a_plus = self.gaussian_rectify(a)
+            sqrt_y_plus = np.sqrt(y_plus)
+            v_t = self.frame.W.T @ y  # raw
+            gain_feedback = self.frame.W @ (g * v_t)
+            recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
+            input_drive = (self.beta * z_t) / 2
+            sigma_term = self.sigma ** 2
+            pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
+            dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
+            du_dt = (-u + sigma_term + pool_term) / self.tau_u
+            da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
+            target = np.sum(y ** 2) / NN  # adaptive target
+            dg_dt = (v_t * v_t - target) / self.tau_g
+            return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
+
+    # --- Variant (c): Centered + adaptive target ---
+    class VariantC(V1Dynamics):
+        def _derivatives(self, state, z_t):
+            NN, KK = self.v1.N, self.frame.K
+            y = state[0:NN]; u = state[NN:2*NN]; a = state[2*NN:3*NN]; g = state[3*NN:3*NN+KK]
+            u_plus = self.gaussian_rectify(u)
+            y_plus = self.gaussian_rectify(y)
+            a_plus = self.gaussian_rectify(a)
+            sqrt_y_plus = np.sqrt(y_plus)
+            y_cen = y - np.mean(y)
+            v_t = self.frame.W.T @ y_cen  # centered
+            gain_feedback = self.frame.W @ (g * v_t)
+            recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
+            input_drive = (self.beta * z_t) / 2
+            sigma_term = self.sigma ** 2
+            pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
+            dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
+            du_dt = (-u + sigma_term + pool_term) / self.tau_u
+            da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
+            target = np.sum(y_cen ** 2) / NN  # adaptive target on centered signal
+            dg_dt = (v_t * v_t - target) / self.tau_g
+            return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
+
+    variants = [
+        ('(a) Centered, target=1', VariantA),
+        ('(b) Raw, adaptive target', VariantB),
+        ('(c) Centered + adaptive', VariantC),
+    ]
+
+    results = {}
+    for label, cls in variants:
+        print(f"\n  Running variant: {label}")
+        eng = cls(tunings, frame, dt=0.05)
+        _, gains = eng.run_simulation(inputs)
+
+        # Collect mean(v_t^2) trace via a fresh run
+        st = np.zeros(3 * N + K)
+        vtsq_trace = np.zeros(n_steps)
+        target_trace = np.zeros(n_steps)
+
+        for t in range(n_steps):
+            z_t = inputs[:, t]
+            y = st[0:N]
+            if 'Centered' in label:
+                y_proj = y - np.mean(y)
+            else:
+                y_proj = y
+            v = frame.W.T @ y_proj
+            vtsq_trace[t] = np.mean(v ** 2)
+            if 'adaptive' in label:
+                target_trace[t] = np.sum(y_proj ** 2) / N
+            else:
+                target_trace[t] = 1.0
+
+            k1 = eng._derivatives(st, z_t)
+            k2 = eng._derivatives(st + 0.5 * eng.dt * k1, z_t)
+            k3 = eng._derivatives(st + 0.5 * eng.dt * k2, z_t)
+            k4 = eng._derivatives(st + eng.dt * k3, z_t)
+            st += (eng.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            st[3 * N:3 * N + K] = np.maximum(st[3 * N:3 * N + K], 0.0)
+
+        results[label] = {
+            'gains': gains,
+            'vtsq': vtsq_trace,
+            'target': target_trace,
+        }
+
+    # --- Plot gains ---
+    subset_k = np.linspace(0, K - 1, 10, dtype=int)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 8), sharex=True)
+
+    for col, (label, _) in enumerate(variants):
+        res = results[label]
+        axes[0, col].plot(res['gains'][subset_k, :].T, alpha=0.6)
+        axes[0, col].set_title(f"Gains — {label}")
+        axes[0, col].grid(True, alpha=0.3)
+        if col == 0:
+            axes[0, col].set_ylabel("g (10 subset)")
+
+        axes[1, col].plot(res['vtsq'], color='teal', lw=1.5, label='mean(v_t^2)')
+        axes[1, col].plot(res['target'], color='red', ls='--', lw=1.5, label='target')
+        axes[1, col].set_title(f"v_t^2 vs target — {label}")
+        axes[1, col].set_xlabel("Time step")
+        axes[1, col].legend(fontsize=8)
+        axes[1, col].grid(True, alpha=0.3)
+        if col == 0:
+            axes[1, col].set_ylabel("value")
+
+        for ax_row in axes:
+            t_cursor = 0
+            for r in DEFAULT_REGIMES:
+                t_cursor += r['n_steps']
+                ax_row[col].axvline(t_cursor, color='gray', ls='--', alpha=0.4)
+
+    plt.suptitle("DIAGNOSTIC 11: Gain Rule Variants")
+    plt.tight_layout()
+    plt.show()
+
+    for label, _ in variants:
+        res = results[label]
+        g_final = res['gains'][:, -1]
+        stabilized = np.mean(g_final) > 0.001
+        print(f"\n  {label}:")
+        print(f"    Final gain range: [{np.min(g_final):.6f}, {np.max(g_final):.6f}]")
+        print(f"    Final mean(v_t^2): {res['vtsq'][-1]:.6f}")
+        print(f"    Gains stabilized: {'YES' if stabilized else 'NO'}")
+
+
 # ────────────────────────────────────────────────────────────────────
 # Main entry point
 # ────────────────────────────────────────────────────────────────────
@@ -555,7 +1110,7 @@ if __name__ == "__main__":
     stim_gen = StimulusGenerator(N=N_NEURONS)
 
     # ── Diagnostic 1: Gaussian Rectification Baseline ──
-    diagnostic_1a(tunings)
+    '''diagnostic_1a(tunings)
     diagnostic_1b(tunings, frame, stim_gen)
     diagnostic_1c(tunings, frame, stim_gen)
 
@@ -570,6 +1125,13 @@ if __name__ == "__main__":
     # ── Diagnostic 4: Full Instrumented Simulation ──
     diagnostic_6a(tunings, frame, stim_gen)
     diagnostic_6b(tunings, frame, stim_gen)
+'''
+    # ── Diagnostic 5: Gain Adaptation ──
+    y_ss = diagnostic_7(tunings, frame, stim_gen)
+    diagnostic_8(tunings, frame, y_ss)
+    diagnostic_9(tunings, frame, stim_gen)
+    diagnostic_10(tunings, frame, stim_gen)
+    diagnostic_11(tunings, frame, stim_gen)
 
     print("\n" + "=" * 60)
     print("All diagnostics complete.")
