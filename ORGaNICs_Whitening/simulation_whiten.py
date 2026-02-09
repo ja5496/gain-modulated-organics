@@ -24,14 +24,13 @@ class V1Dynamics:
         self.tau_y = 1.0      # Time constant of primary neurons
         self.tau_a = 5.0      # Time constant of inhibitory divisive neurons
         self.tau_u = 2.0      # Time constant of normalization pool neurons
-        self.tau_g = 2000.0   # Time constant of gain adaptation
-        self.tau_ybar = 10.0  # Time constant of mean activity tracker 
+        self.tau_g = 200.0   # Time constant of gain adaptation
         
         self.beta = 1.0 
         self.sigma = 0.05     # Semi-saturation constant
         self.alpha = 0.0
 
-    def gaussian_rectify(self, y, threshold=0.0, sigma=0.1, r_max=1.0):
+    def gaussian_rectify(self, y, threshold=0.5, sigma=0.1, r_max=1.0):
         return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
     def _derivatives(self, state, z_t):
@@ -41,10 +40,9 @@ class V1Dynamics:
         u = state[N:2*N]
         a = state[2*N:3*N]
         g = state[3*N:3*N+K]
-        y_bar = state[3*N+K]
         
         # Stability: Gains must be non-negative
-        g = np.maximum(g, 0.0) 
+        #g = np.maximum(g, 0.0) 
         
         # Estimate of firing rates from membrane potential using gaussian rectification
         u_plus = self.gaussian_rectify(u)
@@ -52,22 +50,8 @@ class V1Dynamics:
         a_plus = self.gaussian_rectify(a)
         sqrt_y_plus = np.sqrt(y_plus) 
         
-        # Center firing rates using the tracked mean
-        y_centered = y_plus - y_bar
-        
-        # Normalize for gain update rule (so v_t^2 targets 1)
-        y_norm = np.linalg.norm(y_centered)
-        if y_norm > 1e-6:
-            y_normalized = y_centered / y_norm * np.sqrt(N)
-        else:
-            y_normalized = y_centered
-        
-        # Two separate projections:
         # 1) Normalized projection for gain update rule
-        v_t_norm = self.frame.W.T @ y_normalized
-        
-        # 2) Original projection for feedback onto neurons  
-        v_t = self.frame.W.T @ y_centered
+        v_t = self.frame.W.T @ y
         
         # Neural circuit terms
         gain_feedback = self.frame.W @ (g * v_t)
@@ -76,28 +60,24 @@ class V1Dynamics:
         
         sigma_term = (self.sigma) ** 2
         pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
-        mean_y_plus = np.mean(y_plus)
         
         # Differential equations
         dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
-        dg_dt = (v_t_norm * v_t_norm - 1) / self.tau_g  # Uses normalized projection
-        dy_bar_dt = (-y_bar + mean_y_plus) / self.tau_ybar
+        dg_dt = (v_t * v_t - 1) / self.tau_g  # Uses normalized projection
         
-        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, [dy_bar_dt]])
+        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
         
     def run_simulation(self, stimulus_stream):
         N, n_steps = stimulus_stream.shape 
         K = self.frame.K
         
-        state = np.zeros(3*N + K + 1)
+        state = np.zeros(3*N + K)
         state[3*N:3*N+K] = 0.0  # gains
-        state[3*N+K] = 0.5      # y_bar initialized to reasonable baseline
         
         membrane_hist = np.zeros((N, n_steps))
         gains_hist = np.zeros((K, n_steps))
-        ybar_hist = np.zeros(n_steps)
         v_squared_hist = np.zeros((K, n_steps))
         
         print(f"Running Simulation...") 
@@ -119,32 +99,22 @@ class V1Dynamics:
             
             y = state[0:N]
             g = state[3*N:3*N+K]
-            y_bar = state[3*N+K]
             
             # Diagnostic logging
-            y_plus_log = self.gaussian_rectify(y)
-            y_centered_log = y_plus_log - y_bar
-            y_norm_log = np.linalg.norm(y_centered_log)
-            if y_norm_log > 1e-6:
-                y_normalized_log = y_centered_log / y_norm_log * np.sqrt(N)
-            else:
-                y_normalized_log = y_centered_log
-            v_t_norm_log = self.frame.W.T @ y_normalized_log
-            v_squared_hist[:, t] = v_t_norm_log ** 2
+            v_t_log = self.frame.W.T @ y
+            v_squared_hist[:, t] = v_t_log ** 2
             
             membrane_hist[:, t] = np.maximum(y, 0)
             gains_hist[:, t] = g 
-            ybar_hist[t] = y_bar
             
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         
         print(f"\n--- Diagnostics ---")
         print(f"v_t^2 mean: {np.mean(v_squared_hist):.6f}")
         print(f"v_t^2 range: [{np.min(v_squared_hist):.6f}, {np.max(v_squared_hist):.6f}]")
-        print(f"y_bar final: {ybar_hist[-1]:.6f}")
         print(f"gains final range: [{np.min(gains_hist[:,-1]):.6f}, {np.max(gains_hist[:,-1]):.6f}]")
         
-        return membrane_hist, gains_hist, ybar_hist
+        return membrane_hist, gains_hist
 
 
 if __name__ == "__main__":
@@ -158,12 +128,12 @@ if __name__ == "__main__":
     
     regimes = [
         {'n_steps': 5000, 'contrast': 0.75, 'orientation': np.pi/2, 'label': 'Bright 90°'},
-        {'n_steps': 20000, 'contrast': 0.2, 'orientation': np.pi/2, 'label': 'Dim 90°'},
+        {'n_steps': 5000, 'contrast': 0.2, 'orientation': np.pi/2, 'label': 'Dim 90°'},
         {'n_steps': 5000, 'contrast': 0.5, 'orientation': 0.0, 'label': 'Medium 0°'},
     ]
     inputs = stim_gen.generate_sequence(regimes)
     
-    rates, gains, ybar = engine.run_simulation(inputs)
+    rates, gains = engine.run_simulation(inputs)
     
     # --- PLOTTING ---
     fig, axes = plt.subplots(4, 1, figsize=(8, 10), sharex=True, 
@@ -180,17 +150,12 @@ if __name__ == "__main__":
     axes[1].set_title("Firing Rates (y)")
     plt.colorbar(im_y, ax=axes[1], label="Hz", fraction=0.046, pad=0.04)
     
-    axes[2].plot(ybar, color='dodgerblue', linewidth=1.5)
-    axes[2].set_ylabel(r"$\bar{y}$")
-    axes[2].set_title("Mean Activity Tracker")
-    axes[2].grid(True, alpha=0.3)
-    
     subset_k = np.linspace(0, frame.K-1, 10, dtype=int)
-    axes[3].plot(gains[subset_k, :].T, alpha=0.6)
-    axes[3].set_ylabel("Gains (subset)")
-    axes[3].set_xlabel("Time (steps)")
-    axes[3].set_title("Gain Evolution")
-    axes[3].grid(True, alpha=0.3)
+    axes[2].plot(gains[subset_k, :].T, alpha=0.6)
+    axes[2].set_ylabel("Gains (subset)")
+    axes[2].set_xlabel("Time (steps)")
+    axes[2].set_title("Gain Evolution")
+    axes[2].grid(True, alpha=0.3)
     
     t_cursor = 0
     for r in regimes:

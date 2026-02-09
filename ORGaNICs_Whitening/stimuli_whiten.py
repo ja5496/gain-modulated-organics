@@ -16,7 +16,7 @@ class StimulusGenerator:
         seq = []
         for r in regimes:
             profile = np.exp(6.0 * np.cos(2*(self.theta - r['orientation'])))
-            profile = profile / np.max(profile) * r['contrast']
+            profile = 2*profile / np.max(profile) * r['contrast'] # Added a 2 so that 0.5 contrast would correspond to the turning point of gains
             seq.append(np.tile(profile, (r['n_steps'], 1)).T)
         return np.hstack(seq)
 

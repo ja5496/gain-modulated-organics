@@ -9,7 +9,7 @@ simulation_whiten.py. Curves are raised cosine functions.
 '''
 
 class V1Tunings: # Artificial tuning curves of each neuron
-    def __init__(self, N=60, sigma_exc=0.15, sigma_inh=0.4, A_exc=1.0, A_inh=0.4): 
+    def __init__(self, N=60, sigma_exc=0.15, sigma_inh=0.3, A_exc=1.0, A_inh=0.4): 
         self.N = N
         self.theta = np.linspace(0, np.pi, N, endpoint=False)
         self.W_yy = self._make_recurrent_weights(sigma_exc, sigma_inh, A_exc, A_inh)
