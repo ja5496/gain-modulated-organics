@@ -1110,7 +1110,7 @@ if __name__ == "__main__":
     stim_gen = StimulusGenerator(N=N_NEURONS)
 
     # ── Diagnostic 1: Gaussian Rectification Baseline ──
-    '''diagnostic_1a(tunings)
+    diagnostic_1a(tunings)
     diagnostic_1b(tunings, frame, stim_gen)
     diagnostic_1c(tunings, frame, stim_gen)
 
@@ -1125,8 +1125,8 @@ if __name__ == "__main__":
     # ── Diagnostic 4: Full Instrumented Simulation ──
     diagnostic_6a(tunings, frame, stim_gen)
     diagnostic_6b(tunings, frame, stim_gen)
-'''
-    # ── Diagnostic 5: Gain Adaptation ──
+
+    # ── Diagnostic 7-11: Gain Adaptation ──
     y_ss = diagnostic_7(tunings, frame, stim_gen)
     diagnostic_8(tunings, frame, y_ss)
     diagnostic_9(tunings, frame, stim_gen)

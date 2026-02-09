@@ -32,7 +32,7 @@ class StimulusGenerator:
             
             # Normalize and scale by contrast
             # Added a 2 so that 0.5 contrast roughly corresponds to turning point of gains
-            profile = 2 * profile / np.max(profile) * r['contrast']
+            profile = 3* profile / np.max(profile) * r['contrast']
             
             # 2. Tile across time: Shape becomes (N_neurons, n_steps)
             block = np.tile(profile, (r['n_steps'], 1)).T

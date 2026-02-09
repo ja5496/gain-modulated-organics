@@ -24,7 +24,7 @@ class V1Dynamics:
         self.tau_y = 1.0      # Time constant of primary neurons
         self.tau_a = 5.0      # Time constant of inhibitory divisive neurons
         self.tau_u = 2.0      # Time constant of normalization pool neurons
-        self.tau_g = 300.0   # Time constant of gain adaptation
+        self.tau_g = 200.0    # Time constant of gain adaptation
         
         self.beta = 1.0 
         self.sigma = 0.05     # Semi-saturation constant
@@ -40,9 +40,6 @@ class V1Dynamics:
         u = state[N:2*N]
         a = state[2*N:3*N]
         g = state[3*N:3*N+K]
-        
-        # Stability: Gains must be non-negative
-        #g = np.maximum(g, 0.0) 
         
         # Estimate of firing rates from membrane potential using gaussian rectification
         u_plus = self.gaussian_rectify(u)
@@ -65,9 +62,8 @@ class V1Dynamics:
         dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
-        target = np.sum((y) ** 2) / N  # Adaptive target: scales with actual energy plus some noise 
-        #target = 1
-        dg_dt = (v_t * v_t - target - 0.5*g) / self.tau_g
+        target = np.sum((y) ** 2) / N  # Adaptive target
+        dg_dt = (v_t * v_t - target - g) / self.tau_g
         
         return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
         
@@ -82,13 +78,13 @@ class V1Dynamics:
         gains_hist = np.zeros((K, n_steps))
         v_squared_hist = np.zeros((K, n_steps))
         
-        print(f"Running Simulation...") 
+        print(f"Running Simulation ({n_steps} steps)...") 
         t0 = time.time()
         
         for t in tqdm(range(n_steps)):
             z_t = stimulus_stream[:, t] 
             
-            # RK4
+            # RK4 Integration
             k1 = self._derivatives(state, z_t)
             k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t)
             k3 = self._derivatives(state + 0.5 * self.dt * k2, z_t)
@@ -110,12 +106,6 @@ class V1Dynamics:
             gains_hist[:, t] = g 
             
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
-        
-        print(f"\n--- Diagnostics ---")
-        print(f"v_t^2 mean: {np.mean(v_squared_hist):.6f}")
-        print(f"v_t^2 range: [{np.min(v_squared_hist):.6f}, {np.max(v_squared_hist):.6f}]")
-        print(f"gains final range: [{np.min(gains_hist[:,-1]):.6f}, {np.max(gains_hist[:,-1]):.6f}]")
-        
         return membrane_hist, gains_hist
 
 
@@ -125,65 +115,173 @@ if __name__ == "__main__":
     tunings = V1Tunings(N=N_NEURONS)
     frame = Frame(csv_path="N60_Frame.csv")
     stim_gen = StimulusGenerator(N=N_NEURONS)
-    
     engine = V1Dynamics(tunings, frame, dt=0.05)
     
-    regimes = [
-        {'n_steps': 5000, 'contrast': 0.75, 'orientation': np.pi/2, 'label': 'Bright 90°'},
-        {'n_steps': 5000, 'contrast': 0.5, 'orientation': 0.0, 'label': 'Dim 90°'},
-        {'n_steps': 5000, 'contrast': 0.5, 'orientation': np.pi/2, 'label': 'Medium 0°'},
+    # --- Define Regimes ---
+    # We create two versions: one clean, one with noise
+    base_regimes = [
+        {'n_steps': 5000, 'contrast': 0.9, 'orientation': np.pi/2, 'label': 'Bright 90°'},
+        {'n_steps': 5000, 'contrast': 0.6, 'orientation': np.pi/2, 'label': 'Dim 90°'},
+        {'n_steps': 5000, 'contrast': 0.6, 'orientation': 0, 'label': 'Medium 0°'},
     ]
-    inputs = stim_gen.generate_sequence(regimes)
-    
-    rates, gains = engine.run_simulation(inputs)
-    
+
+    # Create Clean Inputs
+    regimes_clean = [r.copy() for r in base_regimes]
+    for r in regimes_clean: r['noise_level'] = 0.0
+    inputs_clean = stim_gen.generate_sequence(regimes_clean)
+
+    # Create Noisy Inputs
+    regimes_noisy = [r.copy() for r in base_regimes]
+    for r in regimes_noisy: r['noise_level'] = 0.4 # Add noise
+    inputs_noisy = stim_gen.generate_sequence(regimes_noisy)
+
+    # --- Run Simulations ---
+    print("\n======= Simulation 1: CLEAN =======")
+    rates_clean, gains_clean = engine.run_simulation(inputs_clean)
+
+    print("\n======= Simulation 2: NOISY =======")
+    rates_noisy, gains_noisy = engine.run_simulation(inputs_noisy)
+
     # --- PLOTTING ---
-    fig, axes = plt.subplots(3, 1, figsize=(8, 8), sharex=True, 
-                             gridspec_kw={'height_ratios': [1, 2, 1]})
+    # 3 Rows, 2 Columns
+    fig, axes = plt.subplots(3, 2, figsize=(8, 8), gridspec_kw={'height_ratios': [1, 1.5, 1.5]})
     
-    axes[0].imshow(inputs, aspect='auto', cmap='binary', origin='lower')
-    axes[0].set_ylabel("Orientation")
-    axes[0].set_title("Stimulus")
-    axes[0].tick_params(left=False, labelleft=False) 
+    # Determine common color scaling
+    vmax_stim = max(inputs_clean.max(), inputs_noisy.max())
+    vmax_rate = max(np.percentile(rates_clean, 99.5), np.percentile(rates_noisy, 99.5))
     
-    ymax = np.percentile(rates, 99.5)
-    im_y = axes[1].imshow(rates, aspect='auto', cmap='inferno', origin='lower', vmax=ymax)
-    axes[1].set_ylabel("Neuron Index")
-    axes[1].set_title("Firing Rates (y)")
-    plt.colorbar(im_y, ax=axes[1], label="Hz", fraction=0.046, pad=0.04)
+    # Define the physical extent of the axes: [x_min, x_max, y_min, y_max]
+    # x: 0 to total time steps
+    # y: 0 to 180 degrees
+    total_steps = inputs_clean.shape[1]
+    extent = [0, total_steps, 0, 180]
+
+    # --- Row 1: Stimuli (Hot Colormap) ---
+    axes[0, 0].imshow(inputs_clean, aspect='auto', cmap='hot', origin='lower', 
+                      vmax=vmax_stim, extent=extent)
+    axes[0, 0].set_title("Input Drive (Clean)", fontweight='bold')
+    axes[0, 0].set_ylabel("Preference (°)", fontsize=14)
+    axes[0, 0].tick_params(labelbottom=False)
+
+    axes[0, 1].imshow(inputs_noisy, aspect='auto', cmap='hot', origin='lower', 
+                      vmax=vmax_stim, extent=extent)
+    axes[0, 1].set_title("Input Drive (Noisy)", fontweight='bold')
+    axes[0, 1].tick_params(labelleft=False, labelbottom=False)
+
+    # --- Row 2: Dynamics (Firing Rates) ---
+    axes[1, 0].imshow(rates_clean, aspect='auto', cmap='inferno', origin='lower', 
+                      vmax=vmax_rate, extent=extent)
+    axes[1, 0].set_title("V1 Activity (Clean)", fontweight='bold')
+    axes[1, 0].set_ylabel("Preference (°)", fontsize=14)
     
-    subset_k = np.linspace(0, frame.K-1, 10, dtype=int)
-    axes[2].plot(gains[subset_k, :].T, alpha=0.6)
-    axes[2].set_ylabel("Gains (subset)")
-    axes[2].set_xlabel("Time (steps)")
-    axes[2].set_title("Gain Evolution")
-    axes[2].grid(True, alpha=0.3)
-    
+    im = axes[1, 1].imshow(rates_noisy, aspect='auto', cmap='inferno', origin='lower', 
+                           vmax=vmax_rate, extent=extent)
+    axes[1, 1].set_title("V1 Activity (Noisy)", fontweight='bold')
+    axes[1, 1].tick_params(labelleft=False)
+
+    # --- Row 3: Tuning Curves (Steady State of ALL Regimes) ---
     t_cursor = 0
-    for r in regimes:
+    # Colors for the 3 regimes to distinguish them in the line plot
+    regime_colors = ['#d62728', '#ff7f0e', '#2ca02c'] 
+    
+    ymax_curve = 0 # Track max for consistent scaling
+
+    for i, r in enumerate(base_regimes):
+        t_end = t_cursor + r['n_steps']
+        t_start = t_end - 500 # Average over last 500 steps of the regime
+        
+        # Clean Tuning
+        curve_clean = np.mean(rates_clean[:, t_start:t_end], axis=1)
+        axes[2, 0].plot(tunings.theta * 180 / np.pi, curve_clean, 
+                        color=regime_colors[i], linewidth=2, label=r['label'])
+        
+        # Noisy Tuning
+        curve_noisy = np.mean(rates_noisy[:, t_start:t_end], axis=1)
+        axes[2, 1].plot(tunings.theta * 180 / np.pi, curve_noisy, 
+                        color=regime_colors[i], linewidth=2, label=r['label'])
+        
+        # Track max y for consistent scaling
+        current_max = max(curve_clean.max(), curve_noisy.max())
+        if current_max > ymax_curve:
+            ymax_curve = current_max
+            
         t_cursor += r['n_steps']
-        for ax in axes:
-            ax.axvline(t_cursor, color='gray', linestyle='--', alpha=0.5)
+
+    # Formatting Row 3
+    axes[2, 0].set_title("Steady State Tuning (Clean)", fontweight='bold')
+    axes[2, 0].set_xlabel("Orientation (°)", fontsize=14)
+    axes[2, 0].set_ylabel("Response", fontsize=14)
+    axes[2, 0].grid(True, alpha=0.3)
+    axes[2, 0].set_ylim(0, ymax_curve * 1.1)
+    axes[2, 0].legend(fontsize='small', loc='upper right')
+
+    axes[2, 1].set_title("Steady State Tuning (Noisy)", fontweight='bold')
+    axes[2, 1].set_xlabel("Orientation (°)", fontsize=14)
+    axes[2, 1].grid(True, alpha=0.3)
+    axes[2, 1].set_ylim(0, ymax_curve * 1.1)
+    axes[2, 1].legend(fontsize='small', loc='upper right')
+
+    # Add vertical lines for regime changes
+    t_cursor = 0
+    for r in base_regimes:
+        t_cursor += r['n_steps']
+        # Loop over flattened axes to apply lines to all image plots (first 4 subplots)
+        for ax in axes.flatten()[:4]: 
+            ax.axvline(t_cursor, color='white', linestyle='--', alpha=0.3)
 
     plt.tight_layout()
     plt.show()
 
-    # --- Tuning Curve Check ---
-    plt.figure(figsize=(8, 5))
-    t_cursor = 0
-    colors = ['#d62728', '#ff7f0e', '#2ca02c']
-    for i, r in enumerate(regimes):
-        t_end = t_cursor + r['n_steps']
-        window_slice = rates[:, max(0, t_end-200) : t_end]
-        avg_profile = np.mean(window_slice, axis=1)
-        plt.plot(tunings.theta * 180 / np.pi, avg_profile, 
-                 color=colors[i], linewidth=2.5, label=f"{r['label']}")
-        t_cursor += r['n_steps']
+    # --- FIGURE 2: Aggregate Dynamics & Gain Comparison ---
+    fig2, ax2 = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    # 1. Top Plot: Overall Average Activity (Population Mean)
+    # We calculate the mean firing rate across all neurons at each time step
+    mean_activity_clean = np.mean(rates_clean, axis=0)
+    mean_activity_noisy = np.mean(rates_noisy, axis=0)
+
+    ax2[0].plot(mean_activity_clean, color='#1f77b4', linewidth=2, label='Noiseless (Clean)')
+    ax2[0].plot(mean_activity_noisy, color='#d62728', linewidth=2, linestyle='--', label='Noisy')
     
-    plt.title("Steady State Tuning Curves")
-    plt.xlabel("Preference (Deg)")
-    plt.ylabel("Activity (y)")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
+    ax2[0].set_ylabel("Mean Activity (Hz)", fontsize=18)
+    ax2[0].set_title("Overall Response Magnitude", fontweight='bold', fontsize=20)
+    ax2[0].legend(loc='upper right')
+    ax2[0].tick_params(axis='both', labelsize=16)
+    ax2[0].grid(True, alpha=0.3)
+
+    # 2. Bottom Plot: Subset of Gains (Blue Solid vs Red Dotted)
+    # Select a subset of gains to keep the plot readable (e.g., 5 representative neurons)
+    subset_indices = np.linspace(0, frame.K - 1, 5, dtype=int)
+    
+    # Generate gradients for the lines so individual neurons are distinguishable
+    blue_colors = plt.cm.Blues(np.linspace(0.5, 1.0, len(subset_indices)))
+    red_colors = plt.cm.Reds(np.linspace(0.5, 1.0, len(subset_indices)))
+
+    for i, k_idx in enumerate(subset_indices):
+        # Plot Clean Gains (Solid Blue)
+        ax2[1].plot(gains_clean[k_idx, :], color=blue_colors[i], linestyle='-', linewidth=1.5, alpha=0.8)
+        
+        # Plot Noisy Gains (Dotted Red)
+        ax2[1].plot(gains_noisy[k_idx, :], color=red_colors[i], linestyle=':', linewidth=2.0, alpha=0.9)
+
+    ax2[1].set_ylabel("Gain Amplitude", fontsize=18)
+    ax2[1].set_xlabel("Time Step", fontsize=18)
+    ax2[1].set_title(f"Gain Dynamics (Subset of {len(subset_indices)} neurons)", fontweight='bold', fontsize=20)
+    ax2[1].tick_params(axis='both', labelsize=16)
+    ax2[1].grid(True, alpha=0.3)
+
+    # Custom Legend for the Gain Plot (Proxy artists)
+    from matplotlib.lines import Line2D
+    custom_lines = [Line2D([0], [0], color='#1f77b4', lw=2, linestyle='-'),
+                    Line2D([0], [0], color='#d62728', lw=2, linestyle=':')]
+    ax2[1].legend(custom_lines, ['Noiseless Gains', 'Noisy Gains'], loc='upper right')
+
+    # Add vertical lines for regime changes
+    t_cursor = 0
+    for r in base_regimes:
+        t_cursor += r['n_steps']
+        for ax in ax2:
+            ax.axvline(t_cursor, color='gray', linestyle='--', alpha=0.5)
+
     plt.tight_layout()
     plt.show()
