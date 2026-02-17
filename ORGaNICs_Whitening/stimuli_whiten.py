@@ -8,10 +8,14 @@ Now supports additive white noise to simulate broad-spectrum suppression effects
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60):
+    def __init__(self, N=60, K=511, stream_length = 1000, Ensemble=False):
         self.N = N
+        self.K = K
+        self.stream_length = stream_length
         # Preferred orientations from 0 to pi
-        self.theta = np.linspace(0, np.pi, N, endpoint=False)
+        
+        self.theta_tunings = np.linspace(0, np.pi, N, endpoint=False)
+        self.theta_inputs = np.linspace(0, np.pi, K, endpoint=False)
 
     def generate_sequence(self, regimes):
         '''
@@ -28,11 +32,10 @@ class StimulusGenerator:
         for r in regimes:
             # 1. Generate the base tuning profile (Von Mises / Raised Cosine)
             # This represents the "signal" drive to the population
-            profile = np.exp(6.0 * np.cos(2*(self.theta - r['orientation'])))
+            profile = np.exp(6.0 * np.cos(2*(self.theta_inputs - r['orientation'])))
             
             # Normalize and scale by contrast
-            # Added a 2 so that 0.5 contrast roughly corresponds to turning point of gains
-            profile = 3* profile / np.max(profile) * r['contrast']
+            profile = 3 * profile / np.max(profile) * r['contrast']
             
             # 2. Tile across time: Shape becomes (N_neurons, n_steps)
             block = np.tile(profile, (r['n_steps'], 1)).T
@@ -52,6 +55,44 @@ class StimulusGenerator:
             seq.append(block)
             
         return np.hstack(seq)
+    
+    def generate_input_ensembles(self, biased=False):
+        '''
+        Generate uniform or biased ensemble of input profiles (Von Mises) 
+        centered at random orientations.
+        
+        Returns:
+            np.ndarray: Shape (K_neurons, stream_length)
+        '''
+        # 1. Generate all indices 
+        # Create a base of random indices for the whole stream
+        indices = np.random.randint(0, self.K, size=self.stream_length)
+        
+        # 2. Optionally apply bias 
+        # Overwrite roughly 33% of the indices with the adaptor index
+        if biased:
+            # Create a boolean mask where True ~ 33% of the time
+            bias_mask = np.random.rand(self.stream_length) <= 0.33
+            adaptor_idx = self.K // 2 + 1
+            indices[bias_mask] = adaptor_idx
+
+        # 3. Convert indices to actual orientation centers
+        # shape: (stream_length,)
+        centers = self.theta_inputs[indices]
+
+        # 4. Calculate Tuning Curves using Broadcasting
+        # We want a matrix of shape (K_neurons, stream_length).
+        
+        delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
+        
+        # Calculate Von Mises profile
+        profiles = np.exp(6.0 * np.cos(2 * delta_theta))
+        
+        # 5. Normalize and Scale (Matching your "generate_sequence" style)
+        # Normalize to 0-1 range then scale by 3 (assumes contrast=1)
+        profiles = profiles / np.max(profiles)
+        
+        return profiles
 
     def plot_tuning_curves(self):
         '''Visualize the tuning curve for each neuron as shifted raised cosines.'''
@@ -81,8 +122,10 @@ class StimulusGenerator:
         plt.show()
 
 if __name__ == "__main__":
+
     # --- Example Usage ---
     stim_gen = StimulusGenerator(N=60)
+    print(stim_gen.generate_input_ensembles(biased=True))
     
     # Define a sequence: 
     # 1. Clean stimulus

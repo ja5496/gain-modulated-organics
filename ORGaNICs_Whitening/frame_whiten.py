@@ -86,6 +86,6 @@ if __name__ == "__main__":
 
     # Create and save N=60 frame to csv for reuse in simulations
     np.random.seed(42)
-    frame_60 = Frame(dim=60)
-    np.savetxt("N60_Frame.csv", frame_60.W, delimiter=",")
-    print(f"Saved N=60 frame to N60_Frame.csv (shape: {frame_60.W.shape})")
+    frame_100 = Frame(dim=100)
+    np.savetxt("N100_Frame.csv", frame_100.W, delimiter=",")
+    print(f"Saved N=100 frame to N100_Frame.csv (shape: {frame_255.W.shape})")

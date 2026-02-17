@@ -63,7 +63,7 @@ class V1Dynamics:
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
         target = np.sum((y) ** 2) / N  # Adaptive target
-        dg_dt = (v_t * v_t - target - g) / self.tau_g
+        dg_dt = (v_t * v_t - target ) / self.tau_g
         
         return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
         
