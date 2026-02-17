@@ -19,23 +19,52 @@ class Frame:
     def mercedes(self) -> np.ndarray:
         N, K = self.dim, self.K
 
-        # step 1: Generate Random Vectors
-        A = np.random.randn(5 * K, N)
+        # Step 1: Generate Random Vectors
+        num_candidates = 5 * K
+        A = np.random.randn(num_candidates, N)
         A /= np.linalg.norm(A, axis=1, keepdims=True)
 
-        # Step 2: Select the vector that aligns least with the existing vectors in the existing frame 
-        W_list = [A[0]]
-        W_curr = A[0][:, None]
-        remaining_A = A[1:]
-        for _ in tqdm(range(K - 1), desc="Frame Init", leave=False):
-            dots = remaining_A @ W_curr
-            coherences = np.max(np.abs(dots), axis=1)
-            best_idx = np.argmin(coherences)
-            vec = remaining_A[best_idx]
-            W_list.append(vec)
-            W_curr = np.column_stack([W_curr, vec])
-            remaining_A = np.delete(remaining_A, best_idx, axis=0)
-        return np.array(W_list).T
+        # Track indices in A that are still available
+        candidate_indices = np.arange(num_candidates)
+        
+        # Initialize the Frame with the first vector
+        W = np.zeros((N, K))
+        W[:, 0] = A[0]
+        
+        # Remove first vector from candidates
+        active_mask = np.ones(num_candidates, dtype=bool)
+        active_mask[0] = False
+        
+        # Track the maximum coherence of each candidate with the CURRENT frame.
+        current_max_coherences = np.abs(A @ W[:, 0])
+
+        for k in tqdm(range(1, K), desc="Frame Init"):
+            valid_coherences = current_max_coherences[active_mask]
+            
+            # Find vector with the min coherence among the valid ones
+            # We need the index relative to the compressed 'valid' array
+            local_best_idx = np.argmin(valid_coherences)
+            
+            # Map this back to the global index in A
+            # (np.where returns indices where active_mask is True)
+            global_indices = np.where(active_mask)[0]
+            best_global_idx = global_indices[local_best_idx]
+            
+            # Add this vector to our frame
+            new_vec = A[best_global_idx]
+            W[:, k] = new_vec
+            
+            # Remove from active set
+            active_mask[best_global_idx] = False
+            
+            # OPTIMIZATION: Incremental Update
+            # Instead of matrix mult against the WHOLE frame, we only compute 
+            # dot products against the NEW vector.
+            # Then we update the max_coherence array.
+            new_dots = np.abs(A @ new_vec)
+            current_max_coherences = np.maximum(current_max_coherences, new_dots)
+
+        return W
 
     def plot_frame(self):
         '''
@@ -77,15 +106,21 @@ class Frame:
 
 
 if __name__ == "__main__":
+   if __name__ == "__main__":
     # Visualize with N=2, K=3
     np.random.seed(42) # For reproducibility
     frame = Frame(dim=2)
     print(f"Frame W shape: {frame.W.shape}")
     print(f"Frame vectors:\n{frame.W}")
-    frame.plot_frame()
+    
+    # This will block execution until you manually close the plot window
+    frame.plot_frame() 
+    plt.close('all') # Good practice to clean up backend resources immediately
 
-    # Create and save N=60 frame to csv for reuse in simulations
+    # Create and save N=100 frame to csv for reuse in simulations
     np.random.seed(42)
-    frame_100 = Frame(dim=100)
-    np.savetxt("N100_Frame.csv", frame_100.W, delimiter=",")
-    print(f"Saved N=100 frame to N100_Frame.csv (shape: {frame_255.W.shape})")
+    frame_169 = Frame(dim=169)
+    np.savetxt("N169_Frame.csv", frame_169.W, delimiter=",")
+    
+    # FIXED: Changed 'frame_255' to 'frame_100' so the script finishes successfully
+    print(f"Saved N=169 frame to N169_Frame.csv (shape: {frame_169.W.shape})")
