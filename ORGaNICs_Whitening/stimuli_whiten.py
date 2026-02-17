@@ -8,7 +8,7 @@ Now supports additive white noise to simulate broad-spectrum suppression effects
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, K=511, stream_length = 1000, Ensemble=False):
+    def __init__(self, N=60, K=211, stream_length = 1000, Ensemble=False):
         self.N = N
         self.K = K
         self.stream_length = stream_length
