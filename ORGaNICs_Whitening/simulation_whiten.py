@@ -16,15 +16,17 @@ class Frame:
         print(f"Loaded frame (N={self.dim}, K={self.K})")
 
 class V1Dynamics:
-    def __init__(self, v1_model, frame, dt=0.05):
+    def __init__(self, v1_model, frame, dt=0.05, adaptive=True):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt 
+        self.adaptive = adaptive  # Toggle for gain modulation/interneurons
         
         self.tau_y = 1.0      # Time constant of primary neurons
         self.tau_a = 5.0      # Time constant of inhibitory divisive neurons
         self.tau_u = 2.0      # Time constant of normalization pool neurons
         self.tau_g = 200.0    # Time constant of gain adaptation
+        self.tau_v = 0.5      # Time constant of interneurons (fast so it can accurately update gains)
         
         self.beta = 1.0 
         self.sigma = 0.05     # Semi-saturation constant
@@ -40,18 +42,33 @@ class V1Dynamics:
         u = state[N:2*N]
         a = state[2*N:3*N]
         g = state[3*N:3*N+K]
+        # v = state[3*N+K:3*N+2*K] # (Unused in calculation, just tracked)
         
-        # Estimate of firing rates from membrane potential using gaussian rectification
+        # Rectifications
         u_plus = self.gaussian_rectify(u)
         y_plus = self.gaussian_rectify(y)
         a_plus = self.gaussian_rectify(a)
         sqrt_y_plus = np.sqrt(y_plus) 
         
-        # 1) Normalized projection for gain update rule
-        v_t = self.frame.W.T @ y
-        
+        # --- ADAPTIVE LOGIC ---
+        if self.adaptive:
+            # 1) Normalized projection for gain update rule
+            v_t = self.frame.W.T @ y
+            
+            # 2) Feedback terms
+            gain_feedback = self.frame.W @ (g * v_t)
+            
+            # 3) Derivatives for adaptation variables
+            target = np.sum((y) ** 2) / N  # Adaptive target
+            dg_dt = (v_t * v_t - target) / self.tau_g
+            dv_dt = (-v_t + self.frame.W.T @ y) / self.tau_v
+        else:
+            # Non-Adaptive: No feedback, no gain changes, no interneuron activity
+            gain_feedback = 0.0
+            dg_dt = np.zeros(K)
+            dv_dt = np.zeros(K)
+
         # Neural circuit terms
-        gain_feedback = self.frame.W @ (g * v_t)
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
         input_drive = (self.beta * z_t) / 2
         
@@ -62,23 +79,22 @@ class V1Dynamics:
         dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
-        target = np.sum((y) ** 2) / N  # Adaptive target
-        dg_dt = (v_t * v_t - target ) / self.tau_g
         
-        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt])
+        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt])
         
     def run_simulation(self, stimulus_stream):
         N, n_steps = stimulus_stream.shape 
         K = self.frame.K
         
-        state = np.zeros(3*N + K)
-        state[3*N:3*N+K] = 0.0  # gains
+        state = np.zeros(3*N + 2*K)
+        #state[3*N:3*N+K] = 0.0  # gains start at 0
         
         membrane_hist = np.zeros((N, n_steps))
         gains_hist = np.zeros((K, n_steps))
         v_squared_hist = np.zeros((K, n_steps))
         
-        print(f"Running Simulation ({n_steps} steps)...") 
+        mode_str = "Adaptive" if self.adaptive else "Non-Adaptive"
+        print(f"Running {mode_str} Simulation ({n_steps} steps)...") 
         t0 = time.time()
         
         for t in tqdm(range(n_steps)):
@@ -99,7 +115,7 @@ class V1Dynamics:
             g = state[3*N:3*N+K]
             
             # Diagnostic logging
-            v_t_log = self.frame.W.T @ y
+            v_t_log = state[3*N+K: 3*N+2*K]
             v_squared_hist[:, t] = v_t_log ** 2
             
             membrane_hist[:, t] = np.maximum(y, 0)
@@ -113,9 +129,12 @@ if __name__ == "__main__":
     
     N_NEURONS = 60
     tunings = V1Tunings(N=N_NEURONS)
-    frame = Frame(csv_path="N60_Frame.csv")
-    stim_gen = StimulusGenerator(N=N_NEURONS)
-    engine = V1Dynamics(tunings, frame, dt=0.05)
+    frame = Frame(csv_path="Frames/N60_Frame.csv")
+    stim_gen = StimulusGenerator(N=N_NEURONS, K=N_NEURONS)
+    
+    # Initialize Engine (Default is Adaptive)
+    adapt_engine = V1Dynamics(tunings, frame, dt=0.05, adaptive=True)
+    organics_engine = V1Dynamics(tunings, frame, dt=0.05, adaptive=False)
     
     # --- Define Regimes ---
     # We create two versions: one clean, one with noise
@@ -126,29 +145,23 @@ if __name__ == "__main__":
     ]
 
     # Create Clean Inputs
-    regimes_clean = [r.copy() for r in base_regimes]
-    for r in regimes_clean: r['noise_level'] = 0.0
-    inputs_clean = stim_gen.generate_sequence(regimes_clean)
-
-    # Create Noisy Inputs
-    regimes_noisy = [r.copy() for r in base_regimes]
-    for r in regimes_noisy: r['noise_level'] = 0.4 # Add noise
-    inputs_noisy = stim_gen.generate_sequence(regimes_noisy)
+    for r in base_regimes: r['noise_level'] = 0.0
+    inputs_clean = stim_gen.generate_sequence(base_regimes)
 
     # --- Run Simulations ---
-    print("\n======= Simulation 1: CLEAN =======")
-    rates_clean, gains_clean = engine.run_simulation(inputs_clean)
+    print("\n======= Simulation 1: Adaptive ORGaNICs =======")
+    rates_adapt, gains_clean = adapt_engine.run_simulation(inputs_clean)
 
-    print("\n======= Simulation 2: NOISY =======")
-    rates_noisy, gains_noisy = engine.run_simulation(inputs_noisy)
+    print("\n======= Simulation 2: ORGaNICs (non-adapt) =======")
+    rates_organics, gains_empty = organics_engine.run_simulation(inputs_clean)
 
     # --- PLOTTING ---
     # 3 Rows, 2 Columns
     fig, axes = plt.subplots(3, 2, figsize=(8, 8), gridspec_kw={'height_ratios': [1, 1.5, 1.5]})
     
     # Determine common color scaling
-    vmax_stim = max(inputs_clean.max(), inputs_noisy.max())
-    vmax_rate = max(np.percentile(rates_clean, 99.5), np.percentile(rates_noisy, 99.5))
+    vmax_stim = max(inputs_clean.max(), inputs_clean.max())
+    vmax_rate = max(np.percentile(rates_adapt, 99.5), np.percentile(rates_organics, 99.5))
     
     # Define the physical extent of the axes: [x_min, x_max, y_min, y_max]
     # x: 0 to total time steps
@@ -159,24 +172,24 @@ if __name__ == "__main__":
     # --- Row 1: Stimuli (Hot Colormap) ---
     axes[0, 0].imshow(inputs_clean, aspect='auto', cmap='hot', origin='lower', 
                       vmax=vmax_stim, extent=extent)
-    axes[0, 0].set_title("Input Drive (Clean)", fontweight='bold')
+    axes[0, 0].set_title("Adaptive ORGaNICs", fontweight='bold')
     axes[0, 0].set_ylabel("Preference (°)", fontsize=14)
     axes[0, 0].tick_params(labelbottom=False)
 
-    axes[0, 1].imshow(inputs_noisy, aspect='auto', cmap='hot', origin='lower', 
+    axes[0, 1].imshow(inputs_clean, aspect='auto', cmap='hot', origin='lower', 
                       vmax=vmax_stim, extent=extent)
-    axes[0, 1].set_title("Input Drive (Noisy)", fontweight='bold')
+    axes[0, 1].set_title("ORGaNICs", fontweight='bold')
     axes[0, 1].tick_params(labelleft=False, labelbottom=False)
 
     # --- Row 2: Dynamics (Firing Rates) ---
-    axes[1, 0].imshow(rates_clean, aspect='auto', cmap='inferno', origin='lower', 
+    axes[1, 0].imshow(rates_adapt, aspect='auto', cmap='inferno', origin='lower', 
                       vmax=vmax_rate, extent=extent)
-    axes[1, 0].set_title("V1 Activity (Clean)", fontweight='bold')
+    axes[1, 0].set_title("V1 Activity", fontweight='bold')
     axes[1, 0].set_ylabel("Preference (°)", fontsize=14)
     
-    im = axes[1, 1].imshow(rates_noisy, aspect='auto', cmap='inferno', origin='lower', 
+    im = axes[1, 1].imshow(rates_organics, aspect='auto', cmap='inferno', origin='lower', 
                            vmax=vmax_rate, extent=extent)
-    axes[1, 1].set_title("V1 Activity (Noisy)", fontweight='bold')
+    axes[1, 1].set_title("V1 Activity", fontweight='bold')
     axes[1, 1].tick_params(labelleft=False)
 
     # --- Row 3: Tuning Curves (Steady State of ALL Regimes) ---
@@ -191,31 +204,31 @@ if __name__ == "__main__":
         t_start = t_end - 500 # Average over last 500 steps of the regime
         
         # Clean Tuning
-        curve_clean = np.mean(rates_clean[:, t_start:t_end], axis=1)
-        axes[2, 0].plot(tunings.theta * 180 / np.pi, curve_clean, 
+        curve_adapt = np.mean(rates_adapt[:, t_start:t_end], axis=1)
+        axes[2, 0].plot(tunings.theta * 180 / np.pi, curve_adapt, 
                         color=regime_colors[i], linewidth=2, label=r['label'])
         
         # Noisy Tuning
-        curve_noisy = np.mean(rates_noisy[:, t_start:t_end], axis=1)
-        axes[2, 1].plot(tunings.theta * 180 / np.pi, curve_noisy, 
+        curve_organics = np.mean(rates_organics[:, t_start:t_end], axis=1)
+        axes[2, 1].plot(tunings.theta * 180 / np.pi, curve_organics, 
                         color=regime_colors[i], linewidth=2, label=r['label'])
         
         # Track max y for consistent scaling
-        current_max = max(curve_clean.max(), curve_noisy.max())
+        current_max = max(curve_adapt.max(), curve_organics.max())
         if current_max > ymax_curve:
             ymax_curve = current_max
             
         t_cursor += r['n_steps']
 
     # Formatting Row 3
-    axes[2, 0].set_title("Steady State Tuning (Clean)", fontweight='bold')
+    axes[2, 0].set_title("Steady State Tuning", fontweight='bold')
     axes[2, 0].set_xlabel("Orientation (°)", fontsize=14)
     axes[2, 0].set_ylabel("Response", fontsize=14)
     axes[2, 0].grid(True, alpha=0.3)
     axes[2, 0].set_ylim(0, ymax_curve * 1.1)
     axes[2, 0].legend(fontsize='small', loc='upper right')
 
-    axes[2, 1].set_title("Steady State Tuning (Noisy)", fontweight='bold')
+    axes[2, 1].set_title("Steady State Tuning", fontweight='bold')
     axes[2, 1].set_xlabel("Orientation (°)", fontsize=14)
     axes[2, 1].grid(True, alpha=0.3)
     axes[2, 1].set_ylim(0, ymax_curve * 1.1)
