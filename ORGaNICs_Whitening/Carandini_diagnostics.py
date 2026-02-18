@@ -266,7 +266,7 @@ def diagnostic_sigma_sweep():
 # DIAGNOSTIC 3: White Noise Probe
 # =============================================================================
 
-def diagnostic_noise(noise_level=0.2):
+def diagnostic_noise(noise_level=0.4):
     """
     Probes the adaptive model with white noise added at all orientations.
     Shows tuning curves for both the uniform- and biased-adapted states
