@@ -25,9 +25,9 @@ N = 169                  # Number of primary neurons
 N_BINS = 13              # Aggregation bins for visualization
 STREAM_LENGTH = 8000     # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
-PROBE_RES = 36           # Resolution of tuning curve probe (number of angles)
+PROBE_RES = 90           # Resolution of tuning curve probe (number of angles)
 
-np.random.seed(42)
+np.random.seed(44)
 
 def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max

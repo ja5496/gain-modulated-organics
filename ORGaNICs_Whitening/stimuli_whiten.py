@@ -95,6 +95,7 @@ class StimulusGenerator:
         
         return profiles
 
+
     def plot_tuning_curves(self):
         '''Visualize the tuning curve for each neuron as shifted raised cosines.'''
         fig, ax = plt.subplots(figsize=(10, 6))
