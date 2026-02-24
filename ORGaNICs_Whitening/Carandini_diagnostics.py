@@ -11,6 +11,14 @@ Diagnostic 2 — Sigma Sweep:
     Shows how the adaptive + biased tuning curves change when varying the
     inhibitory spread (sigma_inh) of the recurrent weight matrix W_yy,
     while keeping excitatory spread (sigma_exc) fixed at 0.2.
+
+Diagnostic 3 — Tuning Width Sweep:
+    Replicates the first plot in Carandini_plots.py (adaptive + biased tuning
+    curves) for raised-cosine stimulus tuning widths of 1 through 6, arranged
+    in a 2 × 3 grid.
+
+Diagnostic 4 — White Noise Probe:
+    Probes the adaptive model with broadband white noise added at every step.
 """
 
 import numpy as np
@@ -205,9 +213,9 @@ def diagnostic_sigma_sweep():
     print("  DIAGNOSTIC 2: Sigma Sweep (sigma_exc=0.2)")
     print("=" * 60)
 
-    STREAM_LENGTH = 4000
-    sigma_exc = 0.2
-    sigma_inh_values = [0.4, 0.6, 0.8, 1.0]
+    STREAM_LENGTH = 8000
+    sigma_exc = 0.15
+    sigma_inh_values = [0.4, 0.5, 0.6, 0.7]
 
     stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
     seq_bias = stim_gen.generate_input_ensembles(biased=True)
@@ -263,10 +271,87 @@ def diagnostic_sigma_sweep():
 
 
 # =============================================================================
-# DIAGNOSTIC 3: White Noise Probe
+# DIAGNOSTIC 3: Tuning Width Sweep
 # =============================================================================
 
-def diagnostic_noise(noise_level=0.4):
+def diagnostic_tuning_width_sweep():
+    """
+    Replicates the first plot in Carandini_plots.py (adaptive + biased tuning
+    curves) for raised-cosine tuning widths of 1 through 6.
+
+    Layout: 2 × 3 grid, one panel per tuning_width value.
+    Each panel shows the 13 binned tuning curves after adaptation to the biased
+    ensemble, normalized to the uniform-adapted reference — identical to the
+    bottom-right panel of the Carandini_plots Figure 1.
+    """
+    print("\n" + "=" * 60)
+    print("  DIAGNOSTIC 3: Tuning Width Sweep (w = 1 – 6)")
+    print("=" * 60)
+
+    STREAM_LENGTH = 8000
+    tuning_widths = [1, 1.5, 2, 2.5]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    axes_flat = axes.flatten()
+
+    for idx, tw in enumerate(tuning_widths):
+        label = f"Tuning Width = {tw}"
+        print(f"\n--- {label} ---")
+
+        tunings = V1Tunings(N=N)
+        stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH,
+                                     tuning_width=tw)
+
+        seq_uni = stim_gen.generate_input_ensembles(biased=False)
+        seq_bias = stim_gen.generate_input_ensembles(biased=True)
+
+        # Uniform adaptation → normalization reference
+        print("  Adapting to Uniform...")
+        engine_uni = V1Dynamics(tunings, frame, adaptive=True)
+        _, gains_hist_uni = engine_uni.run_simulation(seq_uni)
+        final_gains_uni = gains_hist_uni[:, -1].copy()
+        del gains_hist_uni, engine_uni
+        gc.collect()
+
+        print("  Probing Uniform...")
+        tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles)
+        binned_uni = get_binned_curves(tc_uni_raw, tunings.theta,
+                                       probe_angles, N_BINS)
+        ref_max = np.max(binned_uni)
+        ref_min = np.min(binned_uni)
+
+        # Biased adaptation → probe → normalize
+        print("  Adapting to Biased...")
+        engine_bias = V1Dynamics(tunings, frame, adaptive=True)
+        _, gains_hist_bias = engine_bias.run_simulation(seq_bias)
+        final_gains_bias = gains_hist_bias[:, -1].copy()
+        del gains_hist_bias, engine_bias
+        gc.collect()
+
+        print("  Probing Biased...")
+        tc_bias_raw = run_probe(frame, tunings, final_gains_bias, probe_angles)
+        binned_bias = get_binned_curves(tc_bias_raw, tunings.theta,
+                                        probe_angles, N_BINS)
+        binned_norm = normalize_with_reference(binned_bias, ref_max, ref_min)
+
+        ax = axes_flat[idx]
+        plot_tuning_panel(ax, binned_norm, title=label)
+        if idx >= 2:
+            ax.set_xlabel("Orientation Relative to Adaptor (\u00b0)")
+        if idx % 2 == 0:
+            ax.set_ylabel("Normalized Response")
+
+    fig.suptitle("Diagnostic 3: Tuning Width Sweep (Adaptive + Biased, w = 1–6)",
+                 fontweight='bold', fontsize=13)
+    plt.tight_layout()
+    plt.show()
+
+
+# =============================================================================
+# DIAGNOSTIC 4: White Noise Probe
+# =============================================================================
+
+def diagnostic_noise_probe(noise_level=0.4):
     """
     Probes the adaptive model with white noise added at all orientations.
     Shows tuning curves for both the uniform- and biased-adapted states
@@ -274,7 +359,7 @@ def diagnostic_noise(noise_level=0.4):
     is visible.
     """
     print("\n" + "=" * 60)
-    print(f"  DIAGNOSTIC 3: Noisy Probe (noise_level={noise_level})")
+    print(f"  DIAGNOSTIC 4: Noisy Probe (noise_level={noise_level})")
     print("=" * 60)
 
     STREAM_LENGTH = 6000
@@ -329,7 +414,7 @@ def diagnostic_noise(noise_level=0.4):
     plot_tuning_panel(axes[1], norm_bias, title="Biased Ensemble")
     axes[1].set_xlabel("Orientation Relative to Adaptor (\u00b0)")
 
-    fig.suptitle(f"Diagnostic 3: Adaptive Tuning with White Noise "
+    fig.suptitle(f"Diagnostic 4: Adaptive Tuning with White Noise "
                  f"(\u03c3_noise = {noise_level})",
                  fontweight='bold', fontsize=13)
     plt.tight_layout()
@@ -342,5 +427,6 @@ def diagnostic_noise(noise_level=0.4):
 
 if __name__ == "__main__":
     #diagnostic_convergence()
-    #diagnostic_sigma_sweep()
-    diagnostic_noise()
+    diagnostic_sigma_sweep()
+    #diagnostic_tuning_width_sweep()
+    #diagnostic_noise_probe()

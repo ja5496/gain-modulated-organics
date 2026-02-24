@@ -8,10 +8,11 @@ Now supports additive white noise to simulate broad-spectrum suppression effects
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, K=211, stream_length = 1000, Ensemble=False):
+    def __init__(self, N=60, K=211, stream_length = 1000, tuning_width = 1, Ensemble=False):
         self.N = N
         self.K = K
         self.stream_length = stream_length
+        self.tuning_width = tuning_width
         # Preferred orientations from 0 to pi
         
         self.theta_tunings = np.linspace(0, np.pi, N, endpoint=False)
@@ -32,10 +33,10 @@ class StimulusGenerator:
         for r in regimes:
             # 1. Generate the base tuning profile (Von Mises / Raised Cosine)
             # This represents the "signal" drive to the population
-            profile = np.exp(6.0 * np.cos(2*(self.theta_inputs - r['orientation'])))
+            profile = np.exp(self.tuning_width * np.cos(2*(self.theta_inputs - r['orientation'])))
             
             # Normalize and scale by contrast
-            profile = 3 * profile / np.max(profile) * r['contrast']
+            profile = profile / np.max(profile) * r['contrast']
             
             # 2. Tile across time: Shape becomes (N_neurons, n_steps)
             block = np.tile(profile, (r['n_steps'], 1)).T
@@ -73,7 +74,7 @@ class StimulusGenerator:
         if biased:
             # Create a boolean mask where True ~ 33% of the time
             bias_mask = np.random.rand(self.stream_length) <= 0.33
-            adaptor_idx = self.K // 2 + 1
+            adaptor_idx = self.K // 2 
             indices[bias_mask] = adaptor_idx
 
         # 3. Convert indices to actual orientation centers
@@ -86,10 +87,10 @@ class StimulusGenerator:
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
         
         # Calculate Von Mises profile
-        profiles = np.exp(6.0 * np.cos(2 * delta_theta))
+        profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta))
         
         # 5. Normalize and Scale (Matching your "generate_sequence" style)
-        # Normalize to 0-1 range then scale by 3 (assumes contrast=1)
+        # Normalize to 0-1 range 
         profiles = profiles / np.max(profiles)
         
         return profiles
@@ -107,7 +108,7 @@ class StimulusGenerator:
         
         for i in range(self.N):
             # Tuning curve for neuron i (preferred orientation = self.theta[i])
-            profile = np.exp(6.0 * np.cos(2*(theta_fine - self.theta[i])))
+            profile = np.exp(2.5 * np.cos(2*(theta_fine - self.theta[i])))
             profile = profile / np.max(profile)
             ax.plot(theta_fine_deg, profile, color=colors[i], alpha=0.7, linewidth=1.2)
         

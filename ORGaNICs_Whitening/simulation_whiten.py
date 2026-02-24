@@ -250,8 +250,8 @@ if __name__ == "__main__":
 
     # 1. Top Plot: Overall Average Activity (Population Mean)
     # We calculate the mean firing rate across all neurons at each time step
-    mean_activity_clean = np.mean(rates_clean, axis=0)
-    mean_activity_noisy = np.mean(rates_noisy, axis=0)
+    mean_activity_clean = np.mean(rates_adapt, axis=0)
+    mean_activity_noisy = np.mean(rates_organics, axis=0)
 
     ax2[0].plot(mean_activity_clean, color='#1f77b4', linewidth=2, label='Noiseless (Clean)')
     ax2[0].plot(mean_activity_noisy, color='#d62728', linewidth=2, linestyle='--', label='Noisy')
@@ -275,7 +275,7 @@ if __name__ == "__main__":
         ax2[1].plot(gains_clean[k_idx, :], color=blue_colors[i], linestyle='-', linewidth=1.5, alpha=0.8)
         
         # Plot Noisy Gains (Dotted Red)
-        ax2[1].plot(gains_noisy[k_idx, :], color=red_colors[i], linestyle=':', linewidth=2.0, alpha=0.9)
+        #ax2[1].plot(gains_noisy[k_idx, :], color=red_colors[i], linestyle=':', linewidth=2.0, alpha=0.9)
 
     ax2[1].set_ylabel("Gain Amplitude", fontsize=18)
     ax2[1].set_xlabel("Time Step", fontsize=18)
@@ -287,7 +287,7 @@ if __name__ == "__main__":
     from matplotlib.lines import Line2D
     custom_lines = [Line2D([0], [0], color='#1f77b4', lw=2, linestyle='-'),
                     Line2D([0], [0], color='#d62728', lw=2, linestyle=':')]
-    ax2[1].legend(custom_lines, ['Noiseless Gains', 'Noisy Gains'], loc='upper right')
+    #ax2[1].legend(custom_lines, ['Gains', 'Noisy Gains'], loc='upper right')
 
     # Add vertical lines for regime changes
     t_cursor = 0
