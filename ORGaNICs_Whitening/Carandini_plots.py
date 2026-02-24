@@ -29,7 +29,7 @@ PROBE_RES = 36           # Resolution of tuning curve probe (number of angles)
 
 np.random.seed(42)
 
-def gaussian_rectify(y, threshold=0.5, sigma=0.1, r_max=1.0):
+def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, fixed_gains, probe_angles):
@@ -65,7 +65,7 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
         # We assume a standard contrast for the probe (e.g., 1.0)
         # Using the same tuning logic as StimulusGenerator
         diff = np.abs(tunings.theta - angle)
-        diff = np.minimum(diff, 2 * np.pi - diff)
+        diff = np.minimum(diff,  np.pi - diff)
         # Gaussian input profile
         z_t = np.exp(- (diff ** 2) / (2 * (np.pi/8) ** 2)) 
         
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
     
     # Define the "Adaptor" location (matches logic in stimuli_whiten.py: K // 2 + 1)
-    adaptor_idx = N // 2 + 1
+    adaptor_idx = N // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
     adaptor_deg = adaptor_rad * 180 / np.pi
     
@@ -229,10 +229,12 @@ if __name__ == "__main__":
     # 5. Plotting
     fig, axes = plt.subplots(3, 2, figsize=(12, 9), gridspec_kw={'height_ratios': [0.8, 1.5, 1.5]})
     
-    # Setup x-axis relative to adaptor
-    # The probe_angles are 0..180. The adaptor is at `adaptor_deg`.
-    # We want x-axis to be centered on adaptor (0 deg).
-    x_axis = probe_angles_deg - adaptor_deg
+    # Setup x-axis relative to adaptor and wrap to [-90, 90)
+    x_axis = (probe_angles_deg - adaptor_deg + 90) % 180 - 90
+
+    # Sort the axis so matplotlib doesn't draw lines across the chart
+    sort_idx = np.argsort(x_axis)
+    x_axis_sorted = x_axis[sort_idx]
     
     # Colors
     blue_colors = plt.cm.Blues(np.linspace(0.4, 1.0, N_BINS))
@@ -257,16 +259,17 @@ if __name__ == "__main__":
 
     # --- ROW 2: Non-Adaptive ---
     for i in range(N_BINS):
-        axes[1, 0].plot(x_axis, row2_uni[i], color=blue_colors[i], linewidth=1.5)
-        axes[1, 1].plot(x_axis, row2_bias[i], color=blue_colors[i], linewidth=1.5)
+        # Apply sort_idx to the y-data as well
+        axes[1, 0].plot(x_axis_sorted, row2_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
+        axes[1, 1].plot(x_axis_sorted, row2_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
     axes[1, 0].set_ylabel("Non-Adaptive\nNormalized Response", fontweight='bold')
     axes[1, 0].set_title("Response (Control)")
     
     # --- ROW 3: Adaptive ---
     for i in range(N_BINS):
-        axes[2, 0].plot(x_axis, row3_uni[i], color=blue_colors[i], linewidth=1.5)
-        axes[2, 1].plot(x_axis, row3_bias[i], color=blue_colors[i], linewidth=1.5)
+        axes[2, 0].plot(x_axis_sorted, row3_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
+        axes[2, 1].plot(x_axis_sorted, row3_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
     axes[2, 0].set_ylabel("Adaptive\nNormalized Response", fontweight='bold')
     axes[2, 0].set_title("Response (Adapted)")
@@ -343,26 +346,30 @@ if __name__ == "__main__":
     gc.collect()
 
     # Plot
-    x_peak = bin_centers_deg - adaptor_deg
+    # Wrap and sort for Figure 2
+    x_peak = (bin_centers_deg - adaptor_deg + 90) % 180 - 90
+    sort_idx_2 = np.argsort(x_peak)
+    x_peak_sorted = x_peak[sort_idx_2]
+    
     fig2, axes2 = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
 
     # Left: Adaptive + Uniform
-    axes2[0].plot(x_peak, peaks_adp_uni, 'o-', color='steelblue',
+    axes2[0].plot(x_peak_sorted, peaks_adp_uni[sort_idx_2], 'o-', color='steelblue',
                   linewidth=2, markersize=5, label='Adaptive')
     axes2[0].set_title("Adaptive: Uniform Ensemble", fontweight='bold')
     axes2[0].set_ylabel("Average Peak Response")
-    axes2[0].set_xlabel("Orientation Relative to Adaptor (\u00b0)")
+    axes2[0].set_xlabel("Orientation Relative to Adaptor (°)")
     axes2[0].axvline(0, color='red', linestyle='--', alpha=0.5)
     axes2[0].set_xlim(-90, 90)
     axes2[0].grid(True, alpha=0.3)
 
     # Right: Biased — Adaptive vs ORGaNICs
-    axes2[1].plot(x_peak, peaks_adp_bias, 'o-', color='steelblue',
+    axes2[1].plot(x_peak_sorted, peaks_adp_bias[sort_idx_2], 'o-', color='steelblue',
                   linewidth=2, markersize=5, label='Adaptive')
-    axes2[1].plot(x_peak, peaks_org_bias, 's--', color='coral',
+    axes2[1].plot(x_peak_sorted, peaks_org_bias[sort_idx_2], 's--', color='coral',
                   linewidth=2, markersize=5, label='ORGaNICs')
     axes2[1].set_title("Biased Ensemble", fontweight='bold')
-    axes2[1].set_xlabel("Orientation Relative to Adaptor (\u00b0)")
+    axes2[1].set_xlabel("Orientation Relative to Adaptor (°)")
     axes2[1].axvline(0, color='red', linestyle='--', alpha=0.5)
     axes2[1].set_xlim(-90, 90)
     axes2[1].legend()

@@ -8,7 +8,7 @@ Now supports additive white noise to simulate broad-spectrum suppression effects
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, K=211, stream_length = 1000, tuning_width = 1, Ensemble=False):
+    def __init__(self, N=60, K=211, stream_length = 1000, tuning_width = 2, Ensemble=False):
         self.N = N
         self.K = K
         self.stream_length = stream_length
@@ -36,7 +36,7 @@ class StimulusGenerator:
             profile = np.exp(self.tuning_width * np.cos(2*(self.theta_inputs - r['orientation'])))
             
             # Normalize and scale by contrast
-            profile = profile / np.max(profile) * r['contrast']
+            profile = 2*profile / np.max(profile) * r['contrast']
             
             # 2. Tile across time: Shape becomes (N_neurons, n_steps)
             block = np.tile(profile, (r['n_steps'], 1)).T
@@ -91,7 +91,7 @@ class StimulusGenerator:
         
         # 5. Normalize and Scale (Matching your "generate_sequence" style)
         # Normalize to 0-1 range 
-        profiles = profiles / np.max(profiles)
+        profiles = 2*profiles / np.max(profiles)
         
         return profiles
 

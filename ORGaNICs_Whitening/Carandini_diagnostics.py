@@ -428,5 +428,5 @@ def diagnostic_noise_probe(noise_level=0.4):
 if __name__ == "__main__":
     #diagnostic_convergence()
     diagnostic_sigma_sweep()
-    #diagnostic_tuning_width_sweep()
+    diagnostic_tuning_width_sweep()
     #diagnostic_noise_probe()
