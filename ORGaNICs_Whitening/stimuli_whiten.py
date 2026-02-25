@@ -9,8 +9,8 @@ Now supports additive white noise to simulate broad-spectrum suppression effects
 
 class StimulusGenerator:
     def __init__(self, N=60, K=211, stream_length = 1000, tuning_width = 2, Ensemble=False):
-        self.N = N
-        self.K = K
+        self.N = N # Number of primary neurons
+        self.K = K # Number of distinctm input orientations
         self.stream_length = stream_length
         self.tuning_width = tuning_width
         # Preferred orientations from 0 to pi
@@ -66,8 +66,15 @@ class StimulusGenerator:
             np.ndarray: Shape (K_neurons, stream_length)
         '''
         # 1. Generate all indices 
-        # Create a base of random indices for the whole stream
-        indices = np.random.randint(0, self.K, size=self.stream_length)
+        # Create a base sequence of integers from 0 to self.K - 1
+        base_indices = np.arange(self.K)
+        
+        # Append it on itself until it reaches self.stream_length
+        repeats = int(np.ceil(self.stream_length / self.K))
+        indices = np.tile(base_indices, repeats)[:self.stream_length]
+        
+        # Randomly shuffle the indices array in-place
+        np.random.shuffle(indices)
         
         # 2. Optionally apply bias 
         # Overwrite roughly 33% of the indices with the adaptor index

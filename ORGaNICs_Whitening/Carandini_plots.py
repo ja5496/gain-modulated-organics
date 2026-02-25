@@ -14,20 +14,19 @@ import matplotlib.pyplot as plt
 import gc
 from tqdm import tqdm
 from scipy.special import erf
-
-# Import from existing codebase
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics
+import matplotlib.pyplot as plt
 
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
 N_BINS = 13              # Aggregation bins for visualization
-STREAM_LENGTH = 8000     # Length of adaptation stream (steps)
+STREAM_LENGTH = 8112     # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
-PROBE_RES = 90           # Resolution of tuning curve probe (number of angles)
+PROBE_RES = 180           # Resolution of tuning curve probe (number of angles)
 
-np.random.seed(44)
+np.random.seed(20)
 
 def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
@@ -44,8 +43,6 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
     # Pre-compute recurrent weights to save time
     W_yy = tunings.W_yy
     
-    # We implement a lightweight integration loop here to ensure 
-    # gains remain absolutely frozen during probing.
     dt = 0.05
     tau_y = 1.0
     tau_u = 2.0
@@ -53,20 +50,17 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
     beta = 1.0
     sigma_const = 0.05
     
-    # Reset state for the probe phase
-    y = np.zeros(N)
-    u = np.zeros(N)
-    a = np.zeros(N)
-    
-    # print(f"  Probing {n_probes} orientations...", end="", flush=True)
-    
     for i, angle in enumerate(probe_angles):
+        
+        # -> MOVE RESET HERE <- 
+        # Completely clear the network's memory before every probe
+        y = np.zeros(N)
+        u = np.zeros(N)
+        a = np.zeros(N)
+        
         # 1. Construct Input for this probe angle
-        # We assume a standard contrast for the probe (e.g., 1.0)
-        # Using the same tuning logic as StimulusGenerator
         diff = np.abs(tunings.theta - angle)
         diff = np.minimum(diff,  np.pi - diff)
-        # Gaussian input profile
         z_t = np.exp(- (diff ** 2) / (2 * (np.pi/8) ** 2)) 
         
         # 2. Settle to steady state
@@ -78,7 +72,6 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
             sqrt_y_plus = np.sqrt(y_plus)
             
             # Circuit Inputs
-            # GAIN FEEDBACK (Frozen)
             v_t = frame.W.T @ y
             if fixed_gains is not None:
                 gain_feedback = frame.W @ (fixed_gains * v_t)
@@ -93,7 +86,7 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
             
             dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
             du = (-u + (sigma_const**2) + pool_term) / tau_u
-            da = (-a + u_plus + a*u_plus) / tau_a # alpha assumed 0 for probe
+            da = (-a + u_plus + a*u_plus) / tau_a 
             
             y += dt * dy
             u += dt * du
@@ -102,7 +95,6 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
         # Record steady state firing rate
         tuning_curves[:, i] = gaussian_rectify(y)
         
-    # print(" Done.")
     return tuning_curves
 
 def get_binned_curves(tuning_curves, neuron_preferences, probe_angles, n_bins=13):
@@ -110,8 +102,12 @@ def get_binned_curves(tuning_curves, neuron_preferences, probe_angles, n_bins=13
     Aggregates individual neuron tuning curves into N_BINS groups based on 
     their preferred orientation.
     """
-    # Define bins
-    bin_edges = np.linspace(0, np.pi, n_bins + 1)
+    # Calculate the exact mathematical space between your 169 neurons
+    N_neurons = len(neuron_preferences)
+    discrete_step = np.pi / N_neurons
+    
+    # Shift the bin edges left by half a step to avoid boundary collisions
+    bin_edges = np.linspace(0, np.pi, n_bins + 1) - (discrete_step / 2)
     
     # Result container: (n_bins, n_probe_angles)
     binned_response = np.zeros((n_bins, len(probe_angles)))
@@ -138,7 +134,15 @@ if __name__ == "__main__":
     print("Initializing...")
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
+    # 1. Calculate the norm of each row, keeping the 2D shape for broadcasting
+    row_norms = np.linalg.norm(frame.W, axis=1, keepdims=True)
     
+    # 2. Find the average scale of the original matrix
+    mean_norm = np.mean(row_norms)
+    
+    # 3. Equalize the rows, but multiply by the mean_norm to keep the original scale!
+    frame.W = (frame.W / row_norms) * mean_norm
+
     # Initialize Generator with the desired stream length
     stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
     
@@ -240,7 +244,10 @@ if __name__ == "__main__":
     blue_colors = plt.cm.Blues(np.linspace(0.4, 1.0, N_BINS))
     
     # --- ROW 1: Histograms ---
-    bins_hist = np.linspace(0, 180, N_BINS + 1)
+    discrete_step = 180 / N 
+    
+    # Shift the bin edges left by half a step to avoid boundary collisions
+    bins_hist = np.linspace(0, 180, N_BINS + 1) - (discrete_step / 2)
     
     # Uniform Hist
     axes[0, 0].hist(hist_uni, bins=bins_hist, color='black', rwidth=0.9)
@@ -288,6 +295,8 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
+    
+
     # =================================================================
     # FIGURE 2: Average Peak Response per Orientation Bin
     # =================================================================
@@ -297,7 +306,7 @@ if __name__ == "__main__":
     print("  FIGURE 2: Average Peak Response per Orientation Bin")
     print("=" * 50)
 
-    STREAM_LENGTH_2 = 14000
+    STREAM_LENGTH_2 = 8112
     AVG_WINDOW = 2000
 
     stim_gen_2 = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH_2)
@@ -375,7 +384,7 @@ if __name__ == "__main__":
     axes2[1].legend()
     axes2[1].grid(True, alpha=0.3)
 
-    fig2.suptitle("Average Peak Response (last 2000 of 14000 steps)",
+    fig2.suptitle("Average Peak Response (last 2000 of 8112 steps)",
                   fontweight='bold', fontsize=13)
     plt.tight_layout()
     plt.show()
