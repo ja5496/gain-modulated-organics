@@ -32,7 +32,7 @@ class V1Dynamics:
         self.sigma = 0.05     # Semi-saturation constant
         self.alpha = 0.0
 
-    def gaussian_rectify(self, y, threshold=0.5, sigma=0.1, r_max=1.0):
+    def gaussian_rectify(self, y, threshold=0.4, sigma=0.1, r_max=1.0):
         return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
     def _derivatives(self, state, z_t):

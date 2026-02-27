@@ -35,7 +35,7 @@ N = 169
 N_BINS = 13
 PROBE_RES = 36
 
-np.random.seed(42)
+np.random.seed(999)
 
 # Load frame once (expensive, shared across diagnostics)
 frame = Frame(csv_path="Frames/N169_Frame.csv")
@@ -46,7 +46,7 @@ probe_angles_deg = probe_angles * 180 / np.pi
 
 # Adaptor orientation
 stim_gen_ref = StimulusGenerator(N=N, K=N, stream_length=1)
-adaptor_idx = N // 2 + 1
+adaptor_idx = N // 2
 adaptor_rad = stim_gen_ref.theta_inputs[adaptor_idx]
 adaptor_deg = adaptor_rad * 180 / np.pi
 x_axis = probe_angles_deg - adaptor_deg

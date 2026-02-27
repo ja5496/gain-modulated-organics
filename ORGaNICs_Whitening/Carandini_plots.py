@@ -140,7 +140,7 @@ if __name__ == "__main__":
     # 2. Find the average scale of the original matrix
     mean_norm = np.mean(row_norms)
     
-    # 3. Equalize the rows, but multiply by the mean_norm to keep the original scale!
+    # 3. Equalize the rows, but multiply by the mean_norm to keep the original scale
     frame.W = (frame.W / row_norms) * mean_norm
 
     # Initialize Generator with the desired stream length
@@ -313,8 +313,8 @@ if __name__ == "__main__":
     seq_uni_2 = stim_gen_2.generate_input_ensembles(biased=False)
     seq_bias_2 = stim_gen_2.generate_input_ensembles(biased=True)
 
-    # Bin setup
-    bin_edges = np.linspace(0, np.pi, N_BINS + 1)
+    discrete_step_rad = np.pi / N
+    bin_edges = np.linspace(0, np.pi, N_BINS + 1) - (discrete_step_rad / 2)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     bin_centers_deg = bin_centers * 180 / np.pi
     neuron_bin_idx = np.digitize(tunings.theta, bin_edges) - 1
