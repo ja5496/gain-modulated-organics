@@ -31,32 +31,29 @@ np.random.seed(20)
 def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
-def run_probe(frame, tunings, fixed_gains, probe_angles):
+def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a=None):
     """
     Measures tuning curves by simulating the network response to specific 
-    probe orientations while holding gains CONSTANT.
+    probe orientations while holding gains, u, and a CONSTANT.
     """
     N, K = frame.dim, frame.K
     n_probes = len(probe_angles)
     tuning_curves = np.zeros((N, n_probes))
     
-    # Pre-compute recurrent weights to save time
     W_yy = tunings.W_yy
     
     dt = 0.05
     tau_y = 1.0
-    tau_u = 2.0
-    tau_a = 5.0
     beta = 1.0
-    sigma_const = 0.05
     
     for i, angle in enumerate(probe_angles):
         
-        # -> MOVE RESET HERE <- 
-        # Completely clear the network's memory before every probe
+        # y must start at 0 (or a baseline) to settle to the new probe stimulus
         y = np.zeros(N)
-        u = np.zeros(N)
-        a = np.zeros(N)
+        
+        # Freeze u and a at their adapted states (or 0 for the naive control)
+        u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N)
+        a = np.copy(frozen_a) if frozen_a is not None else np.zeros(N)
         
         # 1. Construct Input for this probe angle
         diff = np.abs(tunings.theta - angle)
@@ -65,10 +62,11 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
         
         # 2. Settle to steady state
         for _ in range(PROBE_STEPS):
-            # Rectifications
+            # Rectifications (u and a are frozen, so these remain constant)
             u_plus = gaussian_rectify(u)
-            y_plus = gaussian_rectify(y)
             a_plus = gaussian_rectify(a)
+            
+            y_plus = gaussian_rectify(y)
             sqrt_y_plus = np.sqrt(y_plus)
             
             # Circuit Inputs
@@ -81,18 +79,12 @@ def run_probe(frame, tunings, fixed_gains, probe_angles):
             recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
             input_drive = (beta * z_t) / 2
             
-            # Derivatives
-            pool_term = tunings.N_matrix @ (y_plus * (u_plus ** 2))
-            
+            # Derivative (ONLY update y)
             dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
-            du = (-u + (sigma_const**2) + pool_term) / tau_u
-            da = (-a + u_plus + a*u_plus) / tau_a 
-            
             y += dt * dy
-            u += dt * du
-            a += dt * da
+            
+            # u and a are deliberately NOT updated here so they remain frozen
         
-        # Record steady state firing rate
         tuning_curves[:, i] = gaussian_rectify(y)
         
     return tuning_curves
@@ -176,13 +168,20 @@ if __name__ == "__main__":
     
     # --- SCENARIO A: ORGaNICs (Non-Adaptive) ---
     print("\n--- Running Non-Adaptive Models ---")
-    # For non-adaptive, gains are effectively 0. 
-    # The "adaptation" history doesn't change the weights, so we just probe directly with gains=0.
-    tc_raw_control = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles)
     
-    # For the sake of the plot structure, we assign this same curve to both conditions
-    results['org_uni'] = tc_raw_control
-    results['org_bias'] = tc_raw_control
+    # 1. Non-Adaptive Uniform
+    engine_org_uni = V1Dynamics(tunings, frame, adaptive=False)
+    _, _, u_hist_org_uni, a_hist_org_uni = engine_org_uni.run_simulation(seq_uni)
+    
+    results['org_uni'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
+                                   frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1])
+                                   
+    # 2. Non-Adaptive Biased
+    engine_org_bias = V1Dynamics(tunings, frame, adaptive=False)
+    _, _, u_hist_org_bias, a_hist_org_bias = engine_org_bias.run_simulation(seq_bias)
+    
+    results['org_bias'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
+                                    frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1])
     
     # --- SCENARIO B: Adaptive ORGaNICs ---
     print("\n--- Running Adaptive Models ---")
@@ -190,22 +189,34 @@ if __name__ == "__main__":
     # 1. Adapt to Uniform
     print("Adapting to Uniform Ensemble...")
     engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_uni = engine_uni.run_simulation(seq_uni)
-    final_gains_uni = gains_hist_uni[:, -1] # Extract final state
     
-    # 2. Probe Uniform State
+    # Grab the histories
+    _, gains_hist_uni, u_hist_uni, a_hist_uni = engine_uni.run_simulation(seq_uni)
+    
+    # SLICE the final column for all three variables!
+    final_gains_uni = gains_hist_uni[:, -1] 
+    final_u_uni = u_hist_uni[:, -1]
+    final_a_uni = a_hist_uni[:, -1]
+    
+    # 2. Probe Uniform State (Pass the frozen states!)
     print("Probing Uniform State...")
-    results['adp_uni'] = run_probe(frame, tunings, final_gains_uni, probe_angles)
+    results['adp_uni'] = run_probe(frame, tunings, final_gains_uni, probe_angles, 
+                                   frozen_u=final_u_uni, frozen_a=final_a_uni)
     
     # 3. Adapt to Biased
     print("Adapting to Biased Ensemble...")
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_bias = engine_bias.run_simulation(seq_bias)
-    final_gains_bias = gains_hist_bias[:, -1] # Extract final state
+    _, gains_hist_bias, u_hist_bias, a_hist_bias = engine_bias.run_simulation(seq_bias)
+    
+    # SLICE the final column for all three variables here too!
+    final_gains_bias = gains_hist_bias[:, -1] 
+    final_u_bias = u_hist_bias[:, -1]
+    final_a_bias = a_hist_bias[:, -1]
     
     # 4. Probe Biased State
     print("Probing Biased State...")
-    results['adp_bias'] = run_probe(frame, tunings, final_gains_bias, probe_angles)
+    results['adp_bias'] = run_probe(frame, tunings, final_gains_bias, probe_angles,
+                                    frozen_u=final_u_bias, frozen_a=final_a_bias)
 
     # 4. Processing & Normalization
     print("\nProcessing data for plotting...")
@@ -300,7 +311,7 @@ if __name__ == "__main__":
     # =================================================================
     # FIGURE 2: Average Peak Response per Orientation Bin
     # =================================================================
-    # Uses longer 10,000-step simulations and measures peak firing rates
+    # Uses 8000-step simulations and measure avg firing rates
     # directly from the running simulation (last 2,000 steps).
     print("\n" + "=" * 50)
     print("  FIGURE 2: Average Peak Response per Orientation Bin")
@@ -320,37 +331,39 @@ if __name__ == "__main__":
     neuron_bin_idx = np.digitize(tunings.theta, bin_edges) - 1
     neuron_bin_idx = np.clip(neuron_bin_idx, 0, N_BINS - 1)
 
-    def get_binned_peaks(rates, window):
-        """Peak response per neuron over last `window` steps, averaged per bin."""
-        peaks = np.max(rates[:, -window:], axis=1)
+    def get_binned_activity(rates, window):
+        """Average response per neuron over last `window` steps, averaged per bin."""
+        # Use np.mean to capture the sustained distribution of activity
+        means = np.mean(rates[:, -window:], axis=1) 
+        
         binned = np.zeros(N_BINS)
         for b in range(N_BINS):
             mask = neuron_bin_idx == b
             if mask.any():
-                binned[b] = np.mean(peaks[mask])
+                binned[b] = np.mean(means[mask])
         return binned
 
     # 1. Adaptive + Uniform
     print("\nAdaptive + Uniform (10k steps)...")
     engine = V1Dynamics(tunings, frame, adaptive=True)
-    rates, _ = engine.run_simulation(seq_uni_2)
-    peaks_adp_uni = get_binned_peaks(rates, AVG_WINDOW)
+    rates, _, _, _ = engine.run_simulation(seq_uni_2) # Updated unpacking
+    peaks_adp_uni = get_binned_activity(rates, AVG_WINDOW)
     del rates, engine
     gc.collect()
 
     # 2. Adaptive + Biased
     print("Adaptive + Biased (10k steps)...")
     engine = V1Dynamics(tunings, frame, adaptive=True)
-    rates, _ = engine.run_simulation(seq_bias_2)
-    peaks_adp_bias = get_binned_peaks(rates, AVG_WINDOW)
+    rates, _, _, _ = engine.run_simulation(seq_bias_2) # Updated unpacking
+    peaks_adp_bias = get_binned_activity(rates, AVG_WINDOW)
     del rates, engine
     gc.collect()
 
     # 3. ORGaNICs + Biased
     print("ORGaNICs + Biased (10k steps)...")
     engine = V1Dynamics(tunings, frame, adaptive=False)
-    rates, _ = engine.run_simulation(seq_bias_2)
-    peaks_org_bias = get_binned_peaks(rates, AVG_WINDOW)
+    rates, _, _, _ = engine.run_simulation(seq_bias_2) # Updated unpacking
+    peaks_org_bias = get_binned_activity(rates, AVG_WINDOW)
     del rates, engine
     gc.collect()
 
