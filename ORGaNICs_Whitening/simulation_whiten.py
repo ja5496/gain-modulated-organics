@@ -108,46 +108,6 @@ class V1Dynamics:
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         return membrane_hist, gains_hist, u_hist, a_hist
 
-    # ---> ADDED: The Frozen Probe Method
-    def run_probe(self, probe_angles, fixed_gains, frozen_u, frozen_a, probe_steps=100):
-        """Measures true tuning curves by freezing u, a, and g, and only settling y."""
-        N = self.v1.N
-        n_probes = len(probe_angles)
-        tuning_curves = np.zeros((N, n_probes))
-        
-        for i, angle in enumerate(probe_angles):
-            y = np.zeros(N) # y must start from scratch to settle to the new probe
-            u = np.copy(frozen_u)
-            a = np.copy(frozen_a)
-            
-            # Construct Input
-            diff = np.abs(self.v1.theta - angle)
-            diff = np.minimum(diff, np.pi - diff)
-            z_t = np.exp(- (diff ** 2) / (2 * (np.pi/8) ** 2))
-            
-            for _ in range(probe_steps):
-                u_plus = self.gaussian_rectify(u)
-                a_plus = self.gaussian_rectify(a)
-                y_plus = self.gaussian_rectify(y)
-                sqrt_y_plus = np.sqrt(y_plus)
-                
-                v_t = self.frame.W.T @ y
-                if fixed_gains is not None:
-                    gain_feedback = self.frame.W @ (fixed_gains * v_t)
-                else:
-                    gain_feedback = 0.0
-                    
-                recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
-                input_drive = (self.beta * z_t) / 2
-                
-                # ONLY calculate dy_dt, leave u, a, and g alone
-                dy = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
-                y += self.dt * dy
-                
-            tuning_curves[:, i] = self.gaussian_rectify(y)
-            
-        return tuning_curves
-
 
 if __name__ == "__main__":
     

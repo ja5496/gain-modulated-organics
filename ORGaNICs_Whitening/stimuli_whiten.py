@@ -67,7 +67,7 @@ class StimulusGenerator:
         base_indices = np.arange(self.K)
         
         # Append it on itself until it reaches self.stream_length
-        duration = 10 # Stimuli are flashed for a period of (duration * dt).  
+        duration = 20 # Stimuli are flashed for a period of (duration * dt).  
         num_inputs = int(self.stream_length / duration) # actual number of stimuli shown (instead of time steps)
         repeats = int(np.ceil(num_inputs / self.K))
         indices = np.tile(base_indices, repeats)[:self.stream_length] 
