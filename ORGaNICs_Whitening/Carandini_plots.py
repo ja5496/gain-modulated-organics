@@ -52,8 +52,9 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
     
     for i, angle in enumerate(probe_angles):
         
-        # y must start at 0 (or a baseline) to settle to the new probe stimulus
-        y = np.zeros(N)
+        # y must start at a baseline to settle to the new probe stimulus
+        scale = 0.1
+        y = scale*np.ones(N) # 
         
         # Let u and a freely adapt from their most recent state
         u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N)
@@ -202,12 +203,12 @@ if __name__ == "__main__":
     # Grab the histories
     adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni = engine_uni.run_simulation(seq_uni)
     
-    # SLICE the final column for all three variables!
+    # Grab the final state for all three variables
     final_gains_uni = gains_hist_uni[:, -1] 
     final_u_uni = u_hist_uni[:, -1]
     final_a_uni = a_hist_uni[:, -1]
     
-    # 2. Probe Uniform State (Pass the frozen states!)
+    # 2. Probe Uniform State 
     print("Probing Uniform State...")
     results['adp_uni'] = run_probe(frame, tunings, final_gains_uni, probe_angles, 
                                    frozen_u=final_u_uni, frozen_a=final_a_uni)
@@ -217,7 +218,7 @@ if __name__ == "__main__":
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
     adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias = engine_bias.run_simulation(seq_bias)
     
-    # SLICE the final column for all three variables here too!
+    # Grab the final column for all three variables again
     final_gains_bias = gains_hist_bias[:, -1] 
     final_u_bias = u_hist_bias[:, -1]
     final_a_bias = a_hist_bias[:, -1]
@@ -324,7 +325,7 @@ if __name__ == "__main__":
     # directly from the running simulation (last 4,000 steps).
 
     print("\n" + "=" * 50)
-    print("  FIGURE 2: Average Peak Response per Orientation Bin")
+    print("  FIGURE 2: Average Response per Orientation Bin")
     print("=" * 50)
 
     AVG_WINDOW = 4000
@@ -337,15 +338,27 @@ if __name__ == "__main__":
     neuron_bin_idx = np.clip(neuron_bin_idx, 0, N_BINS - 1)
 
     def get_binned_activity(rates, window):
-        """Average response per neuron over last `window` steps, averaged per bin."""
-        # Use np.mean to capture the sustained distribution of activity
-        means = np.mean(rates[:, -window:], axis=1) 
+        """Average response per neuron over last `window` steps (only steady_state), averaged per bin."""
+        
+        duration = 20
+        keep = 5 # keeps the last 5 responses to each stimuli to only count the steady state responses.
+        
+        steady_rates = rates[:, -window:]
+        n_time_steps = steady_rates.shape[1]
+        
+        # 1. Temporal Mask: Cycle of length `duration`, keep the last `keep` steps
+        time_mask = (np.arange(n_time_steps) % duration) >= (duration - keep)
+        
+        # 2. Get steady state rates and average across time to get mean per neuron
+        means = np.mean(steady_rates[:, time_mask], axis=1) 
         
         binned = np.zeros(N_BINS)
         for b in range(N_BINS):
-            mask = neuron_bin_idx == b
-            if mask.any():
-                binned[b] = np.mean(means[mask])
+            # 3. Spatial Mask: applied to the neurons
+            bin_mask = neuron_bin_idx == b
+            if bin_mask.any():
+                binned[b] = np.mean(means[bin_mask])
+                
         return binned
 
     # 1. Adaptive + Uniform
@@ -378,7 +391,7 @@ if __name__ == "__main__":
     axes2[0].plot(x_peak_sorted, peaks_adp_uni[sort_idx_2], 'o-', color='steelblue',
                   linewidth=2, markersize=5, label='Adaptive')
     axes2[0].set_title("Adaptive: Uniform Ensemble", fontweight='bold')
-    axes2[0].set_ylabel("Average Peak Response")
+    axes2[0].set_ylabel("Average Response")
     axes2[0].set_xlabel("Orientation Relative to Adaptor (°)")
     axes2[0].axvline(0, color='red', linestyle='--', alpha=0.5)
     axes2[0].set_xlim(-90, 90)
@@ -396,7 +409,7 @@ if __name__ == "__main__":
     axes2[1].legend()
     axes2[1].grid(True, alpha=0.3)
 
-    fig2.suptitle("Average Peak Response (last 2000 of 8112 steps)",
+    fig2.suptitle("Average Steady State Response",
                   fontweight='bold', fontsize=13)
     plt.tight_layout()
     plt.show()

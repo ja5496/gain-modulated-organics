@@ -71,16 +71,15 @@ class StimulusGenerator:
         num_inputs = int(self.stream_length / duration) # actual number of stimuli shown (instead of time steps)
         repeats = int(np.ceil(num_inputs / self.K))
         indices = np.tile(base_indices, repeats)[:self.stream_length] 
-        
-        # Randomly shuffle the indices array in-place
-        np.random.shuffle(indices) 
 
         # Optionally overwrite roughly 33% of the indices with the adaptor index
         if biased:
-            # Create a boolean mask where True ~ 33% of the time
-            bias_mask = np.random.rand(len(indices)) <= 0.33
-            adaptor_idx = self.K // 2 
-            indices[bias_mask] = adaptor_idx
+            one_third_split = len(indices) // 3 # Calculate the index representing the first third
+            adaptor_idx = self.K // 2 # Define the adaptor index
+            indices[:one_third_split] = adaptor_idx # Apply the mask to the first third of the array
+
+        # Randomly shuffle the indices array in-place
+        np.random.shuffle(indices) 
 
         # Now add the duration of the inputs in so it doesn't flash a new one every time step. 
         indices = np.repeat(indices, duration)
