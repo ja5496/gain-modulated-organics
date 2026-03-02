@@ -8,9 +8,9 @@ Now supports additive white noise to simulate broad-spectrum suppression effects
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, K=211, stream_length = 1000, tuning_width = 2.5, Ensemble=False):
+    def __init__(self, N=60, K=200, stream_length = 8000, tuning_width = 2.5, Ensemble=False):
         self.N = N # Number of primary neurons
-        self.K = K # Number of distinctm input orientations
+        self.K = K # Number of distinct input orientations
         self.stream_length = stream_length
         self.tuning_width = tuning_width
         # Preferred orientations from 0 to pi
@@ -20,7 +20,7 @@ class StimulusGenerator:
 
     def generate_sequence(self, regimes):
         '''
-        Generates a sequence of neural responses based on a list of regimes.
+        Generates a sequence of neural inputs from LGN based on a list of regimes.
         
         Args:
             regimes (list of dict): Each dict corresponds to a time block and can contain:
@@ -36,23 +36,21 @@ class StimulusGenerator:
             profile = np.exp(self.tuning_width * np.cos(2*(self.theta_inputs - r['orientation'])))
             
             # Normalize and scale by contrast
-            profile = 2.5*profile / np.max(profile) * r['contrast']
+            scale = 2.5 # Scales the input vector by a fixed amount after normalization (not counting contrast)
+            profile = scale * profile / np.max(profile) * r['contrast']
             
             # 2. Tile across time: Shape becomes (N_neurons, n_steps)
             block = np.tile(profile, (r['n_steps'], 1)).T
             
             # 3. Add White Noise
-            # "Theoretically... suppress tunings besides the peak" 
-            # This works because noise increases the denominator in divisive normalization
             noise_level = r.get('noise_level', 0.0)
             if noise_level > 0:
                 # Generate noise for every neuron at every time step independently
                 noise = np.random.normal(loc=0.0, scale=noise_level, size=block.shape)
                 block = block + noise
                 
-                # Rectification: Ensure drive doesn't go below zero (standard for firing rates/energy)
+                # Ensure drive doesn't go below zero (standard for firing rates/energy)
                 block = np.maximum(0, block)
-
             seq.append(block)
             
         return np.hstack(seq)
@@ -60,40 +58,40 @@ class StimulusGenerator:
     def generate_input_ensembles(self, biased=False):
         '''
         Generate uniform or biased ensemble of input profiles (Von Mises) 
-        centered at random orientations.
+        centered at random orientations. 
         
         Returns:
-            np.ndarray: Shape (K_neurons, stream_length)
+            np.ndarray: Shape ( K{number of distinct stimuli} , stream_length )
         '''
-        # 1. Generate all indices 
-        # Create a base sequence of integers from 0 to self.K - 1
+        # Generate the indices of all the distinct stimuli
         base_indices = np.arange(self.K)
         
         # Append it on itself until it reaches self.stream_length
-        repeats = int(np.ceil(self.stream_length / self.K))
-        indices = np.tile(base_indices, repeats)[:self.stream_length]
+        duration = 10 # Stimuli are flashed for a period of (duration * dt).  
+        num_inputs = int(self.stream_length / duration) # actual number of stimuli shown (instead of time steps)
+        repeats = int(np.ceil(num_inputs / self.K))
+        indices = np.tile(base_indices, repeats)[:self.stream_length] 
         
         # Randomly shuffle the indices array in-place
-        np.random.shuffle(indices)
-        
-        # 2. Optionally apply bias 
-        # Overwrite roughly 33% of the indices with the adaptor index
+        np.random.shuffle(indices) 
+
+        # Optionally overwrite roughly 33% of the indices with the adaptor index
         if biased:
             # Create a boolean mask where True ~ 33% of the time
-            bias_mask = np.random.rand(self.stream_length) <= 0.33
+            bias_mask = np.random.rand(len(indices)) <= 0.33
             adaptor_idx = self.K // 2 
             indices[bias_mask] = adaptor_idx
 
-        # 3. Convert indices to actual orientation centers
-        # shape: (stream_length,)
+        # Now add the duration of the inputs in so it doesn't flash a new one every time step. 
+        indices = np.repeat(indices, duration)
+
+        print(len(indices), self.stream_length)
+
+        # Convert indices to actual orientation centers; shape: (stream_length,)
         centers = self.theta_inputs[indices]
 
-        # 4. Calculate Tuning Curves using Broadcasting
-        # We want a matrix of shape (K_neurons, stream_length).
-        
+        # Generate stimulus curves using broadcasting - matrix of shape (K_stimuli, stream_length).
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
-        
-        # Calculate Von Mises profile
         profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta))
         
         # 5. Normalize and Scale (Matching your "generate_sequence" style)
@@ -134,7 +132,7 @@ if __name__ == "__main__":
 
     # --- Example Usage ---
     stim_gen = StimulusGenerator(N=60)
-    print(stim_gen.generate_input_ensembles(biased=True))
+    stim_gen.generate_input_ensembles(biased=True)
     
     # Define a sequence: 
     # 1. Clean stimulus

@@ -22,9 +22,9 @@ import matplotlib.pyplot as plt
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
 N_BINS = 13              # Aggregation bins for visualization
-STREAM_LENGTH = 8112     # Length of adaptation stream (steps)
+STREAM_LENGTH = 8450     # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
-PROBE_RES = 180           # Resolution of tuning curve probe (number of angles)
+PROBE_RES = 180          # Resolution of tuning curve probe (number of angles)
 
 np.random.seed(20)
 
@@ -34,7 +34,7 @@ def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
 def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a=None):
     """
     Measures tuning curves by simulating the network response to specific 
-    probe orientations while holding gains, u, and a CONSTANT.
+    probe orientations while holding gains, u, and a CONSTANT. 
     """
     N, K = frame.dim, frame.K
     n_probes = len(probe_angles)
