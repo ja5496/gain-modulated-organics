@@ -25,46 +25,54 @@ N_BINS = 13              # Aggregation bins for visualization
 STREAM_LENGTH = 10140     # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
 PROBE_RES = 180          # Resolution of tuning curve probe (number of angles)
+Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneous rate;
+                         # ~0.16 of max firing at Z_SPONT=0.3 with threshold=0.5, sigma=0.2)
 
 np.random.seed(20)
 
-def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
+def gaussian_rectify(y, threshold=0.5, sigma=0.2, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
-def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a=None):
+def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
+              z_spont=0.3):
     """
-    Measures tuning curves by simulating the network response to specific 
-    probe orientations while holding gains constant. u, and a are taken from 
+    Measures tuning curves by simulating the network response to specific
+    probe orientations while holding gains constant. u, and a are taken from
     their last values and then adapted.
+
+    z_spont: constant tonic drive added to every neuron's dy equation, representing
+             spontaneous LGN background firing. Setting this above 0 establishes a
+             positive resting firing rate so that adaptation-induced suppression can
+             push responses below baseline (i.e., appear as negative relative firing).
+             Tune this value: larger → higher spontaneous rate, easier to see suppression.
     """
     N, K = frame.dim, frame.K
     n_probes = len(probe_angles)
     tuning_curves = np.zeros((N, n_probes))
-    
+
     W_yy = tunings.W_yy
-    
+
     dt = 0.05
     tau_y = 1.0
     tau_u = 2.0
     tau_a = 5.0
     beta = 1.0
     sigma_const = 0.05
-    
+
     for i, angle in enumerate(probe_angles):
-        
-        # y must start at a baseline to settle to the new probe stimulus
-        scale = 0.1
-        y = scale*np.ones(N) # 
-        
+
+        # Start y near the spontaneous resting state driven by z_spont
+        y = z_spont * np.ones(N)
+
         # Let u and a freely adapt from their most recent state
         u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N)
         a = np.copy(frozen_a) if frozen_a is not None else np.zeros(N)
-        
+
         # 1. Construct Input for this probe angle
         diff = np.abs(tunings.theta - angle)
         diff = np.minimum(diff,  np.pi - diff)
-        z_t = np.exp(- (diff ** 2) / (2 * (np.pi/8) ** 2)) 
-        
+        z_t = np.exp(- (diff ** 2) / (2 * (np.pi/8) ** 2))
+
         # 2. Settle to steady state
         for _ in range(PROBE_STEPS):
             # Rectifications
@@ -72,31 +80,32 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
             y_plus = gaussian_rectify(y)
             a_plus = gaussian_rectify(a)
             sqrt_y_plus = np.sqrt(y_plus)
-            
+
             # Circuit Inputs
             v_t = frame.W.T @ y
             if fixed_gains is not None:
                 gain_feedback = frame.W @ (fixed_gains * v_t)
             else:
                 gain_feedback = 0.0
-                
+
             recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
-            input_drive = (beta * z_t) / 2
-            
+            # z_spont: uniform tonic background drive from spontaneous LGN activity
+            input_drive = (beta * z_t) / 2 + z_spont
+
             # Derivatives
             pool_term = tunings.N_matrix @ (y_plus * (u_plus ** 2))
-            
+
             dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
             du = (-u + (sigma_const**2) + pool_term) / tau_u
-            da = (-a + u_plus + a*u_plus) / tau_a 
-            
+            da = (-a + u_plus + a*u_plus) / tau_a
+
             y += dt * dy
             u += dt * du
             a += dt * da
-        
+
         # Record steady state firing rate
         tuning_curves[:, i] = gaussian_rectify(y)
-        
+
     return tuning_curves
 
 def get_binned_curves(tuning_curves, neuron_preferences, probe_angles, n_bins=13):
@@ -136,14 +145,21 @@ if __name__ == "__main__":
     print("Initializing...")
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
-    # 1. Calculate the norm of each row, keeping the 2D shape for broadcasting
-    row_norms = np.linalg.norm(frame.W, axis=1, keepdims=True)
     
-    # 2. Find the average scale of the original matrix
-    mean_norm = np.mean(row_norms)
-    
-    # 3. Equalize the rows, but multiply by the mean_norm to keep the original scale
-    frame.W = (frame.W / row_norms) * mean_norm
+    # --- Canonical Tight Frame Construction ---
+    # W @ W.T must equal c*I for gain feedback to be isotropic.
+    # Row normalization does NOT achieve this (eigenvalue ratio stays ~1.44).
+    S = frame.W @ frame.W.T                          # N×N frame operator
+    eigvals, eigvecs = np.linalg.eigh(S)
+    S_inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+    N_neu, K_neu = frame.W.shape
+    frame.W = np.sqrt(K_neu / N_neu) * (S_inv_sqrt @ frame.W)
+    # Result: frame.W @ frame.W.T == (K/N)*I  (eigenvalue ratio = 1.0)
+
+    WWT = frame.W @ frame.W.T
+    eigvals_check = np.linalg.eigvalsh(WWT)
+    print(f"Eigenvalue ratio: {eigvals_check.max()/eigvals_check.min():.6f}")  # should print 1.000000
+
 
     # Initialize Generator with the desired stream length
     stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
@@ -184,14 +200,16 @@ if __name__ == "__main__":
     org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni = engine_org_uni.run_simulation(seq_uni)
     
     results['org_uni'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
-                                   frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1])
+                                   frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1],
+                                   z_spont=Z_SPONT)
                                    
     # 2. Non-Adaptive Biased
     engine_org_bias = V1Dynamics(tunings, frame, adaptive=False)
     org_bias_rates, _, u_hist_org_bias, a_hist_org_bias = engine_org_bias.run_simulation(seq_bias)
     
     results['org_bias'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
-                                    frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1])
+                                    frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1],
+                                    z_spont=Z_SPONT)
     
     # --- SCENARIO B: Adaptive ORGaNICs ---
     print("\n--- Running Adaptive Models ---")
@@ -210,8 +228,9 @@ if __name__ == "__main__":
     
     # 2. Probe Uniform State 
     print("Probing Uniform State...")
-    results['adp_uni'] = run_probe(frame, tunings, final_gains_uni, probe_angles, 
-                                   frozen_u=final_u_uni, frozen_a=final_a_uni)
+    results['adp_uni'] = run_probe(frame, tunings, final_gains_uni, probe_angles,
+                                   frozen_u=final_u_uni, frozen_a=final_a_uni,
+                                   z_spont=Z_SPONT)
     
     # 3. Adapt to Biased
     print("Adapting to Biased Ensemble...")
@@ -226,7 +245,8 @@ if __name__ == "__main__":
     # 4. Probe Biased State
     print("Probing Biased State...")
     results['adp_bias'] = run_probe(frame, tunings, final_gains_bias, probe_angles,
-                                    frozen_u=final_u_bias, frozen_a=final_a_bias)
+                                    frozen_u=final_u_bias, frozen_a=final_a_bias,
+                                    z_spont=Z_SPONT)
 
     # 4. Processing & Normalization
     print("\nProcessing data for plotting...")
@@ -237,13 +257,13 @@ if __name__ == "__main__":
         binned_uni = get_binned_curves(tc_uni_raw, tunings.theta, probe_angles, N_BINS)
         binned_bias = get_binned_curves(tc_bias_raw, tunings.theta, probe_angles, N_BINS)
         
-        # 2. Normalize based on UNIFORM response
-        # We want Uniform Peak = 1, Uniform Min = 0
-        glob_max = np.max(binned_uni)
-        glob_min = np.min(binned_uni)
-        
-        norm_uni = (binned_uni - glob_min) / (glob_max - glob_min + 1e-9)
-        norm_bias = (binned_bias - glob_min) / (glob_max - glob_min + 1e-9)
+        # 2. Normalize per bin based on UNIFORM response
+        # Each bin's uniform curve is scaled to [0, 1]; bias uses the same reference.
+        bin_max = np.max(binned_uni, axis=1, keepdims=True)   # (N_BINS, 1)
+        bin_min = np.min(binned_uni, axis=1, keepdims=True)   # (N_BINS, 1)
+
+        norm_uni = (binned_uni - bin_min) / (bin_max - bin_min + 1e-9)
+        norm_bias = (binned_bias - bin_min) / (bin_max - bin_min + 1e-9)
         
         return norm_uni, norm_bias
 

@@ -34,11 +34,19 @@ from Carandini_plots import run_probe, get_binned_curves, gaussian_rectify
 N = 169
 N_BINS = 13
 PROBE_RES = 36
+Z_SPONT = 0.1   # Must match Carandini_plots.py Z_SPONT
 
 np.random.seed(999)
 
 # Load frame once (expensive, shared across diagnostics)
 frame = Frame(csv_path="Frames/N169_Frame.csv")
+
+# --- Canonical Tight Frame Construction (mirrors Carandini_plots.py) ---
+S = frame.W @ frame.W.T
+eigvals, eigvecs = np.linalg.eigh(S)
+S_inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+N_neu, K_neu = frame.W.shape
+frame.W = np.sqrt(K_neu / N_neu) * (S_inv_sqrt @ frame.W)
 
 # Probe setup
 probe_angles = np.linspace(0, np.pi, PROBE_RES)
@@ -49,16 +57,20 @@ stim_gen_ref = StimulusGenerator(N=N, K=N, stream_length=1)
 adaptor_idx = N // 2
 adaptor_rad = stim_gen_ref.theta_inputs[adaptor_idx]
 adaptor_deg = adaptor_rad * 180 / np.pi
-x_axis = probe_angles_deg - adaptor_deg
+
+# Wrap x-axis to [-90, 90] and pre-sort (mirrors Carandini_plots.py)
+x_axis = (probe_angles_deg - adaptor_deg + 90) % 180 - 90
+sort_idx = np.argsort(x_axis)
+x_axis_sorted = x_axis[sort_idx]
 
 # Colors
 blue_colors = plt.cm.Blues(np.linspace(0.4, 1.0, N_BINS))
 
 
 def plot_tuning_panel(ax, binned_norm, title=None):
-    """Draw one 'bottom-right style' subplot: 13 binned tuning curves."""
+    """Draw one subplot: 13 binned tuning curves, sorted and wrapped to [-90, 90]."""
     for i in range(N_BINS):
-        ax.plot(x_axis, binned_norm[i], color=blue_colors[i], linewidth=1.5)
+        ax.plot(x_axis_sorted, binned_norm[i][sort_idx], color=blue_colors[i], linewidth=1.5)
     ax.axvline(0, color='red', linestyle='--', alpha=0.5)
     ax.set_xlim(-90, 90)
     ax.grid(True, alpha=0.3)
@@ -66,13 +78,19 @@ def plot_tuning_panel(ax, binned_norm, title=None):
         ax.set_title(title, fontweight='bold')
 
 
-def normalize_with_reference(binned_bias, ref_max, ref_min):
-    """Normalize biased curves using the uniform reference scale."""
-    return (binned_bias - ref_min) / (ref_max - ref_min + 1e-9)
+def normalize_per_bin(binned_uni, binned_target):
+    """
+    Per-bin normalization: each bin's uniform curve defines the [0, 1] scale;
+    binned_target is normalized against the same per-bin reference.
+    Values below 0 indicate sub-spontaneous suppression.
+    """
+    bin_max = np.max(binned_uni, axis=1, keepdims=True)   # (N_BINS, 1)
+    bin_min = np.min(binned_uni, axis=1, keepdims=True)   # (N_BINS, 1)
+    return (binned_target - bin_min) / (bin_max - bin_min + 1e-9)
 
 
 def run_probe_noisy(frame, tunings, fixed_gains, probe_angles,
-                    noise_level=0.2, probe_steps=100):
+                    noise_level=0.2, probe_steps=100, z_spont=Z_SPONT):
     """Like run_probe but adds independent Gaussian white noise to the input
     at every integration step, simulating broadband orientation noise."""
     N_loc = frame.dim
@@ -85,14 +103,15 @@ def run_probe_noisy(frame, tunings, fixed_gains, probe_angles,
     beta = 1.0
     sigma_const = 0.05
 
-    y = np.zeros(N_loc)
-    u = np.zeros(N_loc)
-    a = np.zeros(N_loc)
-
     for i, angle in enumerate(probe_angles):
-        # Clean signal component (same as run_probe)
+        # Reinitialize per probe angle (start near spontaneous resting state)
+        y = z_spont * np.ones(N_loc)
+        u = np.zeros(N_loc)
+        a = np.zeros(N_loc)
+
+        # Clean signal component
         diff = np.abs(tunings.theta - angle)
-        diff = np.minimum(diff, 2 * np.pi - diff)
+        diff = np.minimum(diff, np.pi - diff)   # circular wrap (was 2π - diff, incorrect)
         z_signal = np.exp(-(diff ** 2) / (2 * (np.pi / 8) ** 2))
 
         for _ in range(probe_steps):
@@ -112,7 +131,7 @@ def run_probe_noisy(frame, tunings, fixed_gains, probe_angles,
                 gain_feedback = 0.0
 
             recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
-            input_drive = (beta * z_t) / 2
+            input_drive = (beta * z_t) / 2 + z_spont
 
             pool_term = tunings.N_matrix @ (y_plus * (u_plus ** 2))
 
@@ -155,21 +174,19 @@ def diagnostic_convergence():
     # --- Uniform reference (fully adapted) ---
     print("\nAdapting to Uniform Ensemble (reference)...")
     engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_uni = engine_uni.run_simulation(seq_uni)
+    _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
     final_gains_uni = gains_hist_uni[:, -1].copy()
     del gains_hist_uni, engine_uni
     gc.collect()
 
     print("Probing Uniform reference...")
-    tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles)
+    tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles, z_spont=Z_SPONT)
     binned_uni = get_binned_curves(tc_uni_raw, tunings.theta, probe_angles, N_BINS)
-    ref_max = np.max(binned_uni)
-    ref_min = np.min(binned_uni)
 
     # --- Biased adaptation (full run, keep gains_hist for checkpoints) ---
     print("\nAdapting to Biased Ensemble...")
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_bias = engine_bias.run_simulation(seq_bias)
+    _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
     del engine_bias
     gc.collect()
 
@@ -180,9 +197,9 @@ def diagnostic_convergence():
     for idx, step in enumerate(checkpoints):
         print(f"Probing at step {step}...")
         frozen_gains = gains_hist_bias[:, step - 1].copy()
-        tc_raw = run_probe(frame, tunings, frozen_gains, probe_angles)
+        tc_raw = run_probe(frame, tunings, frozen_gains, probe_angles, z_spont=Z_SPONT)
         binned = get_binned_curves(tc_raw, tunings.theta, probe_angles, N_BINS)
-        binned_norm = normalize_with_reference(binned, ref_max, ref_min)
+        binned_norm = normalize_per_bin(binned_uni, binned)
 
         ax = axes_flat[idx]
         plot_tuning_panel(ax, binned_norm, title=f"Step {step}")
@@ -213,7 +230,7 @@ def diagnostic_sigma_sweep():
     print("  DIAGNOSTIC 2: Sigma Sweep (sigma_exc=0.2)")
     print("=" * 60)
 
-    STREAM_LENGTH = 8000
+    STREAM_LENGTH = 10140
     sigma_exc = 0.15
     sigma_inh_values = [0.4, 0.5, 0.6, 0.7]
 
@@ -233,29 +250,27 @@ def diagnostic_sigma_sweep():
         # Adapt to uniform → normalization reference
         print("  Adapting to Uniform...")
         engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_uni = engine_uni.run_simulation(seq_uni)
+        _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
         final_gains_uni = gains_hist_uni[:, -1].copy()
         del gains_hist_uni, engine_uni
         gc.collect()
 
         print("  Probing Uniform...")
-        tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles)
+        tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles, z_spont=Z_SPONT)
         binned_uni = get_binned_curves(tc_uni_raw, tunings.theta, probe_angles, N_BINS)
-        ref_max = np.max(binned_uni)
-        ref_min = np.min(binned_uni)
 
         # Adapt to biased → probe → normalize
         print("  Adapting to Biased...")
         engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_bias = engine_bias.run_simulation(seq_bias)
+        _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
         final_gains_bias = gains_hist_bias[:, -1].copy()
         del gains_hist_bias, engine_bias
         gc.collect()
 
         print("  Probing Biased...")
-        tc_bias_raw = run_probe(frame, tunings, final_gains_bias, probe_angles)
+        tc_bias_raw = run_probe(frame, tunings, final_gains_bias, probe_angles, z_spont=Z_SPONT)
         binned_bias = get_binned_curves(tc_bias_raw, tunings.theta, probe_angles, N_BINS)
-        binned_norm = normalize_with_reference(binned_bias, ref_max, ref_min)
+        binned_norm = normalize_per_bin(binned_uni, binned_bias)
 
         ax = axes_flat[idx]
         plot_tuning_panel(ax, binned_norm, title=label)
@@ -288,7 +303,7 @@ def diagnostic_tuning_width_sweep():
     print("  DIAGNOSTIC 3: Tuning Width Sweep (w = 1 – 6)")
     print("=" * 60)
 
-    STREAM_LENGTH = 8000
+    STREAM_LENGTH = 10140
     tuning_widths = [1, 1.5, 2, 2.5]
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
@@ -308,31 +323,29 @@ def diagnostic_tuning_width_sweep():
         # Uniform adaptation → normalization reference
         print("  Adapting to Uniform...")
         engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_uni = engine_uni.run_simulation(seq_uni)
+        _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
         final_gains_uni = gains_hist_uni[:, -1].copy()
         del gains_hist_uni, engine_uni
         gc.collect()
 
         print("  Probing Uniform...")
-        tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles)
+        tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles, z_spont=Z_SPONT)
         binned_uni = get_binned_curves(tc_uni_raw, tunings.theta,
                                        probe_angles, N_BINS)
-        ref_max = np.max(binned_uni)
-        ref_min = np.min(binned_uni)
 
         # Biased adaptation → probe → normalize
         print("  Adapting to Biased...")
         engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_bias = engine_bias.run_simulation(seq_bias)
+        _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
         final_gains_bias = gains_hist_bias[:, -1].copy()
         del gains_hist_bias, engine_bias
         gc.collect()
 
         print("  Probing Biased...")
-        tc_bias_raw = run_probe(frame, tunings, final_gains_bias, probe_angles)
+        tc_bias_raw = run_probe(frame, tunings, final_gains_bias, probe_angles, z_spont=Z_SPONT)
         binned_bias = get_binned_curves(tc_bias_raw, tunings.theta,
                                         probe_angles, N_BINS)
-        binned_norm = normalize_with_reference(binned_bias, ref_max, ref_min)
+        binned_norm = normalize_per_bin(binned_uni, binned_bias)
 
         ax = axes_flat[idx]
         plot_tuning_panel(ax, binned_norm, title=label)
@@ -372,7 +385,7 @@ def diagnostic_noise_probe(noise_level=0.4):
     # --- Adapt to Uniform ---
     print("\nAdapting to Uniform Ensemble...")
     engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_uni = engine_uni.run_simulation(seq_uni)
+    _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
     final_gains_uni = gains_hist_uni[:, -1].copy()
     del gains_hist_uni, engine_uni
     gc.collect()
@@ -380,7 +393,7 @@ def diagnostic_noise_probe(noise_level=0.4):
     # --- Adapt to Biased ---
     print("Adapting to Biased Ensemble...")
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_bias = engine_bias.run_simulation(seq_bias)
+    _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
     final_gains_bias = gains_hist_bias[:, -1].copy()
     del gains_hist_bias, engine_bias
     gc.collect()
@@ -388,21 +401,19 @@ def diagnostic_noise_probe(noise_level=0.4):
     # --- Noisy probes ---
     print("Probing Uniform state (with noise)...")
     tc_uni_raw = run_probe_noisy(frame, tunings, final_gains_uni,
-                                 probe_angles, noise_level=noise_level)
+                                 probe_angles, noise_level=noise_level,
+                                 z_spont=Z_SPONT)
     print("Probing Biased state (with noise)...")
     tc_bias_raw = run_probe_noisy(frame, tunings, final_gains_bias,
-                                  probe_angles, noise_level=noise_level)
+                                  probe_angles, noise_level=noise_level,
+                                  z_spont=Z_SPONT)
 
-    # --- Bin & Normalize (uniform reference) ---
-    binned_uni = get_binned_curves(tc_uni_raw, tunings.theta,
-                                   probe_angles, N_BINS)
-    binned_bias = get_binned_curves(tc_bias_raw, tunings.theta,
-                                    probe_angles, N_BINS)
-    ref_max = np.max(binned_uni)
-    ref_min = np.min(binned_uni)
+    # --- Bin & Normalize per bin (uniform reference) ---
+    binned_uni = get_binned_curves(tc_uni_raw, tunings.theta, probe_angles, N_BINS)
+    binned_bias = get_binned_curves(tc_bias_raw, tunings.theta, probe_angles, N_BINS)
 
-    norm_uni = normalize_with_reference(binned_uni, ref_max, ref_min)
-    norm_bias = normalize_with_reference(binned_bias, ref_max, ref_min)
+    norm_uni = normalize_per_bin(binned_uni, binned_uni)
+    norm_bias = normalize_per_bin(binned_uni, binned_bias)
 
     # --- Plot 1x2 ---
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
