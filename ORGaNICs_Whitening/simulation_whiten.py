@@ -27,6 +27,7 @@ class V1Dynamics:
         self.tau_u = 2.0      
         self.tau_g = 200.0    
         self.tau_v = 0.5      
+        self.tau_avg = 400.0
         
         self.beta = 1.0 
         self.sigma = 0.05     
@@ -42,6 +43,7 @@ class V1Dynamics:
         u = state[N:2*N]
         a = state[2*N:3*N]
         g = state[3*N:3*N+K]
+        avg = state[3*N+2*K:3*N+2*K+1]
         
         u_plus = self.gaussian_rectify(u)
         y_plus = self.gaussian_rectify(y)
@@ -51,13 +53,15 @@ class V1Dynamics:
         if self.adaptive:
             v_t = self.frame.W.T @ y
             gain_feedback = self.frame.W @ (g * v_t)
-            target = np.sum((y) ** 2) / N 
-            dg_dt = (v_t * v_t - target) / self.tau_g
+            davg_dt = (-avg + np.linalg.norm(y))/self.tau_avg
+            #target = avg / N 
+            dg_dt = (v_t * v_t - (avg/ N)**2) / self.tau_g
             dv_dt = (-v_t + self.frame.W.T @ y) / self.tau_v
         else:
             gain_feedback = 0.0
             dg_dt = np.zeros(K)
             dv_dt = np.zeros(K)
+            davg_dt = np.zeros(1)
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
         input_drive = (self.beta * z_t) / 2
@@ -69,13 +73,13 @@ class V1Dynamics:
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
         
-        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt])
+        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt, davg_dt])
         
     def run_simulation(self, stimulus_stream):
         N, n_steps = stimulus_stream.shape 
         K = self.frame.K
         
-        state = np.zeros(3*N + 2*K)
+        state = np.zeros(3*N + 2*K + 1)
         
         membrane_hist = np.zeros((N, n_steps))
         gains_hist = np.zeros((K, n_steps))
@@ -98,7 +102,7 @@ class V1Dynamics:
             
             state += (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
             
-            state[3*N:3*N+K] = np.maximum(state[3*N:3*N+K], 0.0)
+            state[3*N:3*N+K] = np.maximum(state[3*N:3*N+K], -0.5)
             
             membrane_hist[:, t] = np.maximum(state[0:N], 0)
             u_hist[:, t] = state[N:2*N]

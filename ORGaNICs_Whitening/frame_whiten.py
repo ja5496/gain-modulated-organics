@@ -108,7 +108,7 @@ class Frame:
 if __name__ == "__main__":
    if __name__ == "__main__":
     # Visualize with N=2, K=3
-    np.random.seed(999) # For reproducibility
+    np.random.seed(20) # For reproducibility
     frame = Frame(dim=2)
     print(f"Frame W shape: {frame.W.shape}")
     print(f"Frame vectors:\n{frame.W}")
@@ -116,11 +116,11 @@ if __name__ == "__main__":
     # This will block execution until you manually close the plot window
     frame.plot_frame() 
     plt.close('all') # Good practice to clean up backend resources immediately
-
+'''
     # Create and save N=100 frame to csv for reuse in simulations
     np.random.seed(42)
     frame_169 = Frame(dim=169)
     np.savetxt("N169_Frame2.csv", frame_169.W, delimiter=",")
     
     # FIXED: Changed 'frame_255' to 'frame_100' so the script finishes successfully
-    print(f"Saved N=169 frame to N169_Frame.csv (shape: {frame_169.W.shape})")
+    print(f"Saved N=169 frame to N169_Frame.csv (shape: {frame_169.W.shape})")'''
