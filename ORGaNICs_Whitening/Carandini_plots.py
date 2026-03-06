@@ -30,7 +30,7 @@ Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneo
 
 np.random.seed(20)
 
-def gaussian_rectify(y, threshold=0.5, sigma=0.2, r_max=1.0):
+def gaussian_rectify(y, threshold=0.5, sigma=0.2, r_max=1.0): # before: 0.5, 0.3 for threshold and sigma
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
@@ -68,10 +68,15 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
         u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N)
         a = np.copy(frozen_a) if frozen_a is not None else np.zeros(N)
 
-        # 1. Construct Input for this probe angle
-        diff = np.abs(tunings.theta - angle)
-        diff = np.minimum(diff,  np.pi - diff)
-        z_t = np.exp(- (diff ** 2) / (2 * (np.pi/8) ** 2))
+        # 1. Construct Input for this probe angle (Matching StimulusGenerator)
+        tuning_width = 0.5 # Make sure this matches the "tuning_width" in "stimuli.py"
+        scale = 1.0     # Make sure this matches with scale in "stimuli.py"
+        
+        # Von Mises / Raised Cosine
+        z_t = np.exp(tuning_width * np.cos(2 * (tunings.theta - angle)))
+        
+        # Normalize and scale to match StimulusGenerator logic
+        z_t = (z_t / np.max(z_t)) * scale
 
         # 2. Settle to steady state
         for _ in range(PROBE_STEPS):
@@ -273,7 +278,7 @@ if __name__ == "__main__":
 
     # 5. Plotting
     # Added sharey='row' here so that each row shares the same y-axis scale
-    fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharey='row', gridspec_kw={'height_ratios': [0.8, 1.5, 1.5]})
+    fig, axes = plt.subplots(3, 2, figsize=(10, 9), sharey='row', gridspec_kw={'height_ratios': [0.8, 1.0, 1.2]})
     
     # Setup x-axis relative to adaptor and wrap to [-90, 90)
     x_axis = (probe_angles_deg - adaptor_deg + 90) % 180 - 90
@@ -316,7 +321,6 @@ if __name__ == "__main__":
         axes[1, 1].plot(x_axis_sorted, row2_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
     axes[1, 0].set_ylabel("Non-Adaptive\nNormalized Response", fontweight='bold')
-    axes[1, 0].set_title("Response (Control)")
     
     # --- ROW 3: Adaptive ---
     for i in range(N_BINS):
@@ -324,7 +328,6 @@ if __name__ == "__main__":
         axes[2, 1].plot(x_axis_sorted, row3_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
     axes[2, 0].set_ylabel("Adaptive\nNormalized Response", fontweight='bold')
-    axes[2, 0].set_title("Response (Adapted)")
 
     # --- Global Formatting ---
     for r in [1, 2]:
@@ -339,7 +342,6 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    
 
     # =================================================================
     # FIGURE 2: Average Steady-State Response per Orientation Bin
@@ -423,7 +425,7 @@ if __name__ == "__main__":
     axes2[1].plot(x_peak_sorted, peaks_adp_bias[sort_idx_2], 'o-', color='steelblue',
                   linewidth=2, markersize=5, label='Adaptive')
     axes2[1].plot(x_peak_sorted, peaks_org_bias[sort_idx_2], 's--', color='coral',
-                  linewidth=2, markersize=5, label='ORGaNICs')
+                  linewidth=2, markersize=5, label='Non-Adaptive')
     axes2[1].set_title("Biased Ensemble", fontweight='bold')
     axes2[1].set_xlabel("Orientation Relative to Adaptor (°)")
     axes2[1].set_xlim(-90, 90)
