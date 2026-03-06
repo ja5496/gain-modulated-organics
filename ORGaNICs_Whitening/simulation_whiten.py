@@ -55,7 +55,7 @@ class V1Dynamics:
             gain_feedback = self.frame.W @ (g * v_t)
             davg_dt = (-avg + np.linalg.norm(y))/self.tau_avg
             #target = avg / N 
-            dg_dt = (v_t * v_t - (avg/ N)**2) / self.tau_g
+            dg_dt = (v_t * v_t - (avg)**2/ N) / self.tau_g
             dv_dt = (-v_t + self.frame.W.T @ y) / self.tau_v
         else:
             gain_feedback = 0.0
@@ -102,7 +102,7 @@ class V1Dynamics:
             
             state += (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
             
-            state[3*N:3*N+K] = np.maximum(state[3*N:3*N+K], -0.5)
+            state[3*N:3*N+K] = np.maximum(state[3*N:3*N+K], 0)
             
             membrane_hist[:, t] = np.maximum(state[0:N], 0)
             u_hist[:, t] = state[N:2*N]

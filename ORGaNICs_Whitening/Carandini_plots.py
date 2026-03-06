@@ -272,7 +272,8 @@ if __name__ == "__main__":
     row3_uni, row3_bias = process_pair(results['adp_uni'], results['adp_bias'])
 
     # 5. Plotting
-    fig, axes = plt.subplots(3, 2, figsize=(12, 9), gridspec_kw={'height_ratios': [0.8, 1.5, 1.5]})
+    # Added sharey='row' here so that each row shares the same y-axis scale
+    fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharey='row', gridspec_kw={'height_ratios': [0.8, 1.5, 1.5]})
     
     # Setup x-axis relative to adaptor and wrap to [-90, 90)
     x_axis = (probe_angles_deg - adaptor_deg + 90) % 180 - 90
@@ -290,18 +291,21 @@ if __name__ == "__main__":
     # Shift the bin edges left by half a step to avoid boundary collisions
     bins_hist = np.linspace(0, 180, N_BINS + 1) - (discrete_step / 2)
     
+    # Calculate weights for probabilities (so bar heights sum to 1)
+    weights_uni = np.ones_like(hist_uni) / len(hist_uni)
+    weights_bias = np.ones_like(hist_bias) / len(hist_bias)
+
     # Uniform Hist
-    axes[0, 0].hist(hist_uni, bins=bins_hist, color='black', rwidth=0.9)
+    axes[0, 0].hist(hist_uni, bins=bins_hist, weights=weights_uni, color='black', rwidth=0.9)
     axes[0, 0].set_title("Uniform Ensemble", fontweight='bold')
-    axes[0, 0].set_ylabel("Count")
+    axes[0, 0].set_ylabel("Probability")
     
     # Biased Hist
-    axes[0, 1].hist(hist_bias, bins=bins_hist, color='black', rwidth=0.9)
+    axes[0, 1].hist(hist_bias, bins=bins_hist, weights=weights_bias, color='black', rwidth=0.9)
     axes[0, 1].set_title("Biased Ensemble", fontweight='bold')
     
     # Clean up Row 1
     for ax in axes[0]:
-        ax.axvline(adaptor_deg, color='red', linestyle='--', alpha=0.5)
         ax.set_xlim(0, 180)
         ax.tick_params(labelbottom=False)
 
@@ -326,7 +330,6 @@ if __name__ == "__main__":
     for r in [1, 2]:
         for c in [0, 1]:
             ax = axes[r, c]
-            ax.axvline(0, color='red', linestyle='--', alpha=0.5, label='Adaptor')
             ax.set_xlim(-90, 90) # Centered view
             ax.grid(True, alpha=0.3)
             
@@ -413,7 +416,6 @@ if __name__ == "__main__":
     axes2[0].set_title("Adaptive: Uniform Ensemble", fontweight='bold')
     axes2[0].set_ylabel("Average Response")
     axes2[0].set_xlabel("Orientation Relative to Adaptor (°)")
-    axes2[0].axvline(0, color='red', linestyle='--', alpha=0.5)
     axes2[0].set_xlim(-90, 90)
     axes2[0].grid(True, alpha=0.3)
 
@@ -424,7 +426,6 @@ if __name__ == "__main__":
                   linewidth=2, markersize=5, label='ORGaNICs')
     axes2[1].set_title("Biased Ensemble", fontweight='bold')
     axes2[1].set_xlabel("Orientation Relative to Adaptor (°)")
-    axes2[1].axvline(0, color='red', linestyle='--', alpha=0.5)
     axes2[1].set_xlim(-90, 90)
     axes2[1].legend()
     axes2[1].grid(True, alpha=0.3)
