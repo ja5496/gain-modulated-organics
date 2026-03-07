@@ -14,6 +14,7 @@ class V1Tunings: # Artificial tuning curves of each neuron
         self.theta = np.linspace(0, np.pi, N, endpoint=False)
         self.W_yy = self._make_recurrent_weights(sigma_exc, sigma_inh, A_exc, A_inh)
         self.N_matrix = np.ones((N, N))
+        #self.N_matrix = np.random.rand(self.N, self.N)
 
     def _make_recurrent_weights(self, sigma_exc, sigma_inh, A_exc, A_inh):
         '''

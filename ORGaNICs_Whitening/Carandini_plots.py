@@ -70,7 +70,7 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
 
         # 1. Construct Input for this probe angle (Matching StimulusGenerator)
         tuning_width = 0.5 # Make sure this matches the "tuning_width" in "stimuli.py"
-        scale = 1.0     # Make sure this matches with scale in "stimuli.py"
+        scale = 0.5     # Make sure this matches with scale in "stimuli.py"
         
         # Von Mises / Raised Cosine
         z_t = np.exp(tuning_width * np.cos(2 * (tunings.theta - angle)))
@@ -409,28 +409,24 @@ if __name__ == "__main__":
     x_peak = (bin_centers_deg - adaptor_deg + 90) % 180 - 90
     sort_idx_2 = np.argsort(x_peak)
     x_peak_sorted = x_peak[sort_idx_2]
-    
-    fig2, axes2 = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
 
-    # Left: Adaptive + Uniform
-    axes2[0].plot(x_peak_sorted, peaks_adp_uni[sort_idx_2], 'o-', color='steelblue',
-                  linewidth=2, markersize=5, label='Adaptive')
-    axes2[0].set_title("Adaptive: Uniform Ensemble", fontweight='bold')
-    axes2[0].set_ylabel("Average Response")
-    axes2[0].set_xlabel("Orientation Relative to Adaptor (°)")
-    axes2[0].set_xlim(-90, 90)
-    axes2[0].grid(True, alpha=0.3)
+    # Normalize each response by its overall mean
+    norm_adp_bias = peaks_adp_bias / np.mean(peaks_adp_bias)
+    norm_org_bias = peaks_org_bias / np.mean(peaks_org_bias)
 
-    # Right: Biased — Adaptive vs ORGaNICs
-    axes2[1].plot(x_peak_sorted, peaks_adp_bias[sort_idx_2], 'o-', color='steelblue',
-                  linewidth=2, markersize=5, label='Adaptive')
-    axes2[1].plot(x_peak_sorted, peaks_org_bias[sort_idx_2], 's--', color='coral',
-                  linewidth=2, markersize=5, label='Non-Adaptive')
-    axes2[1].set_title("Biased Ensemble", fontweight='bold')
-    axes2[1].set_xlabel("Orientation Relative to Adaptor (°)")
-    axes2[1].set_xlim(-90, 90)
-    axes2[1].legend()
-    axes2[1].grid(True, alpha=0.3)
+    fig2, ax2 = plt.subplots(1, 1, figsize=(6, 4))
+
+    ax2.axhline(1, color='grey', linestyle='--', linewidth=1.2, zorder=1)
+    ax2.plot(x_peak_sorted, norm_adp_bias[sort_idx_2], 'o-', color='steelblue',
+             linewidth=2, markersize=5, label='Adaptive')
+    ax2.plot(x_peak_sorted, norm_org_bias[sort_idx_2], 's-', color='coral',
+             linewidth=2, markersize=5, label='Non-Adaptive')
+    ax2.set_title("Biased Ensemble: Normalized Response", fontweight='bold')
+    ax2.set_ylabel("Response / Mean Response")
+    ax2.set_xlabel("Orientation (°)")
+    ax2.set_xlim(-90, 90)
+    ax2.legend()
+    ax2.grid(False)
 
     fig2.suptitle("Average Steady State Response",
                   fontweight='bold', fontsize=13)
