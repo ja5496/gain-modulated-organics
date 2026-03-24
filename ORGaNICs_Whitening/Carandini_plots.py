@@ -288,7 +288,7 @@ if __name__ == "__main__":
     x_axis_sorted = x_axis[sort_idx]
     
     # Colors
-    blue_colors = plt.cm.Blues(np.linspace(0.4, 1.0, N_BINS))
+    blue_colors = plt.cm.RdPu(np.linspace(0.2, 1.0, N_BINS))
     
     # --- ROW 1: Histograms ---
     discrete_step = 180 / N 

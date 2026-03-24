@@ -53,8 +53,7 @@ class V1Dynamics:
         if self.adaptive:
             v_t = self.frame.W.T @ y
             gain_feedback = self.frame.W @ (g * v_t)
-            davg_dt = (-avg + np.linalg.norm(y))/self.tau_avg
-            #target = avg / N 
+            davg_dt = (-avg + np.linalg.norm(y)) / self.tau_avg
             dg_dt = (v_t * v_t - (avg)**2/ N) / self.tau_g
             dv_dt = (-v_t + self.frame.W.T @ y) / self.tau_v
         else:
@@ -62,9 +61,10 @@ class V1Dynamics:
             dg_dt = np.zeros(K)
             dv_dt = np.zeros(K)
             davg_dt = np.zeros(1)
+            dbeta_dt = np.ones(N)
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
-        input_drive = (self.beta * z_t) / 2
+        input_drive = (self.beta * z_t) / 2 # Renamed from self.beta to beta to allow adaptation
         
         sigma_term = (self.sigma) ** 2
         pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
@@ -79,7 +79,7 @@ class V1Dynamics:
         N, n_steps = stimulus_stream.shape 
         K = self.frame.K
         
-        state = np.zeros(3*N + 2*K + 1)
+        state = np.zeros(3*N + 2*K + 1) 
         
         membrane_hist = np.zeros((N, n_steps))
         gains_hist = np.zeros((K, n_steps))
