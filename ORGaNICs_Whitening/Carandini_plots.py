@@ -17,7 +17,6 @@ from scipy.special import erf
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics
-import matplotlib.pyplot as plt
 
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
@@ -30,21 +29,15 @@ Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneo
 
 np.random.seed(20)
 
-def gaussian_rectify(y, threshold=0.5, sigma=0.2, r_max=1.0): # before: 0.5, 0.3 for threshold and sigma
+def gaussian_rectify(y, threshold=0.5, sigma=0.2, r_max=1.0): 
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
-              z_spont=0.3):
+              z_spont=0.3, scale=0.5):
     """
     Measures tuning curves by simulating the network response to specific
     probe orientations while holding gains constant. u, and a are taken from
     their last values and then adapted.
-
-    z_spont: constant tonic drive added to every neuron's dy equation, representing
-             spontaneous LGN background firing. Setting this above 0 establishes a
-             positive resting firing rate so that adaptation-induced suppression can
-             push responses below baseline (i.e., appear as negative relative firing).
-             Tune this value: larger → higher spontaneous rate, easier to see suppression.
     """
     N, K = frame.dim, frame.K
     n_probes = len(probe_angles)
@@ -57,7 +50,15 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
     tau_u = 2.0
     tau_a = 5.0
     beta = 1.0
-    sigma_const = 0.05
+    sigma_const = 0.10
+
+    # --- Naka-Rushton LGN Input Mapping ---
+    R_max_lgn = 1.5
+    c_50_lgn = sigma_const  # Using sigma_const as the semi-saturation parameter
+    n_exp = 1.0
+    
+    # Convert linear contrast (scale) into a saturated biological drive
+    contrast_drive = R_max_lgn * (scale**n_exp) / (scale**n_exp + c_50_lgn**n_exp)
 
     for i, angle in enumerate(probe_angles):
 
@@ -68,15 +69,14 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
         u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N)
         a = np.copy(frozen_a) if frozen_a is not None else np.zeros(N)
 
-        # 1. Construct Input for this probe angle (Matching StimulusGenerator)
-        tuning_width = 0.5 # Make sure this matches the "tuning_width" in "stimuli.py"
-        scale = 0.5     # Make sure this matches with scale in "stimuli.py"
+        # 1. Construct Input for this probe angle
+        tuning_width = 0.5 
         
         # Von Mises / Raised Cosine
         z_t = np.exp(tuning_width * np.cos(2 * (tunings.theta - angle)))
         
-        # Normalize and scale to match StimulusGenerator logic
-        z_t = (z_t / np.max(z_t)) * scale
+        # Apply the saturated contrast drive here instead of raw scale
+        z_t = (z_t / np.max(z_t)) * contrast_drive
 
         # 2. Settle to steady state
         for _ in range(PROBE_STEPS):
@@ -94,7 +94,6 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
                 gain_feedback = 0.0
 
             recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
-            # z_spont: uniform tonic background drive from spontaneous LGN activity
             input_drive = (beta * z_t) / 2 + z_spont
 
             # Derivatives
@@ -118,24 +117,18 @@ def get_binned_curves(tuning_curves, neuron_preferences, probe_angles, n_bins=13
     Aggregates individual neuron tuning curves into N_BINS groups based on 
     their preferred orientation.
     """
-    # Calculate the exact mathematical space between your 169 neurons
     N_neurons = len(neuron_preferences)
     discrete_step = np.pi / N_neurons
     
-    # Shift the bin edges left by half a step to avoid boundary collisions
     bin_edges = np.linspace(0, np.pi, n_bins + 1) - (discrete_step / 2)
-    
-    # Result container: (n_bins, n_probe_angles)
     binned_response = np.zeros((n_bins, len(probe_angles)))
     
-    # Assign neurons to bins
     neuron_bin_indices = np.digitize(neuron_preferences, bin_edges) - 1
     neuron_bin_indices = np.clip(neuron_bin_indices, 0, n_bins - 1)
     
     for b in range(n_bins):
         mask = neuron_bin_indices == b
         if np.any(mask):
-            # Average the curves of all neurons in this bin
             binned_response[b, :] = np.mean(tuning_curves[mask, :], axis=0)
             
     return binned_response
@@ -151,38 +144,27 @@ if __name__ == "__main__":
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
     
-    # --- Canonical Tight Frame Construction ---
-    # W @ W.T must equal c*I for gain feedback to be isotropic.
-    # Row normalization does NOT achieve this (eigenvalue ratio stays ~1.44).
-    S = frame.W @ frame.W.T                          # N×N frame operator
+    S = frame.W @ frame.W.T                          
     eigvals, eigvecs = np.linalg.eigh(S)
     S_inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
     N_neu, K_neu = frame.W.shape
     frame.W = np.sqrt(K_neu / N_neu) * (S_inv_sqrt @ frame.W)
-    # Result: frame.W @ frame.W.T == (K/N)*I  (eigenvalue ratio = 1.0)
 
     WWT = frame.W @ frame.W.T
     eigvals_check = np.linalg.eigvalsh(WWT)
-    print(f"Eigenvalue ratio: {eigvals_check.max()/eigvals_check.min():.6f}")  # should print 1.000000
+    print(f"Eigenvalue ratio: {eigvals_check.max()/eigvals_check.min():.6f}")
 
-
-    # Initialize Generator with the desired stream length
     stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
     
-    # Define the "Adaptor" location (matches logic in stimuli_whiten.py: K // 2 + 1)
     adaptor_idx = N // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
     adaptor_deg = adaptor_rad * 180 / np.pi
     
     # 2. Generate Adaptation Streams
     print("Generating adaptation streams...")
-    # Uniform
     seq_uni = stim_gen.generate_input_ensembles(biased=False)
-    # Biased
     seq_bias = stim_gen.generate_input_ensembles(biased=True)
     
-    # Recover orientations for the histogram (argmax of input drive)
-    # Since generate_input_ensembles doesn't return the angles, we infer them.
     uni_indices = np.argmax(seq_uni, axis=0)
     bias_indices = np.argmax(seq_bias, axis=0)
     
@@ -190,8 +172,6 @@ if __name__ == "__main__":
     hist_bias = stim_gen.theta_inputs[bias_indices] * 180/np.pi
 
     # 3. Run Simulations & Probes
-    
-    # Define Probe Angles (Clean sweep 0 to 180)
     probe_angles = np.linspace(0, np.pi, PROBE_RES)
     probe_angles_deg = probe_angles * 180 / np.pi
     
@@ -200,7 +180,6 @@ if __name__ == "__main__":
     # --- SCENARIO A: ORGaNICs (Non-Adaptive) ---
     print("\n--- Running Non-Adaptive Models ---")
     
-    # 1. Non-Adaptive Uniform
     engine_org_uni = V1Dynamics(tunings, frame, adaptive=False)
     org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni = engine_org_uni.run_simulation(seq_uni)
     
@@ -208,7 +187,6 @@ if __name__ == "__main__":
                                    frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1],
                                    z_spont=Z_SPONT)
                                    
-    # 2. Non-Adaptive Biased
     engine_org_bias = V1Dynamics(tunings, frame, adaptive=False)
     org_bias_rates, _, u_hist_org_bias, a_hist_org_bias = engine_org_bias.run_simulation(seq_bias)
     
@@ -219,35 +197,27 @@ if __name__ == "__main__":
     # --- SCENARIO B: Adaptive ORGaNICs ---
     print("\n--- Running Adaptive Models ---")
     
-    # 1. Adapt to Uniform
     print("Adapting to Uniform Ensemble...")
     engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    
-    # Grab the histories
     adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni = engine_uni.run_simulation(seq_uni)
     
-    # Grab the final state for all three variables
     final_gains_uni = gains_hist_uni[:, -1] 
     final_u_uni = u_hist_uni[:, -1]
     final_a_uni = a_hist_uni[:, -1]
     
-    # 2. Probe Uniform State 
     print("Probing Uniform State...")
     results['adp_uni'] = run_probe(frame, tunings, final_gains_uni, probe_angles,
                                    frozen_u=final_u_uni, frozen_a=final_a_uni,
                                    z_spont=Z_SPONT)
     
-    # 3. Adapt to Biased
     print("Adapting to Biased Ensemble...")
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
     adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias = engine_bias.run_simulation(seq_bias)
     
-    # Grab the final column for all three variables again
     final_gains_bias = gains_hist_bias[:, -1] 
     final_u_bias = u_hist_bias[:, -1]
     final_a_bias = a_hist_bias[:, -1]
     
-    # 4. Probe Biased State
     print("Probing Biased State...")
     results['adp_bias'] = run_probe(frame, tunings, final_gains_bias, probe_angles,
                                     frozen_u=final_u_bias, frozen_a=final_a_bias,
@@ -256,84 +226,62 @@ if __name__ == "__main__":
     # 4. Processing & Normalization
     print("\nProcessing data for plotting...")
     
-    # Helper to bin and normalize
     def process_pair(tc_uni_raw, tc_bias_raw):
-        # 1. Bin data
         binned_uni = get_binned_curves(tc_uni_raw, tunings.theta, probe_angles, N_BINS)
         binned_bias = get_binned_curves(tc_bias_raw, tunings.theta, probe_angles, N_BINS)
         
-        # 2. Normalize per bin based on UNIFORM response
-        # Each bin's uniform curve is scaled to [0, 1]; bias uses the same reference.
-        bin_max = np.max(binned_uni, axis=1, keepdims=True)   # (N_BINS, 1)
-        bin_min = np.min(binned_uni, axis=1, keepdims=True)   # (N_BINS, 1)
+        bin_max = np.max(binned_uni, axis=1, keepdims=True)
+        bin_min = np.min(binned_uni, axis=1, keepdims=True)
 
         norm_uni = (binned_uni - bin_min) / (bin_max - bin_min + 1e-9)
         norm_bias = (binned_bias - bin_min) / (bin_max - bin_min + 1e-9)
         
         return norm_uni, norm_bias
 
-    # Process both rows
     row2_uni, row2_bias = process_pair(results['org_uni'], results['org_bias'])
     row3_uni, row3_bias = process_pair(results['adp_uni'], results['adp_bias'])
 
-    # 5. Plotting
-    # Added sharey='row' here so that each row shares the same y-axis scale
+    # 5. Plotting (FIGURE 1)
     fig, axes = plt.subplots(3, 2, figsize=(10, 9), sharey='row', gridspec_kw={'height_ratios': [0.8, 1.0, 1.2]})
     
-    # Setup x-axis relative to adaptor and wrap to [-90, 90)
     x_axis = (probe_angles_deg - adaptor_deg + 90) % 180 - 90
-
-    # Sort the axis so matplotlib doesn't draw lines across the chart
     sort_idx = np.argsort(x_axis)
     x_axis_sorted = x_axis[sort_idx]
     
-    # Colors
     blue_colors = plt.cm.RdPu(np.linspace(0.2, 1.0, N_BINS))
     
-    # --- ROW 1: Histograms ---
     discrete_step = 180 / N 
-    
-    # Shift the bin edges left by half a step to avoid boundary collisions
     bins_hist = np.linspace(0, 180, N_BINS + 1) - (discrete_step / 2)
-    
-    # Calculate weights for probabilities (so bar heights sum to 1)
     weights_uni = np.ones_like(hist_uni) / len(hist_uni)
     weights_bias = np.ones_like(hist_bias) / len(hist_bias)
 
-    # Uniform Hist
     axes[0, 0].hist(hist_uni, bins=bins_hist, weights=weights_uni, color='black', rwidth=0.9)
     axes[0, 0].set_title("Uniform Ensemble", fontweight='bold')
     axes[0, 0].set_ylabel("Probability")
     
-    # Biased Hist
     axes[0, 1].hist(hist_bias, bins=bins_hist, weights=weights_bias, color='black', rwidth=0.9)
     axes[0, 1].set_title("Biased Ensemble", fontweight='bold')
     
-    # Clean up Row 1
     for ax in axes[0]:
         ax.set_xlim(0, 180)
         ax.tick_params(labelbottom=False)
 
-    # --- ROW 2: Non-Adaptive ---
     for i in range(N_BINS):
-        # Apply sort_idx to the y-data as well
         axes[1, 0].plot(x_axis_sorted, row2_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         axes[1, 1].plot(x_axis_sorted, row2_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
     axes[1, 0].set_ylabel("Non-Adaptive\nNormalized Response", fontweight='bold')
     
-    # --- ROW 3: Adaptive ---
     for i in range(N_BINS):
         axes[2, 0].plot(x_axis_sorted, row3_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         axes[2, 1].plot(x_axis_sorted, row3_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
     axes[2, 0].set_ylabel("Adaptive\nNormalized Response", fontweight='bold')
 
-    # --- Global Formatting ---
     for r in [1, 2]:
         for c in [0, 1]:
             ax = axes[r, c]
-            ax.set_xlim(-90, 90) # Centered view
+            ax.set_xlim(-90, 90) 
             ax.grid(True, alpha=0.3)
             
             if r == 2:
@@ -342,19 +290,14 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-
     # =================================================================
     # FIGURE 2: Average Steady-State Response per Orientation Bin
     # =================================================================
-    # Uses 10140-step simulations and measure avg firing rates
-    # directly from the running simulation (last 4,000 steps).
-
     print("\n" + "=" * 50)
     print("  FIGURE 2: Average Response per Orientation Bin")
     print("=" * 50)
 
     AVG_WINDOW = 4000
-
     discrete_step_rad = np.pi / N
     bin_edges = np.linspace(0, np.pi, N_BINS + 1) - (discrete_step_rad / 2)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
@@ -363,54 +306,38 @@ if __name__ == "__main__":
     neuron_bin_idx = np.clip(neuron_bin_idx, 0, N_BINS - 1)
 
     def get_binned_activity(rates, window):
-        """Average response per neuron over last `window` steps (only steady_state), averaged per bin."""
-        
         duration = 20
-        keep = 5 # keeps the last 5 responses to each stimuli to only count the steady state responses.
-        
+        keep = 5 
         steady_rates = rates[:, -window:]
         n_time_steps = steady_rates.shape[1]
         
-        # 1. Temporal Mask: Cycle of length `duration`, keep the last `keep` steps
         time_mask = (np.arange(n_time_steps) % duration) >= (duration - keep)
-        
-        # 2. Get steady state rates and average across time to get mean per neuron
         means = np.mean(steady_rates[:, time_mask], axis=1) 
         
         binned = np.zeros(N_BINS)
         for b in range(N_BINS):
-            # 3. Spatial Mask: applied to the neurons
             bin_mask = neuron_bin_idx == b
             if bin_mask.any():
                 binned[b] = np.mean(means[bin_mask])
                 
         return binned
 
-    # 1. Adaptive + Uniform
     print("\nAdaptive + Uniform (10k steps)...")
     peaks_adp_uni = get_binned_activity(adapt_uniform_rates, AVG_WINDOW)
-    del adapt_uniform_rates
-    gc.collect()
+    del adapt_uniform_rates; gc.collect()
 
-    # 2. Adaptive + Biased
     print("Adaptive + Biased (10k steps)...")
     peaks_adp_bias = get_binned_activity(adapt_biased_rates, AVG_WINDOW)
-    del adapt_biased_rates
-    gc.collect()
+    del adapt_biased_rates; gc.collect()
 
-    # 3. ORGaNICs + Biased
     print("ORGaNICs + Biased (10k steps)...")
     peaks_org_bias = get_binned_activity(org_bias_rates, AVG_WINDOW)
-    del org_bias_rates
-    gc.collect()
+    del org_bias_rates; gc.collect()
 
-    # Plot
-    # Wrap and sort for Figure 2
     x_peak = (bin_centers_deg - adaptor_deg + 90) % 180 - 90
     sort_idx_2 = np.argsort(x_peak)
     x_peak_sorted = x_peak[sort_idx_2]
 
-    # Normalize each response by its overall mean
     norm_adp_bias = peaks_adp_bias / np.mean(peaks_adp_bias)
     norm_org_bias = peaks_org_bias / np.mean(peaks_org_bias)
 
@@ -428,7 +355,73 @@ if __name__ == "__main__":
     ax2.legend()
     ax2.grid(False)
 
-    fig2.suptitle("Average Steady State Response",
+    fig2.suptitle("Average Steady State Response", fontweight='bold', fontsize=13)
+    plt.tight_layout()
+    plt.show()
+
+    # =================================================================
+    # FIGURE 3: Contrast Response Function
+    # =================================================================
+    print("\n" + "=" * 50)
+    print("  FIGURE 3: Contrast Response Function")
+    print("=" * 50)
+
+    contrasts = np.geomspace(0.01, 1.0, 40)
+    crf_peak = np.zeros((N, len(contrasts))) # Stores peak response for each neuron at each contrast (one stimulus orientation)
+
+    # Collect the min/max response for each neuron given a contrast, then bin the activity.
+    for ci, contrast in enumerate(contrasts):
+        print(f"  Probing contrast = {contrast:.3f}...")
+        # Probing without gain adaptation to get the baseline CRF
+        crf_tuning_curves = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
+                       scale=contrast, z_spont=Z_SPONT)
+        crf_peak[:, ci] = np.max(crf_tuning_curves, axis=1)  
+
+    crf_binned = np.zeros((N_BINS, len(contrasts))) # Stores binned peak responses at each contrast
+    for b in range(N_BINS):
+        mask = neuron_bin_idx == b # Note this is NOT stimulus masking, but instead a technique to single out bins
+        if mask.any():
+            crf_binned[b] = np.mean(crf_peak[mask], axis=0) 
+
+    # Compute sigmas dynamically based on baseline firing
+    sigmas = np.zeros(N_BINS) # Calculated semi-saturation constant for each bin (should roughly be the same)
+    for b in range(N_BINS):
+        baseline = crf_binned[b, 0] # Min firing rate for each bin
+        peak = np.max(crf_binned[b]) # Max firing rate for each bin
+        half_max = baseline + (peak - baseline) / 2.0 # Extract the half max firing rate
+        
+        above = np.where(crf_binned[b] >= half_max)[0] # For that bin, extract the first response above the half-max firing rate
+        if len(above) > 0 and above[0] > 0: # Confirming that it exists and is non-negative
+            # Record index, responses, contrasts right before and right after reaching half-max threshold
+            i0, i1 = above[0] - 1, above[0] 
+            r0, r1 = crf_binned[b, i0], crf_binned[b, i1] 
+            c0, c1 = contrasts[i0], contrasts[i1] 
+            sigmas[b] = c0 + (half_max - r0) / (r1 - r0) * (c1 - c0) # Estimate of sigmas using linear interpolation
+        elif len(above) > 0:
+            sigmas[b] = contrasts[above[0]]
+
+    fig3, ax3 = plt.subplots(1, 1, figsize=(7, 5))
+    
+    # We reuse the RdPu colormap from Figure 1
+    for b in range(N_BINS):
+        ax3.plot(contrasts, crf_binned[b], color=blue_colors[b], linewidth=1.5)
+
+    mid = N_BINS // 2 + 1
+    baseline_mid = crf_binned[mid, 0]
+    peak_mid = np.max(crf_binned[mid])
+    half_max_mid = baseline_mid + (peak_mid - baseline_mid) / 2.0
+    
+    ax3.axhline(half_max_mid, color='grey', linestyle=':', linewidth=1.0)
+    ax3.axvline(sigmas[mid], color='grey', linestyle=':', linewidth=1.0,
+                label=f'σ = {sigmas[mid]:.2f}')
+
+    ax3.set_xscale('log')
+    ax3.set_title("Contrast Response Function", fontweight='bold')
+    ax3.set_xlabel("Contrast (log scale)")
+    ax3.set_ylabel("Peak Response")
+    ax3.legend(fontsize='small')
+    ax3.grid(False)
+    fig3.suptitle("Contrast Response Function",
                   fontweight='bold', fontsize=13)
     plt.tight_layout()
     plt.show()

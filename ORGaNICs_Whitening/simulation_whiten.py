@@ -30,7 +30,7 @@ class V1Dynamics:
         self.tau_avg = 20.0
         
         self.beta = 1.0 
-        self.sigma = 0.05     
+        self.sigma = 0.1     
         self.alpha = 0.0
 
     def gaussian_rectify(self, y, threshold=0.5, sigma=0.25, r_max=1.0):

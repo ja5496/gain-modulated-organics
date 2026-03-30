@@ -59,10 +59,8 @@ def run_probe(frame, tunings, fixed_gains, probe_angles,
               scale=1.0, force_a_zero=False):
     """
     Probe tuning curves with optional overrides:
-      scale        – Michelson contrast c ∈ [0, 1]; the raw tuning curve is divided
-                     by its maximum so z_t[preferred] = c.  The sum of squares
-                     sum_i z_t[i]^2 = c^2 · N · exp(-2κ) · I_0(2κ) is then a
-                     constant function of probe angle (independent of orientation).
+      scale        – Michelson contrast c ∈ [0, 1]. This is converted into an LGN 
+                     drive using a Naka-Rushton saturation function.
       force_a_zero – sets a=0 throughout (disables normalization)
     """
     N_neu = frame.dim
@@ -73,6 +71,13 @@ def run_probe(frame, tunings, fixed_gains, probe_angles,
     dt = 0.05; tau_y = 1.0; tau_u = 2.0; tau_a = 5.0
     beta = 1.0; sigma_c = 0.05; tuning_width = 0.5
 
+    # --- Naka-Rushton LGN Input Mapping ---
+    R_max_lgn = 2.5
+    c_50_lgn = 0.2
+    n_exp = 2.0
+    # Convert linear contrast (scale) into a saturated biological drive
+    contrast_drive = R_max_lgn * (scale**n_exp) / (scale**n_exp + c_50_lgn**n_exp)
+
     for i, angle in enumerate(probe_angles):
         y = z_spont * np.ones(N_neu)
         u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N_neu)
@@ -80,7 +85,8 @@ def run_probe(frame, tunings, fixed_gains, probe_angles,
             np.copy(frozen_a) if frozen_a is not None else np.zeros(N_neu))
 
         z_t = np.exp(tuning_width * np.cos(2 * (tunings.theta - angle)))
-        z_t = z_t / np.max(z_t) * scale  # z_t[preferred] = scale (= Michelson contrast)
+        # Apply the saturated contrast drive here instead of raw scale
+        z_t = (z_t / np.max(z_t)) * contrast_drive  
 
         for _ in range(PROBE_STEPS):
             u_plus      = gaussian_rectify(u)
@@ -186,14 +192,12 @@ if __name__ == "__main__":
     x_peak_s    = x_peak[sort_idx_2]
 
 
-    # ═══════════════════════════════════════════════════════════════��══════════
+    # ══════════════════════════════════════════════════════════════════════════
     # DIAGNOSTIC 1: Scale sweep
     # ══════════════════════════════════════════════════════════════════════════
     print("\n" + "=" * 60)
     print("DIAGNOSTIC 1: Probe tuning curves vs. input contrast")
     print("=" * 60)
-    # Raw (unnormalized) tuning curves for the middle bin — shows both gain
-    # (absolute height) and shape changes together as contrast is swept.
 
     scales       = [0.1, 0.25, 0.5, 0.75, 1.0]
     scale_colors = plt.cm.plasma(np.linspace(0.1, 0.9, len(scales)))
@@ -228,8 +232,6 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("DIAGNOSTIC 2: Probe with a = 0 (gain adaptation only)")
     print("=" * 60)
-    # Adapt gains fully (adaptive=True), then probe with a forced to zero.
-    # This isolates the contribution of gain whitening from divisive normalization.
 
     print("Running adaptive simulation (uniform)...")
     engine_uni2 = V1Dynamics(tunings, frame, adaptive=True)
@@ -254,7 +256,6 @@ if __name__ == "__main__":
     b_uni_a0  = get_binned_curves(tc_uni_a0,  tunings.theta, probe_angles)
     b_bias_a0 = get_binned_curves(tc_bias_a0, tunings.theta, probe_angles)
 
-    # Normalize per bin using the uniform response as reference
     n_uni_a0  = minmax_norm(b_uni_a0,  ref_binned=b_uni_a0)
     n_bias_a0 = minmax_norm(b_bias_a0, ref_binned=b_uni_a0)
 
@@ -284,39 +285,36 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("DIAGNOSTIC 3: Contrast Response Function")
     print("=" * 60)
-    # Probe at each neuron's preferred orientation across a range of contrasts.
-    # Peak response should follow a sigmoidal (Naka-Rushton) shape saturating at
-    # high contrasts. σ (semi-saturation constant) = contrast at half-max response.
 
-    # With max normalization, z_t[preferred] = c so input_drive = c/2 + z_spont.
-    # Threshold crossing (half-max) is at c ≈ 0.8; saturation by c ≈ 1.5.
-    contrasts = np.geomspace(0.02, 1.5, 35)
+    # 1% to 100% Contrast
+    contrasts = np.geomspace(0.01, 1.0, 40)
 
-    # For each contrast level, probe all orientations and take each neuron's peak
     crf_peak = np.zeros((N, len(contrasts)))
     for ci, contrast in enumerate(contrasts):
         print(f"  contrast = {contrast:.3f}...")
         tc = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
                        scale=contrast)
-        crf_peak[:, ci] = np.max(tc, axis=1)  # peak over probe angles per neuron
+        crf_peak[:, ci] = np.max(tc, axis=1)  
 
-    # Average within orientation bins
     crf_binned = np.zeros((N_BINS, len(contrasts)))
     for b in range(N_BINS):
         mask = neuron_bin_idx == b
         if mask.any():
             crf_binned[b] = np.mean(crf_peak[mask], axis=0)
 
-    # Compute σ per bin: contrast at half the bin's maximum response
+    # Compute σ per bin using baseline-subtracted half-max
     sigmas = np.zeros(N_BINS)
     for b in range(N_BINS):
-        half_max = np.max(crf_binned[b]) / 2.0
-        # find first crossing of half_max
+        baseline = crf_binned[b, 0]
+        peak = np.max(crf_binned[b])
+        half_max = baseline + (peak - baseline) / 2.0
+        
         above = np.where(crf_binned[b] >= half_max)[0]
         if len(above) > 0 and above[0] > 0:
             i0, i1 = above[0] - 1, above[0]
             r0, r1 = crf_binned[b, i0], crf_binned[b, i1]
             c0, c1 = contrasts[i0], contrasts[i1]
+            # Linear interpolation for precise sigma
             sigmas[b] = c0 + (half_max - r0) / (r1 - r0) * (c1 - c0)
         elif len(above) > 0:
             sigmas[b] = contrasts[above[0]]
@@ -325,15 +323,17 @@ if __name__ == "__main__":
     for b in range(N_BINS):
         ax3.plot(contrasts, crf_binned[b], color=blue_colors[b], linewidth=1.5)
 
-    # Mark σ for the middle bin
     mid = N_BINS // 2
-    half_max_mid = np.max(crf_binned[mid]) / 2.0
+    baseline_mid = crf_binned[mid, 0]
+    peak_mid = np.max(crf_binned[mid])
+    half_max_mid = baseline_mid + (peak_mid - baseline_mid) / 2.0
+    
     ax3.axhline(half_max_mid, color='grey', linestyle=':', linewidth=1.0)
     ax3.axvline(sigmas[mid], color='grey', linestyle=':', linewidth=1.0,
                 label=f'σ (mid bin) = {sigmas[mid]:.2f}')
 
     ax3.set_xscale('log')
-    ax3.set_title("Contrast Response Function (no gain adaptation)", fontweight='bold')
+    ax3.set_title("Contrast Response Function", fontweight='bold')
     ax3.set_xlabel("Contrast (log scale)")
     ax3.set_ylabel("Peak Response")
     ax3.legend(fontsize='small')
