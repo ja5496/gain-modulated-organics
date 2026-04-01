@@ -492,7 +492,7 @@ if __name__ == "__main__":
         ax.grid(False)
 
         for spine in ax.spines.values():
-            spine.set_edgecolor(DARK_GREY)
+            spine.set_edgecolor(DARK_GREY)gi
             spine.set_linewidth(2.5)
 
         ax.tick_params(axis='both', colors=DARK_GREY, width=2.5, length=6, labelsize=11)
