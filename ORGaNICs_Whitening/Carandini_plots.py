@@ -181,14 +181,14 @@ if __name__ == "__main__":
     print("\n--- Running Non-Adaptive Models ---")
     
     engine_org_uni = V1Dynamics(tunings, frame, adaptive=False)
-    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni = engine_org_uni.run_simulation(seq_uni)
+    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _, _ = engine_org_uni.run_simulation(seq_uni)
     
     results['org_uni'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
                                    frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1],
                                    z_spont=Z_SPONT)
                                    
     engine_org_bias = V1Dynamics(tunings, frame, adaptive=False)
-    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias = engine_org_bias.run_simulation(seq_bias)
+    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _, _ = engine_org_bias.run_simulation(seq_bias)
     
     results['org_bias'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
                                     frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1],
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     
     print("Adapting to Uniform Ensemble...")
     engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni = engine_uni.run_simulation(seq_uni)
+    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_hist_uni, avg_vsq_hist_uni = engine_uni.run_simulation(seq_uni)
     
     final_gains_uni = gains_hist_uni[:, -1] 
     final_u_uni = u_hist_uni[:, -1]
@@ -212,7 +212,7 @@ if __name__ == "__main__":
     
     print("Adapting to Biased Ensemble...")
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias = engine_bias.run_simulation(seq_bias)
+    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_hist_bias, avg_vsq_hist_bias = engine_bias.run_simulation(seq_bias)
     
     final_gains_bias = gains_hist_bias[:, -1] 
     final_u_bias = u_hist_bias[:, -1]
@@ -362,7 +362,7 @@ if __name__ == "__main__":
     # =================================================================
     # FIGURE 3: Contrast Response Function
     # =================================================================
-    print("\n" + "=" * 50)
+    '''print("\n" + "=" * 50)
     print("  FIGURE 3: Contrast Response Function")
     print("=" * 50)
 
@@ -423,5 +423,83 @@ if __name__ == "__main__":
     ax3.grid(False)
     fig3.suptitle("Contrast Response Function",
                   fontweight='bold', fontsize=13)
+    plt.tight_layout()
+    plt.show()'''
+
+    # =================================================================
+    # FIGURE 4: Subset of Gain Dynamics (Last 1000 Steps)
+    # =================================================================
+    print("\n" + "=" * 50)
+    print("  FIGURE 4: Subset of Gain Dynamics")
+    print("=" * 50)
+
+    LAST_STEPS = 1000
+    N_GAIN_SUBSET = 50
+    DARK_ORANGE = '#CC5500'
+    DARK_GREY = '#333333'
+    DARK_BLUE = '#00008B'
+
+    gain_subset_idx = np.random.choice(N, N_GAIN_SUBSET, replace=False)
+
+    gains_uni_sub  = gains_hist_uni[gain_subset_idx, :LAST_STEPS]
+    gains_bias_sub = gains_hist_bias[gain_subset_idx, :LAST_STEPS]
+
+    v_sq_uni  = v_hist_uni[gain_subset_idx, :LAST_STEPS] ** 2
+    v_sq_bias = v_hist_bias[gain_subset_idx, :LAST_STEPS] ** 2
+
+    avg_sq_N_uni  = avg_hist_uni[:LAST_STEPS] ** 2 / N
+    avg_sq_N_bias = avg_hist_bias[:LAST_STEPS] ** 2 / N
+
+    time_steps = np.arange(LAST_STEPS)
+
+    fig4, axes4 = plt.subplots(3, 1, figsize=(7, 9), sharex=True)
+
+    for i in range(N_GAIN_SUBSET):
+        axes4[0].plot(time_steps, gains_uni_sub[i],  color=DARK_ORANGE, alpha=0.25, linewidth=2)
+        axes4[1].plot(time_steps, gains_bias_sub[i], color=DARK_ORANGE, alpha=0.25, linewidth=2)
+
+    c_vsq = engine_uni.c_vsq
+    v_sq_c_uni = v_sq_uni / (v_sq_uni + c_vsq)
+
+    for i in range(N_GAIN_SUBSET):
+        axes4[2].plot(time_steps, v_sq_c_uni[i], color=DARK_BLUE, alpha=0.25, linewidth=2)
+
+    mean_v_sq_c_uni = np.mean(v_sq_c_uni, axis=0)
+    avg_vsq_uni     = avg_vsq_hist_uni[-LAST_STEPS:]
+
+    axes4[2].plot(time_steps, mean_v_sq_c_uni, color='lightblue', linestyle='--', linewidth=2)
+    axes4[2].plot(time_steps, avg_vsq_uni,     color='green',     linestyle='--', linewidth=3)
+
+    # Dummy handle so v² appears once in the legend
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], color=DARK_BLUE,   alpha=0.6,      linewidth=2, label='f(v²) subset'),
+        Line2D([0], [0], color='lightblue', linestyle='--', linewidth=2, label='mean f(v²)'),
+        Line2D([0], [0], color='green',     linestyle='--', linewidth=3, label='avg_vsq (dynamics)'),
+    ]
+    axes4[2].legend(handles=legend_handles, loc='upper right',
+                    fontsize=13, prop={'weight': 'bold', 'size': 13})
+
+    titles   = ["Subset of Gain Dynamics — Uniform Ensemble",
+                 "Subset of Gain Dynamics — Biased Ensemble",
+                 ""]
+    ylabels  = ["Gain Value", "Gain Value", "Value"]
+
+    for ax, title, ylabel in zip(axes4, titles, ylabels):
+        if title:
+            ax.set_title(title, fontsize=15, fontweight='bold', color='black', pad=10)
+        ax.set_ylabel(ylabel, fontsize=13, fontweight='bold', color='black', labelpad=8)
+        ax.grid(False)
+
+        for spine in ax.spines.values():
+            spine.set_edgecolor(DARK_GREY)
+            spine.set_linewidth(2.5)
+
+        ax.tick_params(axis='both', colors=DARK_GREY, width=2.5, length=6, labelsize=11)
+        ax.yaxis.label.set_color(DARK_GREY)
+
+    axes4[2].set_xlabel("Time-step", fontsize=13, fontweight='bold', color='black', labelpad=8)
+    axes4[2].xaxis.label.set_color(DARK_GREY)
+
     plt.tight_layout()
     plt.show()
