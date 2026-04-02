@@ -181,14 +181,14 @@ if __name__ == "__main__":
     print("\n--- Running Non-Adaptive Models ---")
     
     engine_org_uni = V1Dynamics(tunings, frame, adaptive=False)
-    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _, _ = engine_org_uni.run_simulation(seq_uni)
+    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _ = engine_org_uni.run_simulation(seq_uni)
     
     results['org_uni'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
                                    frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1],
                                    z_spont=Z_SPONT)
                                    
     engine_org_bias = V1Dynamics(tunings, frame, adaptive=False)
-    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _, _ = engine_org_bias.run_simulation(seq_bias)
+    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _ = engine_org_bias.run_simulation(seq_bias)
     
     results['org_bias'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
                                     frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1],
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     
     print("Adapting to Uniform Ensemble...")
     engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_hist_uni, avg_vsq_hist_uni = engine_uni.run_simulation(seq_uni)
+    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_vsq_hist_uni = engine_uni.run_simulation(seq_uni)
     
     final_gains_uni = gains_hist_uni[:, -1] 
     final_u_uni = u_hist_uni[:, -1]
@@ -212,7 +212,7 @@ if __name__ == "__main__":
     
     print("Adapting to Biased Ensemble...")
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_hist_bias, avg_vsq_hist_bias = engine_bias.run_simulation(seq_bias)
+    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_vsq_hist_bias = engine_bias.run_simulation(seq_bias)
     
     final_gains_bias = gains_hist_bias[:, -1] 
     final_u_bias = u_hist_bias[:, -1]
@@ -282,7 +282,7 @@ if __name__ == "__main__":
         for c in [0, 1]:
             ax = axes[r, c]
             ax.set_xlim(-90, 90) 
-            ax.grid(True, alpha=0.3)
+            ax.grid(False, alpha=0.3)
             
             if r == 2:
                 ax.set_xlabel("Orientation Relative to Adaptor (°)")
@@ -441,14 +441,11 @@ if __name__ == "__main__":
 
     gain_subset_idx = np.random.choice(N, N_GAIN_SUBSET, replace=False)
 
-    gains_uni_sub  = gains_hist_uni[gain_subset_idx, :LAST_STEPS]
-    gains_bias_sub = gains_hist_bias[gain_subset_idx, :LAST_STEPS]
+    gains_uni_sub  = gains_hist_uni[gain_subset_idx, -LAST_STEPS:]
+    gains_bias_sub = gains_hist_bias[gain_subset_idx, -LAST_STEPS:]
 
-    v_sq_uni  = v_hist_uni[gain_subset_idx, :LAST_STEPS] ** 2
-    v_sq_bias = v_hist_bias[gain_subset_idx, :LAST_STEPS] ** 2
-
-    avg_sq_N_uni  = avg_hist_uni[:LAST_STEPS] ** 2 / N
-    avg_sq_N_bias = avg_hist_bias[:LAST_STEPS] ** 2 / N
+    v_sq_uni  = v_hist_uni[gain_subset_idx, -LAST_STEPS:] ** 2
+    v_sq_bias = v_hist_bias[gain_subset_idx, -LAST_STEPS:] ** 2
 
     time_steps = np.arange(LAST_STEPS)
 
@@ -492,7 +489,7 @@ if __name__ == "__main__":
         ax.grid(False)
 
         for spine in ax.spines.values():
-            spine.set_edgecolor(DARK_GREY)gi
+            spine.set_edgecolor(DARK_GREY)
             spine.set_linewidth(2.5)
 
         ax.tick_params(axis='both', colors=DARK_GREY, width=2.5, length=6, labelsize=11)

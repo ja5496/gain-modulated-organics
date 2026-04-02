@@ -32,7 +32,7 @@ class V1Dynamics:
         self.beta = 1.0
         self.sigma = 0.1
         self.alpha = 0.0
-        self.c_vsq = 0.5    # half-saturation for Naka-Rushton v² compression
+        self.c_vsq = 1    # half-saturation for Naka-Rushton v² compression
 
     def gaussian_rectify(self, y, threshold=0.5, sigma=0.25, r_max=1.0):
         return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
@@ -45,8 +45,7 @@ class V1Dynamics:
         a = state[2*N:3*N]
         g = state[3*N:3*N+K]
         v_state = state[3*N+K:3*N+2*K]
-        avg = state[3*N+2*K:3*N+2*K+1]
-        avg_vsq = state[3*N+2*K+1:3*N+2*K+2]
+        avg_vsq = state[3*N+2*K:3*N+2*K+1]
         
         u_plus = self.gaussian_rectify(u)
         y_plus = self.gaussian_rectify(y)
@@ -56,19 +55,16 @@ class V1Dynamics:
         if self.adaptive:
             v_t = self.frame.W.T @ y
             gain_feedback = self.frame.W @ (g * v_t)
-            davg_dt = (-avg + np.linalg.norm(y)) / self.tau_avg
-            v_t_sq_c     = v_t    * v_t    / (v_t    * v_t    + self.c_vsq)
+            v_t_sq_c     = v_t * v_t / (v_t * v_t + self.c_vsq)
             v_state_sq_c = v_state * v_state / (v_state * v_state + self.c_vsq)
-            davg_vsq_dt = (-avg_vsq + np.mean(v_state_sq_c)) / self.tau_avg
-            dg_dt = (v_t_sq_c - avg_vsq) / self.tau_g
+            davg_vsq_dt = (-avg_vsq + np.mean(v_state*v_state)) / self.tau_avg
+            dg_dt = (v_state_sq_c - avg_vsq) / self.tau_g
             dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v
         else:
             gain_feedback = 0.0
             dg_dt = np.zeros(K)
             dv_dt = np.zeros(K)
-            davg_dt = np.zeros(1)
             davg_vsq_dt = np.zeros(1)
-            dbeta_dt = np.ones(N)
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
         input_drive = (self.beta * z_t) / 2 # Renamed from self.beta to beta to allow adaptation
@@ -80,14 +76,15 @@ class V1Dynamics:
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
         
-        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt, davg_dt, davg_vsq_dt])
+        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt, davg_vsq_dt])
         
     def run_simulation(self, stimulus_stream):
         N, n_steps = stimulus_stream.shape 
         K = self.frame.K
         
-        state = np.zeros(3*N + 2*K + 2)
-        state[3*N + 2*K] = 2.5  # initialize avg
+        state = np.zeros(3*N + 2*K + 1)
+        state[3*N + 2*K] = 1.0  # initialize avg_vsq to a non-zero baseline
+
 
         membrane_hist = np.zeros((N, n_steps))
         gains_hist = np.zeros((K, n_steps))
@@ -96,7 +93,6 @@ class V1Dynamics:
         u_hist = np.zeros((N, n_steps))
         a_hist = np.zeros((N, n_steps))
         v_hist = np.zeros((K, n_steps))
-        avg_hist = np.zeros(n_steps)
         avg_vsq_hist = np.zeros(n_steps)
         
         mode_str = "Adaptive" if self.adaptive else "Non-Adaptive"
@@ -120,11 +116,10 @@ class V1Dynamics:
             a_hist[:, t] = state[2*N:3*N]
             gains_hist[:, t] = state[3*N:3*N+K]
             v_hist[:, t] = state[3*N+K:3*N+2*K]
-            avg_hist[t] = state[3*N+2*K]
-            avg_vsq_hist[t] = state[3*N+2*K+1]
+            avg_vsq_hist[t] = state[3*N+2*K]
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
-        return membrane_hist, gains_hist, u_hist, a_hist, v_hist, avg_hist, avg_vsq_hist
+        return membrane_hist, gains_hist, u_hist, a_hist, v_hist, avg_vsq_hist
 
 
 if __name__ == "__main__":
