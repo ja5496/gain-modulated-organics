@@ -53,13 +53,12 @@ class V1Dynamics:
         sqrt_y_plus = np.sqrt(y_plus) 
         
         if self.adaptive:
-            v_t = self.frame.W.T @ y
-            gain_feedback = self.frame.W @ (g * v_t)
-            v_t_sq_c     = v_t * v_t / (v_t * v_t + self.c_vsq)
-            v_state_sq_c = v_state * v_state / (v_state * v_state + self.c_vsq)
-            davg_vsq_dt = (-avg_vsq + np.mean(v_state*v_state)) / self.tau_avg
-            dg_dt = (v_state_sq_c - avg_vsq) / self.tau_g
-            dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v
+            v_sq_c = v_state * v_state / (v_state * v_state + self.c_vsq)
+            davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg
+            y_centered = y - np.mean(y)
+            dg_dt = (v_sq_c - avg_vsq) / self.tau_g # changed state from v_sq_c - avg_vsq
+            dv_dt = (-v_state + self.frame.W.T @ y_centered) / self.tau_v
+            gain_feedback = self.frame.W @ (g * v_state)
         else:
             gain_feedback = 0.0
             dg_dt = np.zeros(K)
@@ -67,7 +66,7 @@ class V1Dynamics:
             davg_vsq_dt = np.zeros(1)
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
-        input_drive = (self.beta * z_t) / 2 # Renamed from self.beta to beta to allow adaptation
+        input_drive = (self.beta * z_t) / 2 
         
         sigma_term = (self.sigma) ** 2
         pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
@@ -254,7 +253,6 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.show()
-    
     
     # =====================================================================
     # ---> EXAMPLE: HOW TO PROBE TRUE TUNING CURVES WITH FROZEN STATES

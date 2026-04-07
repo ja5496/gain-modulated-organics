@@ -21,7 +21,7 @@ from simulation_whiten import Frame, V1Dynamics
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
 N_BINS = 13              # Aggregation bins for visualization
-STREAM_LENGTH = 10140     # Length of adaptation stream (steps)
+STREAM_LENGTH = 10140    # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
 PROBE_RES = 180          # Resolution of tuning curve probe (number of angles)
 Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneous rate;
@@ -445,7 +445,7 @@ if __name__ == "__main__":
     gains_bias_sub = gains_hist_bias[gain_subset_idx, -LAST_STEPS:]
 
     v_sq_uni  = v_hist_uni[gain_subset_idx, -LAST_STEPS:] ** 2
-    v_sq_bias = v_hist_bias[gain_subset_idx, -LAST_STEPS:] ** 2
+    v_sq_bias = v_hist_bias[gain_subset_idx, LAST_STEPS:] ** 2
 
     time_steps = np.arange(LAST_STEPS)
 
