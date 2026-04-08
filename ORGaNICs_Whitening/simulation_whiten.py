@@ -54,7 +54,7 @@ class V1Dynamics:
             v_t = self.frame.W.T @ y
             gain_feedback = self.frame.W @ (g * v_t)
             davg_dt = (-avg + np.linalg.norm(y)) / self.tau_avg
-            dg_dt = (v_t * v_t - 1) / self.tau_g # changed (avg)**2/ N to 1
+            dg_dt = (v_t * v_t - (avg)**2/ N ) / self.tau_g # changed (avg)**2/ N to 1
             dv_dt = (-v_t + self.frame.W.T @ y) / self.tau_v
         else:
             gain_feedback = 0.0
