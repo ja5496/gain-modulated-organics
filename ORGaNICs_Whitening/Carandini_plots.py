@@ -70,7 +70,7 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
         a = np.copy(frozen_a) if frozen_a is not None else np.zeros(N)
 
         # 1. Construct Input for this probe angle
-        tuning_width = 0.5 
+        tuning_width = 0.3 
         
         # Von Mises / Raised Cosine
         z_t = np.exp(tuning_width * np.cos(2 * (tunings.theta - angle)))
@@ -87,7 +87,8 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
             sqrt_y_plus = np.sqrt(y_plus)
 
             # Circuit Inputs
-            v_t = frame.W.T @ y
+            y_centered = y - np.mean(y) 
+            v_t = frame.W.T @ y_centered
             if fixed_gains is not None:
                 gain_feedback = frame.W @ (fixed_gains * v_t)
             else:
@@ -143,7 +144,7 @@ if __name__ == "__main__":
     print("Initializing...")
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
-    
+
     S = frame.W @ frame.W.T                          
     eigvals, eigvecs = np.linalg.eigh(S)
     S_inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
@@ -433,7 +434,7 @@ if __name__ == "__main__":
     print("  FIGURE 4: Subset of Gain Dynamics")
     print("=" * 50)
 
-    LAST_STEPS = 500
+    LAST_STEPS = 10000
     N_GAIN_SUBSET = 50
     DARK_ORANGE = '#CC5500'
     DARK_GREY = '#333333'
@@ -499,3 +500,28 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.show()
+
+
+'''    # =================================================================
+    # FIGURE 6 (disabled): Diagnostic — avg v² per frame vector vs orientation
+    # =================================================================
+    print("\n" + "=" * 50)
+    print("  FIGURE 5: v² vs Frame Vector Orientation (Biased)")
+    print("=" * 50)
+
+    # Per-frame-vector average v² during biased adaptation
+    avg_vsq_per_k = np.mean(v_hist_bias ** 2, axis=1)   # (K,)
+
+    # Orientation centers stored directly in the frame (radians)
+    pref_k_deg = frame.centers * 180 / np.pi
+    pref_rel = (pref_k_deg - adaptor_deg + 90) % 180 - 90  # relative to adaptor
+
+    fig5, ax5 = plt.subplots(figsize=(7, 4))
+    ax5.scatter(pref_rel, avg_vsq_per_k, s=4, alpha=0.4, color='steelblue', edgecolors='none')
+    ax5.axvline(0, color='red', linestyle='--', linewidth=1.5, label='Adaptor')
+    ax5.set_xlabel("Frame vector orientation relative to adaptor (°)", fontsize=12)
+    ax5.set_ylabel("Average v²", fontsize=12)
+    ax5.set_title("Avg v² per frame vector vs orientation\n(biased ensemble)", fontsize=13, fontweight='bold')
+    ax5.legend()
+    fig5.tight_layout()
+    plt.show()'''

@@ -7,13 +7,22 @@ from stimuli_whiten import StimulusGenerator
 from scipy.special import erf
 
 class Frame:
-    '''Lightweight Frame class that loads W from a pre-computed csv file.'''
+    '''Lightweight Frame class that loads W from a pre-computed csv file.
+    If a companion _centers.csv exists alongside the frame file, loads orientation
+    centers (radians) for each frame vector into self.centers; otherwise None.'''
     def __init__(self, csv_path: str):
+        import os
         print(f"Loading frame from {csv_path}...")
         self.W = np.loadtxt(csv_path, delimiter=",")
         self.dim = self.W.shape[0]
         self.K = self.W.shape[1]
         print(f"Loaded frame (N={self.dim}, K={self.K})")
+        centers_path = csv_path.replace(".csv", "_centers.csv")
+        if os.path.exists(centers_path):
+            self.centers = np.loadtxt(centers_path, delimiter=",")
+            print(f"Loaded orientation centers from {centers_path}")
+        else:
+            self.centers = None
 
 class V1Dynamics:
     def __init__(self, v1_model, frame, dt=0.05, adaptive=True):
@@ -29,7 +38,7 @@ class V1Dynamics:
         self.tau_v = 0.5      
         self.tau_avg = 0.5
         
-        self.beta = 1.0
+        self.beta = 2.0
         self.sigma = 0.1
         self.alpha = 0.0
         self.c_vsq = 1    # half-saturation for Naka-Rushton v² compression
@@ -55,8 +64,8 @@ class V1Dynamics:
         if self.adaptive:
             v_sq_c = v_state * v_state / (v_state * v_state + self.c_vsq)
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg
-            y_centered = y - np.mean(y)
-            dg_dt = (v_sq_c - np.mean(v_state * v_state)) / self.tau_g # using the excplicit avg instead of the simulated for testing
+            y_centered = y - np.mean(y) 
+            dg_dt = (v_sq_c - avg_vsq) / self.tau_g # using the excplicit avg instead of the simulated for testing
             dv_dt = (-v_state + self.frame.W.T @ y_centered) / self.tau_v
             gain_feedback = self.frame.W @ (g * v_state)
         else:
@@ -125,7 +134,7 @@ if __name__ == "__main__":
     
     N_NEURONS = 60
     tunings = V1Tunings(N=N_NEURONS)
-    frame = Frame(csv_path="Frames/N60_Frame.csv")
+    frame = Frame(csv_path="Frames/N60_Frame_bell_shaped.csv")
     stim_gen = StimulusGenerator(N=N_NEURONS, K=N_NEURONS)
     
     adapt_engine = V1Dynamics(tunings, frame, dt=0.05, adaptive=True)

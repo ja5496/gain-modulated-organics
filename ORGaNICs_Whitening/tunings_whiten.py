@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 '''
 ---- tunings_whiten.py ----
-This script generates orientation tuning curves for the primary neurons used by 
+This script generates recurrent weights for the primary neurons used by 
 simulation_whiten.py. Curves are raised cosine functions. 
 
 '''

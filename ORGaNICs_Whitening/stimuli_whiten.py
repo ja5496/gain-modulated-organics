@@ -8,7 +8,7 @@ Now supports additive white noise to simulate broad-spectrum suppression effects
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, K=200, stream_length = 8000, tuning_width = 0.5, Ensemble=False):
+    def __init__(self, N=60, K=200, stream_length = 8000, tuning_width = 0.3, Ensemble=False):
         self.N = N # Number of primary neurons
         self.K = K # Number of distinct input orientations
         self.stream_length = stream_length
@@ -93,9 +93,10 @@ class StimulusGenerator:
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
         profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta))
         
-        # 5. Normalize and Scale (Matching your "generate_sequence" style) 
+        # 5. Normalize, scale, then mean-center each time step
         profiles = 2.5*profiles / np.max(profiles)
-        
+        profiles -= profiles.mean(axis=0, keepdims=True) # Centers the inputs so the stimuli have mean = 0
+
         return profiles
 
 
