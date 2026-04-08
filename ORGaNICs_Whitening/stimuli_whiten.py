@@ -93,11 +93,9 @@ class StimulusGenerator:
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
         profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta))
         
-        # 5. Normalize and Scale (Matching your "generate_sequence" style)
-        # Normalize to 0-1 range 
+        # 5. Normalize and Scale (Matching your "generate_sequence" style) 
         profiles = 2.5*profiles / np.max(profiles)
         
-        print("Example stimulus vector (time step 0):", profiles[:, 0])
         return profiles
 
 

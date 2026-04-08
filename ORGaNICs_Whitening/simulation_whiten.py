@@ -56,7 +56,7 @@ class V1Dynamics:
             v_sq_c = v_state * v_state / (v_state * v_state + self.c_vsq)
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg
             y_centered = y - np.mean(y)
-            dg_dt = (v_sq_c - avg_vsq) / self.tau_g # changed state from v_sq_c - avg_vsq
+            dg_dt = (v_sq_c - np.mean(v_state * v_state)) / self.tau_g # using the excplicit avg instead of the simulated for testing
             dv_dt = (-v_state + self.frame.W.T @ y_centered) / self.tau_v
             gain_feedback = self.frame.W @ (g * v_state)
         else:

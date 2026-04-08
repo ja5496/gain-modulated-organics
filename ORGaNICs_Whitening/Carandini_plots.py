@@ -433,7 +433,7 @@ if __name__ == "__main__":
     print("  FIGURE 4: Subset of Gain Dynamics")
     print("=" * 50)
 
-    LAST_STEPS = 1000
+    LAST_STEPS = 500
     N_GAIN_SUBSET = 50
     DARK_ORANGE = '#CC5500'
     DARK_GREY = '#333333'
@@ -441,25 +441,24 @@ if __name__ == "__main__":
 
     gain_subset_idx = np.random.choice(N, N_GAIN_SUBSET, replace=False)
 
-    gains_uni_sub  = gains_hist_uni[gain_subset_idx, -LAST_STEPS:]
-    gains_bias_sub = gains_hist_bias[gain_subset_idx, -LAST_STEPS:]
+    gains_uni_sub  = gains_hist_uni[gain_subset_idx, :LAST_STEPS]
+    gains_bias_sub = gains_hist_bias[gain_subset_idx, :LAST_STEPS]
 
-    v_sq_uni  = v_hist_uni[gain_subset_idx, -LAST_STEPS:] ** 2
-    v_sq_bias = v_hist_bias[gain_subset_idx, LAST_STEPS:] ** 2
+    v_sq_uni  = v_hist_uni[gain_subset_idx, :LAST_STEPS] ** 2
+    v_sq_bias = v_hist_bias[gain_subset_idx, :LAST_STEPS] ** 2
 
     time_steps = np.arange(LAST_STEPS)
 
     fig4, axes4 = plt.subplots(3, 1, figsize=(7, 9), sharex=True)
 
-    for i in range(N_GAIN_SUBSET):
-        axes4[0].plot(time_steps, gains_uni_sub[i],  color=DARK_ORANGE, alpha=0.25, linewidth=2)
-        axes4[1].plot(time_steps, gains_bias_sub[i], color=DARK_ORANGE, alpha=0.25, linewidth=2)
-
     c_vsq = engine_uni.c_vsq
     v_sq_c_uni = v_sq_uni / (v_sq_uni + c_vsq)
 
+    vsq_colors = plt.cm.tab20(np.linspace(0, 1, N_GAIN_SUBSET))
     for i in range(N_GAIN_SUBSET):
-        axes4[2].plot(time_steps, v_sq_c_uni[i], color=DARK_BLUE, alpha=0.25, linewidth=2)
+        axes4[0].plot(time_steps, gains_uni_sub[i],  color=vsq_colors[i], alpha=0.5, linewidth=2)
+        axes4[1].plot(time_steps, gains_bias_sub[i], color=vsq_colors[i], alpha=0.5, linewidth=2)
+        axes4[2].plot(time_steps, v_sq_c_uni[i],     color=vsq_colors[i], alpha=0.5, linewidth=2)
 
     mean_v_sq_c_uni = np.mean(v_sq_c_uni, axis=0)
     avg_vsq_uni     = avg_vsq_hist_uni[-LAST_STEPS:]
@@ -470,7 +469,7 @@ if __name__ == "__main__":
     # Dummy handle so v² appears once in the legend
     from matplotlib.lines import Line2D
     legend_handles = [
-        Line2D([0], [0], color=DARK_BLUE,   alpha=0.6,      linewidth=2, label='f(v²) subset'),
+        Line2D([0], [0], color='grey',       alpha=0.6,      linewidth=2, label='f(v²) subset'),
         Line2D([0], [0], color='lightblue', linestyle='--', linewidth=2, label='mean f(v²)'),
         Line2D([0], [0], color='green',     linestyle='--', linewidth=3, label='avg_vsq (dynamics)'),
     ]
