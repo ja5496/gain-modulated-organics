@@ -97,6 +97,7 @@ class StimulusGenerator:
         # Normalize to 0-1 range 
         profiles = 2.5*profiles / np.max(profiles)
         
+        #profiles -= profiles.mean(axis=0, keepdims=True) # Centers the inputs so the stimuli have mean = 0
         return profiles
 
 
