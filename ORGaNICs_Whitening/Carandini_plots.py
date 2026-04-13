@@ -29,11 +29,11 @@ Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneo
 
 np.random.seed(20)
 
-def gaussian_rectify(y, threshold=0.5, sigma=0.2, r_max=1.0): 
+def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
-def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
-              z_spont=0.3, scale=0.5):
+def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
+              z_spont=0.3, scale=1.0):
     """
     Measures tuning curves by simulating the network response to specific
     probe orientations while holding gains constant. u, and a are taken from
@@ -52,14 +52,6 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
     beta = 1.0
     sigma_const = 0.10
 
-    # --- Naka-Rushton LGN Input Mapping ---
-    R_max_lgn = 1.5
-    c_50_lgn = sigma_const  # Using sigma_const as the semi-saturation parameter
-    n_exp = 1.0
-    
-    # Convert linear contrast (scale) into a saturated biological drive
-    contrast_drive = R_max_lgn * (scale**n_exp) / (scale**n_exp + c_50_lgn**n_exp)
-
     for i, angle in enumerate(probe_angles):
 
         # Start y near the spontaneous resting state driven by z_spont
@@ -69,14 +61,9 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
         u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N)
         a = np.copy(frozen_a) if frozen_a is not None else np.zeros(N)
 
-        # 1. Construct Input for this probe angle
-        tuning_width = 0.3 
-        
-        # Von Mises / Raised Cosine
-        z_t = np.exp(tuning_width * np.cos(2 * (tunings.theta - angle)))
-        
-        # Apply the saturated contrast drive here instead of raw scale
-        z_t = (z_t / np.max(z_t)) * contrast_drive
+        # Construct probe stimulus identically to generate_input_ensembles (max amplitude = 2.5)
+        z_t = np.exp(stim_gen.tuning_width * np.cos(2 * (stim_gen.theta_inputs - angle)))
+        z_t = scale * 1.5 * z_t / np.max(z_t)
 
         # 2. Settle to steady state
         for _ in range(PROBE_STEPS):
@@ -87,8 +74,7 @@ def run_probe(frame, tunings, fixed_gains, probe_angles, frozen_u=None, frozen_a
             sqrt_y_plus = np.sqrt(y_plus)
 
             # Circuit Inputs
-            y_centered = y - np.mean(y) 
-            v_t = frame.W.T @ y_centered
+            v_t = frame.W.T @ y  # match simulation: uses raw y (not centered)
             if fixed_gains is not None:
                 gain_feedback = frame.W @ (fixed_gains * v_t)
             else:
@@ -184,43 +170,43 @@ if __name__ == "__main__":
     engine_org_uni = V1Dynamics(tunings, frame, adaptive=False)
     org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _ = engine_org_uni.run_simulation(seq_uni)
     
-    results['org_uni'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
+    results['org_uni'] = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
                                    frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1],
                                    z_spont=Z_SPONT)
-                                   
+
     engine_org_bias = V1Dynamics(tunings, frame, adaptive=False)
     org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _ = engine_org_bias.run_simulation(seq_bias)
-    
-    results['org_bias'] = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
+
+    results['org_bias'] = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
                                     frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1],
                                     z_spont=Z_SPONT)
-    
+
     # --- SCENARIO B: Adaptive ORGaNICs ---
     print("\n--- Running Adaptive Models ---")
-    
+
     print("Adapting to Uniform Ensemble...")
     engine_uni = V1Dynamics(tunings, frame, adaptive=True)
     adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_vsq_hist_uni = engine_uni.run_simulation(seq_uni)
-    
-    final_gains_uni = gains_hist_uni[:, -1] 
+
+    final_gains_uni = gains_hist_uni[:, -1]
     final_u_uni = u_hist_uni[:, -1]
     final_a_uni = a_hist_uni[:, -1]
-    
+
     print("Probing Uniform State...")
-    results['adp_uni'] = run_probe(frame, tunings, final_gains_uni, probe_angles,
+    results['adp_uni'] = run_probe(frame, tunings, stim_gen, final_gains_uni, probe_angles,
                                    frozen_u=final_u_uni, frozen_a=final_a_uni,
                                    z_spont=Z_SPONT)
-    
+
     print("Adapting to Biased Ensemble...")
     engine_bias = V1Dynamics(tunings, frame, adaptive=True)
     adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_vsq_hist_bias = engine_bias.run_simulation(seq_bias)
-    
-    final_gains_bias = gains_hist_bias[:, -1] 
+
+    final_gains_bias = gains_hist_bias[:, -1]
     final_u_bias = u_hist_bias[:, -1]
     final_a_bias = a_hist_bias[:, -1]
-    
+
     print("Probing Biased State...")
-    results['adp_bias'] = run_probe(frame, tunings, final_gains_bias, probe_angles,
+    results['adp_bias'] = run_probe(frame, tunings, stim_gen, final_gains_bias, probe_angles,
                                     frozen_u=final_u_bias, frozen_a=final_a_bias,
                                     z_spont=Z_SPONT)
 
@@ -298,8 +284,8 @@ if __name__ == "__main__":
     print("  FIGURE 2: Average Response per Orientation Bin")
     print("=" * 50)
 
-    AVG_WINDOW = 4000
-    discrete_step_rad = np.pi / N
+    AVG_WINDOW = 4000 # Taking the average over a later period where gains come to steady state.
+    discrete_step_rad = np.pi / N 
     bin_edges = np.linspace(0, np.pi, N_BINS + 1) - (discrete_step_rad / 2)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     bin_centers_deg = bin_centers * 180 / np.pi
@@ -374,7 +360,7 @@ if __name__ == "__main__":
     for ci, contrast in enumerate(contrasts):
         print(f"  Probing contrast = {contrast:.3f}...")
         # Probing without gain adaptation to get the baseline CRF
-        crf_tuning_curves = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
+        crf_tuning_curves = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
                        scale=contrast, z_spont=Z_SPONT)
         crf_peak[:, ci] = np.max(crf_tuning_curves, axis=1)  
 

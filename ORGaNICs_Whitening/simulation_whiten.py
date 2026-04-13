@@ -38,7 +38,7 @@ class V1Dynamics:
         self.tau_v = 0.5      
         self.tau_avg = 0.5
         
-        self.beta = 2.0
+        self.beta = 1.0
         self.sigma = 0.1
         self.alpha = 0.0
         self.c_vsq = 1    # half-saturation for Naka-Rushton v² compression
@@ -65,8 +65,8 @@ class V1Dynamics:
             v_sq_c = v_state * v_state / (v_state * v_state + self.c_vsq)
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg
             y_centered = y - np.mean(y) 
-            dg_dt = (v_sq_c - avg_vsq) / self.tau_g # using the excplicit avg instead of the simulated for testing
-            dv_dt = (-v_state + self.frame.W.T @ y_centered) / self.tau_v
+            dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # using the explicit avg instead of the simulated for testing
+            dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v # CHANGED FROM Y_CENTERED FOR TESTING
             gain_feedback = self.frame.W @ (g * v_state)
         else:
             gain_feedback = 0.0
@@ -134,7 +134,7 @@ if __name__ == "__main__":
     
     N_NEURONS = 60
     tunings = V1Tunings(N=N_NEURONS)
-    frame = Frame(csv_path="Frames/N60_Frame_bell_shaped.csv")
+    frame = Frame(csv_path="Frames/N60_Frame.csv")
     stim_gen = StimulusGenerator(N=N_NEURONS, K=N_NEURONS)
     
     adapt_engine = V1Dynamics(tunings, frame, dt=0.05, adaptive=True)
