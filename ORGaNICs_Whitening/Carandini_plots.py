@@ -33,7 +33,7 @@ def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
-              z_spont=0.3, scale=1.0):
+              z_spont=0.1, scale=1.0):
     """
     Measures tuning curves by simulating the network response to specific
     probe orientations while holding gains constant. u, and a are taken from
@@ -63,7 +63,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
 
         # Construct probe stimulus identically to generate_input_ensembles (max amplitude = 2.5)
         z_t = np.exp(stim_gen.tuning_width * np.cos(2 * (stim_gen.theta_inputs - angle)))
-        z_t = scale * 1.5 * z_t / np.max(z_t)
+        z_t = z_t / np.max(z_t)
 
         # 2. Settle to steady state
         for _ in range(PROBE_STEPS):
@@ -81,7 +81,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
                 gain_feedback = 0.0
 
             recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
-            input_drive = (beta * z_t) / 2 + z_spont
+            input_drive = (beta * z_t) / 2 
 
             # Derivatives
             pool_term = tunings.N_matrix @ (y_plus * (u_plus ** 2))
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     eigvals_check = np.linalg.eigvalsh(WWT)
     print(f"Eigenvalue ratio: {eigvals_check.max()/eigvals_check.min():.6f}")
 
-    stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
+    stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
     
     adaptor_idx = N // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     plt.show()
 
     # =================================================================
-    # FIGURE 2: Average Steady-State Response per Orientation Bin
+    # FIGURE 2: Average Response per Orientation Bin Over Whole Stream
     # =================================================================
     print("\n" + "=" * 50)
     print("  FIGURE 2: Average Response per Orientation Bin")
@@ -347,74 +347,7 @@ if __name__ == "__main__":
     plt.show()
 
     # =================================================================
-    # FIGURE 3: Contrast Response Function
-    # =================================================================
-    '''print("\n" + "=" * 50)
-    print("  FIGURE 3: Contrast Response Function")
-    print("=" * 50)
-
-    contrasts = np.geomspace(0.01, 1.0, 40)
-    crf_peak = np.zeros((N, len(contrasts))) # Stores peak response for each neuron at each contrast (one stimulus orientation)
-
-    # Collect the min/max response for each neuron given a contrast, then bin the activity.
-    for ci, contrast in enumerate(contrasts):
-        print(f"  Probing contrast = {contrast:.3f}...")
-        # Probing without gain adaptation to get the baseline CRF
-        crf_tuning_curves = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
-                       scale=contrast, z_spont=Z_SPONT)
-        crf_peak[:, ci] = np.max(crf_tuning_curves, axis=1)  
-
-    crf_binned = np.zeros((N_BINS, len(contrasts))) # Stores binned peak responses at each contrast
-    for b in range(N_BINS):
-        mask = neuron_bin_idx == b # Note this is NOT stimulus masking, but instead a technique to single out bins
-        if mask.any():
-            crf_binned[b] = np.mean(crf_peak[mask], axis=0) 
-
-    # Compute sigmas dynamically based on baseline firing
-    sigmas = np.zeros(N_BINS) # Calculated semi-saturation constant for each bin (should roughly be the same)
-    for b in range(N_BINS):
-        baseline = crf_binned[b, 0] # Min firing rate for each bin
-        peak = np.max(crf_binned[b]) # Max firing rate for each bin
-        half_max = baseline + (peak - baseline) / 2.0 # Extract the half max firing rate
-        
-        above = np.where(crf_binned[b] >= half_max)[0] # For that bin, extract the first response above the half-max firing rate
-        if len(above) > 0 and above[0] > 0: # Confirming that it exists and is non-negative
-            # Record index, responses, contrasts right before and right after reaching half-max threshold
-            i0, i1 = above[0] - 1, above[0] 
-            r0, r1 = crf_binned[b, i0], crf_binned[b, i1] 
-            c0, c1 = contrasts[i0], contrasts[i1] 
-            sigmas[b] = c0 + (half_max - r0) / (r1 - r0) * (c1 - c0) # Estimate of sigmas using linear interpolation
-        elif len(above) > 0:
-            sigmas[b] = contrasts[above[0]]
-
-    fig3, ax3 = plt.subplots(1, 1, figsize=(7, 5))
-    
-    # We reuse the RdPu colormap from Figure 1
-    for b in range(N_BINS):
-        ax3.plot(contrasts, crf_binned[b], color=blue_colors[b], linewidth=1.5)
-
-    mid = N_BINS // 2 + 1
-    baseline_mid = crf_binned[mid, 0]
-    peak_mid = np.max(crf_binned[mid])
-    half_max_mid = baseline_mid + (peak_mid - baseline_mid) / 2.0
-    
-    ax3.axhline(half_max_mid, color='grey', linestyle=':', linewidth=1.0)
-    ax3.axvline(sigmas[mid], color='grey', linestyle=':', linewidth=1.0,
-                label=f'σ = {sigmas[mid]:.2f}')
-
-    ax3.set_xscale('log')
-    ax3.set_title("Contrast Response Function", fontweight='bold')
-    ax3.set_xlabel("Contrast (log scale)")
-    ax3.set_ylabel("Peak Response")
-    ax3.legend(fontsize='small')
-    ax3.grid(False)
-    fig3.suptitle("Contrast Response Function",
-                  fontweight='bold', fontsize=13)
-    plt.tight_layout()
-    plt.show()'''
-
-    # =================================================================
-    # FIGURE 4: Subset of Gain Dynamics (Last 1000 Steps)
+    # FIGURE 3: Subset of Gain Dynamics (Last 1000 Steps)
     # =================================================================
     print("\n" + "=" * 50)
     print("  FIGURE 4: Subset of Gain Dynamics")
@@ -438,19 +371,13 @@ if __name__ == "__main__":
 
     fig4, axes4 = plt.subplots(3, 1, figsize=(7, 9), sharex=True)
 
-    c_vsq = engine_uni.c_vsq
-    v_sq_c_uni = v_sq_uni / (v_sq_uni + c_vsq)
-
     vsq_colors = plt.cm.tab20(np.linspace(0, 1, N_GAIN_SUBSET))
     for i in range(N_GAIN_SUBSET):
         axes4[0].plot(time_steps, gains_uni_sub[i],  color=vsq_colors[i], alpha=0.5, linewidth=2)
         axes4[1].plot(time_steps, gains_bias_sub[i], color=vsq_colors[i], alpha=0.5, linewidth=2)
-        axes4[2].plot(time_steps, v_sq_c_uni[i],     color=vsq_colors[i], alpha=0.5, linewidth=2)
 
-    mean_v_sq_c_uni = np.mean(v_sq_c_uni, axis=0)
     avg_vsq_uni     = avg_vsq_hist_uni[-LAST_STEPS:]
 
-    axes4[2].plot(time_steps, mean_v_sq_c_uni, color='lightblue', linestyle='--', linewidth=2)
     axes4[2].plot(time_steps, avg_vsq_uni,     color='green',     linestyle='--', linewidth=3)
 
     # Dummy handle so v² appears once in the legend

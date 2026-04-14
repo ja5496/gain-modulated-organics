@@ -3,13 +3,12 @@
 Isolates and plots the Contrast Response Function (CRF) for a specific population 
 of V1 neurons. Uses the core ORGaNICs network dynamics and probes with a strictly 
 normalized profile to allow exact mathematical control over the contrast from 0 to 1.
+
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import erf
-
-# Assuming these are available in your local directory
 from tunings_whiten import V1Tunings
 from simulation_whiten import Frame
 

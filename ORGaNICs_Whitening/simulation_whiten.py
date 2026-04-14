@@ -6,10 +6,20 @@ from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from scipy.special import erf
 
+'''
+---- simulation_whiten.py ----
+
+Stores RK4 Dynamics and simulation code for computational neural modeling of joint 
+adaptation and normalization in V1. Dynamics are designed for orientation adaptation. 
+
+'''
+
 class Frame:
-    '''Lightweight Frame class that loads W from a pre-computed csv file.
-    If a companion _centers.csv exists alongside the frame file, loads orientation
-    centers (radians) for each frame vector into self.centers; otherwise None.'''
+
+    '''  Loads W (Frame connecting primary neurons to interneurons) from a pre-computed 
+    csv file. If an accompanying _centers.csv exists alongside the frame file, loads orientation
+    centers (radians) for each frame vector into self.centers; otherwise None. '''
+
     def __init__(self, csv_path: str):
         import os
         print(f"Loading frame from {csv_path}...")
@@ -41,9 +51,9 @@ class V1Dynamics:
         self.beta = 1.0
         self.sigma = 0.1
         self.alpha = 0.0
-        self.c_vsq = 1    # half-saturation for Naka-Rushton v² compression
 
     def gaussian_rectify(self, y, threshold=0.5, sigma=0.25, r_max=1.0):
+        # Rectification function (crudely) estimates firing rates from membrane potential
         return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
     def _derivatives(self, state, z_t):
@@ -62,11 +72,9 @@ class V1Dynamics:
         sqrt_y_plus = np.sqrt(y_plus) 
         
         if self.adaptive:
-            v_sq_c = v_state * v_state / (v_state * v_state + self.c_vsq)
-            davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg
-            y_centered = y - np.mean(y) 
-            dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # using the explicit avg instead of the simulated for testing
-            dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v # CHANGED FROM Y_CENTERED FOR TESTING
+            davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg # dynamics to calculate mean(v^2)
+            dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # target set to the recent average of v^2
+            dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v # dynamics converge to whitening objective
             gain_feedback = self.frame.W @ (g * v_state)
         else:
             gain_feedback = 0.0
@@ -77,9 +85,10 @@ class V1Dynamics:
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
         input_drive = (self.beta * z_t) / 2 
         
-        sigma_term = (self.sigma) ** 2
+        sigma_term = (self.sigma / 2) ** 2
         pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
         
+        # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
         dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
@@ -93,11 +102,9 @@ class V1Dynamics:
         state = np.zeros(3*N + 2*K + 1)
         state[3*N + 2*K] = 1.0  # initialize avg_vsq to a non-zero baseline
 
-
-        membrane_hist = np.zeros((N, n_steps))
+        # Tracking histories for later analysis + figures
+        y_hist = np.zeros((N, n_steps))
         gains_hist = np.zeros((K, n_steps))
-
-        # ---> ADDED: Tracking for u and a so they can be frozen later
         u_hist = np.zeros((N, n_steps))
         a_hist = np.zeros((N, n_steps))
         v_hist = np.zeros((K, n_steps))
@@ -110,6 +117,7 @@ class V1Dynamics:
         for t in tqdm(range(n_steps)):
             z_t = stimulus_stream[:, t] 
             
+            # RK4 Simulation
             k1 = self._derivatives(state, z_t)
             k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t)
             k3 = self._derivatives(state + 0.5 * self.dt * k2, z_t)
@@ -119,7 +127,7 @@ class V1Dynamics:
             
             state[3*N:3*N+K] = np.maximum(state[3*N:3*N+K], 0)
             
-            membrane_hist[:, t] = np.maximum(state[0:N], 0)
+            y_hist[:, t] = np.maximum(state[0:N], 0)
             u_hist[:, t] = state[N:2*N]
             a_hist[:, t] = state[2*N:3*N]
             gains_hist[:, t] = state[3*N:3*N+K]
@@ -127,160 +135,4 @@ class V1Dynamics:
             avg_vsq_hist[t] = state[3*N+2*K]
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
-        return membrane_hist, gains_hist, u_hist, a_hist, v_hist, avg_vsq_hist
-
-
-if __name__ == "__main__":
-    
-    N_NEURONS = 60
-    tunings = V1Tunings(N=N_NEURONS)
-    frame = Frame(csv_path="Frames/N60_Frame.csv")
-    stim_gen = StimulusGenerator(N=N_NEURONS, K=N_NEURONS)
-    
-    adapt_engine = V1Dynamics(tunings, frame, dt=0.05, adaptive=True)
-    organics_engine = V1Dynamics(tunings, frame, dt=0.05, adaptive=False)
-    
-    base_regimes = [
-        {'n_steps': 5000, 'contrast': 0.9, 'orientation': np.pi/2, 'label': 'Bright 90°'},
-        {'n_steps': 5000, 'contrast': 0.6, 'orientation': np.pi/2, 'label': 'Dim 90°'},
-        {'n_steps': 5000, 'contrast': 0.6, 'orientation': 0, 'label': 'Medium 0°'},
-    ]
-
-    for r in base_regimes: r['noise_level'] = 0.0
-    inputs_clean = stim_gen.generate_sequence(base_regimes)
-
-    print("\n======= Simulation 1: Adaptive ORGaNICs =======")
-    # Now unpacking 4 variables instead of 2
-    rates_adapt, gains_clean, u_adp, a_adp = adapt_engine.run_simulation(inputs_clean)
-
-    print("\n======= Simulation 2: ORGaNICs (non-adapt) =======")
-    rates_organics, gains_empty, u_org, a_org = organics_engine.run_simulation(inputs_clean)
-
-    # --- PLOTTING ---
-    fig, axes = plt.subplots(3, 2, figsize=(8, 8), gridspec_kw={'height_ratios': [1, 1.5, 1.5]})
-    
-    vmax_stim = max(inputs_clean.max(), inputs_clean.max())
-    vmax_rate = max(np.percentile(rates_adapt, 99.5), np.percentile(rates_organics, 99.5))
-    
-    total_steps = inputs_clean.shape[1]
-    extent = [0, total_steps, 0, 180]
-
-    # Row 1
-    axes[0, 0].imshow(inputs_clean, aspect='auto', cmap='hot', origin='lower', vmax=vmax_stim, extent=extent)
-    axes[0, 0].set_title("Adaptive ORGaNICs", fontweight='bold')
-    axes[0, 0].set_ylabel("Preference (°)", fontsize=14)
-    axes[0, 0].tick_params(labelbottom=False)
-
-    axes[0, 1].imshow(inputs_clean, aspect='auto', cmap='hot', origin='lower', vmax=vmax_stim, extent=extent)
-    axes[0, 1].set_title("ORGaNICs", fontweight='bold')
-    axes[0, 1].tick_params(labelleft=False, labelbottom=False)
-
-    # Row 2
-    axes[1, 0].imshow(rates_adapt, aspect='auto', cmap='inferno', origin='lower', vmax=vmax_rate, extent=extent)
-    axes[1, 0].set_title("V1 Activity", fontweight='bold')
-    axes[1, 0].set_ylabel("Preference (°)", fontsize=14)
-    
-    axes[1, 1].imshow(rates_organics, aspect='auto', cmap='inferno', origin='lower', vmax=vmax_rate, extent=extent)
-    axes[1, 1].set_title("V1 Activity", fontweight='bold')
-    axes[1, 1].tick_params(labelleft=False)
-
-    # Row 3 (Population Responses)
-    t_cursor = 0
-    regime_colors = ['#d62728', '#ff7f0e', '#2ca02c'] 
-    ymax_curve = 0 
-
-    for i, r in enumerate(base_regimes):
-        t_end = t_cursor + r['n_steps']
-        t_start = t_end - 500 
-        
-        curve_adapt = np.mean(rates_adapt[:, t_start:t_end], axis=1)
-        axes[2, 0].plot(tunings.theta * 180 / np.pi, curve_adapt, color=regime_colors[i], linewidth=2, label=r['label'])
-        
-        curve_organics = np.mean(rates_organics[:, t_start:t_end], axis=1)
-        axes[2, 1].plot(tunings.theta * 180 / np.pi, curve_organics, color=regime_colors[i], linewidth=2, label=r['label'])
-        
-        current_max = max(curve_adapt.max(), curve_organics.max())
-        if current_max > ymax_curve: ymax_curve = current_max
-            
-        t_cursor += r['n_steps']
-
-    # Changed titles to reflect accurate terminology
-    axes[2, 0].set_title("Live Population Response", fontweight='bold')
-    axes[2, 0].set_xlabel("Preferred Orientation (°)", fontsize=14)
-    axes[2, 0].set_ylabel("Response", fontsize=14)
-    axes[2, 0].grid(True, alpha=0.3)
-    axes[2, 0].set_ylim(0, ymax_curve * 1.1)
-    axes[2, 0].legend(fontsize='small', loc='upper right')
-
-    axes[2, 1].set_title("Live Population Response", fontweight='bold')
-    axes[2, 1].set_xlabel("Preferred Orientation (°)", fontsize=14)
-    axes[2, 1].grid(True, alpha=0.3)
-    axes[2, 1].set_ylim(0, ymax_curve * 1.1)
-    axes[2, 1].legend(fontsize='small', loc='upper right')
-
-    t_cursor = 0
-    for r in base_regimes:
-        t_cursor += r['n_steps']
-        for ax in axes.flatten()[:4]: 
-            ax.axvline(t_cursor, color='white', linestyle='--', alpha=0.3)
-
-    plt.tight_layout()
-    plt.show()
-
-    # --- FIGURE 2: Aggregate Dynamics & Gain Comparison ---
-    fig2, ax2 = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-
-    mean_activity_clean = np.mean(rates_adapt, axis=0)
-    mean_activity_noisy = np.mean(rates_organics, axis=0)
-
-    ax2[0].plot(mean_activity_clean, color='#1f77b4', linewidth=2, label='Adaptive')
-    ax2[0].plot(mean_activity_noisy, color='#d62728', linewidth=2, linestyle='--', label='Non-Adaptive')
-    
-    ax2[0].set_ylabel("Mean Activity (Hz)", fontsize=18)
-    ax2[0].set_title("Overall Response Magnitude", fontweight='bold', fontsize=20)
-    ax2[0].legend(loc='upper right')
-    ax2[0].tick_params(axis='both', labelsize=16)
-    ax2[0].grid(True, alpha=0.3)
-
-    subset_indices = np.linspace(0, frame.K - 1, 5, dtype=int)
-    blue_colors = plt.cm.Blues(np.linspace(0.5, 1.0, len(subset_indices)))
-
-    for i, k_idx in enumerate(subset_indices):
-        ax2[1].plot(gains_clean[k_idx, :], color=blue_colors[i], linestyle='-', linewidth=1.5, alpha=0.8)
-
-    ax2[1].set_ylabel("Gain Amplitude", fontsize=18)
-    ax2[1].set_xlabel("Time Step", fontsize=18)
-    ax2[1].set_title(f"Gain Dynamics (Subset of {len(subset_indices)} neurons)", fontweight='bold', fontsize=20)
-    ax2[1].tick_params(axis='both', labelsize=16)
-    ax2[1].grid(True, alpha=0.3)
-
-    t_cursor = 0
-    for r in base_regimes:
-        t_cursor += r['n_steps']
-        for ax in ax2:
-            ax.axvline(t_cursor, color='gray', linestyle='--', alpha=0.5)
-
-    plt.tight_layout()
-    plt.show()
-    
-    # =====================================================================
-    # ---> EXAMPLE: HOW TO PROBE TRUE TUNING CURVES WITH FROZEN STATES
-    # =====================================================================
-    print("\n--- Running True Tuning Curve Probes ---")
-    
-    # 1. Grab the states at the very end of the simulation
-    final_gains = gains_clean[:, -1]
-    final_u_adp = u_adp[:, -1]
-    final_a_adp = a_adp[:, -1]
-    
-    # 2. Define angles to test
-    probe_angles = np.linspace(0, np.pi, 20)
-    
-    # 3. Run the probe using the engine!
-    tuned_curves = adapt_engine.run_probe(probe_angles, final_gains, final_u_adp, final_a_adp)
-    
-    # 4. If you wanted to plot the tuning curve of the 90-degree neuron:
-    # idx_90 = np.argmin(np.abs(tunings.theta - np.pi/2))
-    # plt.plot(probe_angles * 180 / np.pi, tuned_curves[idx_90, :])
-    # plt.title("True Tuning Curve of 90° Neuron after Adaptation")
-    # plt.show()
+        return y_hist, gains_hist, u_hist, a_hist, v_hist, avg_vsq_hist
