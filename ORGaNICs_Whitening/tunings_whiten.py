@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 '''
 ---- tunings_whiten.py ----
-This script generates orientation tuning curves for the primary neurons used by 
+This script generates recurrent weights for the primary neurons used by 
 simulation_whiten.py. Curves are raised cosine functions. 
 
 '''
@@ -14,14 +14,12 @@ class V1Tunings: # Artificial tuning curves of each neuron
         self.theta = np.linspace(0, np.pi, N, endpoint=False)
         self.W_yy = self._make_recurrent_weights(sigma_exc, sigma_inh, A_exc, A_inh)
         self.N_matrix = np.ones((N, N))
-        #self.N_matrix = np.random.rand(self.N, self.N)
 
     def _make_recurrent_weights(self, sigma_exc, sigma_inh, A_exc, A_inh):
         '''
         Creates Wyy that excites close-by and inhibits further away (all ORGaNICs papers
         have Wyy of this form). Local excitation (narrow Gaussian) minus surround inhibition
         (wide Gaussian).
-
         '''
 
         W = np.zeros((self.N, self.N))

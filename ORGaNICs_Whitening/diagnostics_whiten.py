@@ -160,7 +160,7 @@ if __name__ == "__main__":
     print("Initializing shared resources...")
     tunings   = V1Tunings(N=N)
     frame     = _make_canonical_frame()
-    stim_gen  = StimulusGenerator(N=N, K=N, stream_length=STREAM_LEN)
+    stim_gen  = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LEN)
 
     adaptor_idx = N // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
@@ -278,69 +278,3 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # DIAGNOSTIC 3: Contrast Response Function
-    # ══════════════════════════════════════════════════════════════════════════
-    print("\n" + "=" * 60)
-    print("DIAGNOSTIC 3: Contrast Response Function")
-    print("=" * 60)
-
-    # 1% to 100% Contrast
-    contrasts = np.geomspace(0.01, 1.0, 40)
-
-    crf_peak = np.zeros((N, len(contrasts)))
-    for ci, contrast in enumerate(contrasts):
-        print(f"  contrast = {contrast:.3f}...")
-        tc = run_probe(frame, tunings, fixed_gains=None, probe_angles=probe_angles,
-                       scale=contrast)
-        crf_peak[:, ci] = np.max(tc, axis=1)  
-
-    crf_binned = np.zeros((N_BINS, len(contrasts)))
-    for b in range(N_BINS):
-        mask = neuron_bin_idx == b
-        if mask.any():
-            crf_binned[b] = np.mean(crf_peak[mask], axis=0)
-
-    # Compute σ per bin using baseline-subtracted half-max
-    sigmas = np.zeros(N_BINS)
-    for b in range(N_BINS):
-        baseline = crf_binned[b, 0]
-        peak = np.max(crf_binned[b])
-        half_max = baseline + (peak - baseline) / 2.0
-        
-        above = np.where(crf_binned[b] >= half_max)[0]
-        if len(above) > 0 and above[0] > 0:
-            i0, i1 = above[0] - 1, above[0]
-            r0, r1 = crf_binned[b, i0], crf_binned[b, i1]
-            c0, c1 = contrasts[i0], contrasts[i1]
-            # Linear interpolation for precise sigma
-            sigmas[b] = c0 + (half_max - r0) / (r1 - r0) * (c1 - c0)
-        elif len(above) > 0:
-            sigmas[b] = contrasts[above[0]]
-
-    fig3, ax3 = plt.subplots(1, 1, figsize=(7, 5))
-    for b in range(N_BINS):
-        ax3.plot(contrasts, crf_binned[b], color=blue_colors[b], linewidth=1.5)
-
-    mid = N_BINS // 2
-    baseline_mid = crf_binned[mid, 0]
-    peak_mid = np.max(crf_binned[mid])
-    half_max_mid = baseline_mid + (peak_mid - baseline_mid) / 2.0
-    
-    ax3.axhline(half_max_mid, color='grey', linestyle=':', linewidth=1.0)
-    ax3.axvline(sigmas[mid], color='grey', linestyle=':', linewidth=1.0,
-                label=f'σ (mid bin) = {sigmas[mid]:.2f}')
-
-    ax3.set_xscale('log')
-    ax3.set_title("Contrast Response Function", fontweight='bold')
-    ax3.set_xlabel("Contrast (log scale)")
-    ax3.set_ylabel("Peak Response")
-    ax3.legend(fontsize='small')
-    ax3.grid(False)
-    fig3.suptitle("Diagnostic 3: Contrast Response Function",
-                  fontweight='bold', fontsize=13)
-    plt.tight_layout()
-    plt.show()
-
-    print("\nAll diagnostics complete.")

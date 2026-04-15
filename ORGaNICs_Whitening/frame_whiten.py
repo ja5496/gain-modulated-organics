@@ -9,12 +9,17 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 class Frame:
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, mercedes: bool = True, sigma: float = 0.3, noise_std: float = 0.05):
         self.dim = int(dim) # Number of primary neurons
         self.K = int(self.dim * (self.dim + 1) // 2)
-        print(f"Building Smooth Mercedes Frame (N={self.dim}, K={self.K})...")
-        self.W = self.mercedes() 
-        self.g = np.zeros(self.K) # Initialize gains at 0. 
+        self.centers = None  # Only set for bell-shaped frames
+        if mercedes:
+            print(f"Building Smooth Mercedes Frame (N={self.dim}, K={self.K})...")
+            self.W = self.mercedes()
+        else:
+            print(f"Building Bell-Shaped Frame (N={self.dim}, K={self.K})...")
+            self.W = self.bell_shaped_frame(sigma=sigma, noise_std=noise_std)
+        self.g = np.zeros(self.K) # Initialize gains at 0.
 
     def mercedes(self) -> np.ndarray:
         N, K = self.dim, self.K
@@ -66,6 +71,29 @@ class Frame:
 
         return W
 
+    def bell_shaped_frame(self, sigma: float = 0.3, noise_std: float = 0.05) -> np.ndarray:
+        """
+        Build an (N, K) frame of Gaussian-shaped unit vectors.
+        Each column: Gaussian centered at a random orientation in [0, pi),
+        projected onto N equally-spaced neuron angles with periodic BCs
+        (wrapped angular distance, period pi), then mean-centered, noise-added,
+        and L2-normalized.
+        """
+        N, K = self.dim, self.K
+        theta = np.linspace(0, np.pi, N, endpoint=False)
+        centers = np.random.uniform(0, np.pi, size=K)
+        self.centers = centers  # store orientation centers for downstream use
+        W = np.zeros((N, K))
+        for k in range(K):
+            d = theta - centers[k]
+            d_wrapped = d - np.pi * np.round(d / np.pi)
+            col = np.exp(-2 * (d_wrapped / sigma) ** 2)
+            #col -= col.mean()
+            col += np.random.randn(N) * noise_std
+            col /= np.linalg.norm(col)
+            W[:, k] = col
+        return W
+
     def plot_frame(self):
         '''
         Visualize the frame vectors in 2D. Only works when N=2.
@@ -108,19 +136,18 @@ class Frame:
 if __name__ == "__main__":
    if __name__ == "__main__":
     # Visualize with N=2, K=3
-    np.random.seed(20) # For reproducibility
-    frame = Frame(dim=2)
+    np.random.seed(22) # For reproducibility
+    frame = Frame(dim=2, mercedes=False)
     print(f"Frame W shape: {frame.W.shape}")
     print(f"Frame vectors:\n{frame.W}")
-    
-    # This will block execution until you manually close the plot window
     frame.plot_frame() 
-    plt.close('all') # Good practice to clean up backend resources immediately
-'''
-    # Create and save N=100 frame to csv for reuse in simulations
+    plt.close('all') 
+
+    # Create and save N=169 bell-shaped frame + centers to csv for reuse in simulations
     np.random.seed(42)
-    frame_169 = Frame(dim=169)
-    np.savetxt("N169_Frame2.csv", frame_169.W, delimiter=",")
-    
-    # FIXED: Changed 'frame_255' to 'frame_100' so the script finishes successfully
-    print(f"Saved N=169 frame to N169_Frame.csv (shape: {frame_169.W.shape})")'''
+    frame_169 = Frame(dim=169, mercedes=False)
+    np.savetxt("Frames/N169_Frame_bell_shaped.csv", frame_169.W, delimiter=",")
+    np.savetxt("Frames/N169_Frame_bell_shaped_centers.csv", frame_169.centers, delimiter=",")
+
+    print(f"Saved N=169 bell-shaped frame (shape: {frame_169.W.shape})")
+    print(f"Saved N=169 orientation centers (shape: {frame_169.centers.shape})")

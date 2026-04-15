@@ -28,7 +28,7 @@ import gc
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics
-from Carandini_plots import run_probe, get_binned_curves, gaussian_rectify
+from diagnostics_whiten import run_probe, get_binned_curves, gaussian_rectify
 
 # ---- Shared Parameters ----
 N = 169
@@ -53,7 +53,7 @@ probe_angles = np.linspace(0, np.pi, PROBE_RES)
 probe_angles_deg = probe_angles * 180 / np.pi
 
 # Adaptor orientation
-stim_gen_ref = StimulusGenerator(N=N, K=N, stream_length=1)
+stim_gen_ref = StimulusGenerator(N=N, num_angles=N, stream_length=1)
 adaptor_idx = N // 2
 adaptor_rad = stim_gen_ref.theta_inputs[adaptor_idx]
 adaptor_deg = adaptor_rad * 180 / np.pi
@@ -149,76 +149,7 @@ def run_probe_noisy(frame, tunings, fixed_gains, probe_angles,
 
 
 # =============================================================================
-# DIAGNOSTIC 1: Adaptation Convergence
-# =============================================================================
-
-def diagnostic_convergence():
-    """
-    Shows how the adaptive + biased tuning curves look after
-    100, 1000, 3000, and 6000 adaptation steps.
-    """
-    print("\n" + "=" * 60)
-    print("  DIAGNOSTIC 1: Adaptation Convergence")
-    print("=" * 60)
-
-    checkpoints = [ 2000, 6000, 8000, 10000]
-    max_steps = max(checkpoints)
-
-    tunings = V1Tunings(N=N)
-    stim_gen = StimulusGenerator(N=N, K=N, stream_length=max_steps)
-
-    # Generate ensembles (same seed → reproducible)
-    seq_bias = stim_gen.generate_input_ensembles(biased=True)
-    seq_uni = stim_gen.generate_input_ensembles(biased=False)
-
-    # --- Uniform reference (fully adapted) ---
-    print("\nAdapting to Uniform Ensemble (reference)...")
-    engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
-    final_gains_uni = gains_hist_uni[:, -1].copy()
-    del gains_hist_uni, engine_uni
-    gc.collect()
-
-    print("Probing Uniform reference...")
-    tc_uni_raw = run_probe(frame, tunings, final_gains_uni, probe_angles, z_spont=Z_SPONT)
-    binned_uni = get_binned_curves(tc_uni_raw, tunings.theta, probe_angles, N_BINS)
-
-    # --- Biased adaptation (full run, keep gains_hist for checkpoints) ---
-    print("\nAdapting to Biased Ensemble...")
-    engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
-    del engine_bias
-    gc.collect()
-
-    # --- Probe at each checkpoint ---
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-    axes_flat = axes.flatten()
-
-    for idx, step in enumerate(checkpoints):
-        print(f"Probing at step {step}...")
-        frozen_gains = gains_hist_bias[:, step - 1].copy()
-        tc_raw = run_probe(frame, tunings, frozen_gains, probe_angles, z_spont=Z_SPONT)
-        binned = get_binned_curves(tc_raw, tunings.theta, probe_angles, N_BINS)
-        binned_norm = normalize_per_bin(binned_uni, binned)
-
-        ax = axes_flat[idx]
-        plot_tuning_panel(ax, binned_norm, title=f"Step {step}")
-        if idx >= 2:
-            ax.set_xlabel("Orientation Relative to Adaptor (\u00b0)")
-        if idx % 2 == 0:
-            ax.set_ylabel("Normalized Response")
-
-    del gains_hist_bias
-    gc.collect()
-
-    fig.suptitle("Diagnostic 1: Adaptation Convergence (Biased Ensemble)",
-                 fontweight='bold', fontsize=13)
-    plt.tight_layout()
-    plt.show()
-
-
-# =============================================================================
-# DIAGNOSTIC 2: Sigma Sweep
+# DIAGNOSTIC 1: Sigma Sweep
 # =============================================================================
 
 def diagnostic_sigma_sweep():
@@ -227,14 +158,14 @@ def diagnostic_sigma_sweep():
     spread widths (sigma_inh), with sigma_exc fixed at 0.2.
     """
     print("\n" + "=" * 60)
-    print("  DIAGNOSTIC 2: Sigma Sweep (sigma_exc=0.2)")
+    print("  DIAGNOSTIC 1: Sigma Sweep (sigma_exc=0.2)")
     print("=" * 60)
 
     STREAM_LENGTH = 10140
     sigma_exc = 0.15
     sigma_inh_values = [0.4, 0.5, 0.6, 0.7]
 
-    stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
+    stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
     seq_bias = stim_gen.generate_input_ensembles(biased=True)
     seq_uni = stim_gen.generate_input_ensembles(biased=False)
 
@@ -250,7 +181,7 @@ def diagnostic_sigma_sweep():
         # Adapt to uniform → normalization reference
         print("  Adapting to Uniform...")
         engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
+        _, gains_hist_uni, _, _, _, _ = engine_uni.run_simulation(seq_uni)
         final_gains_uni = gains_hist_uni[:, -1].copy()
         del gains_hist_uni, engine_uni
         gc.collect()
@@ -262,7 +193,7 @@ def diagnostic_sigma_sweep():
         # Adapt to biased → probe → normalize
         print("  Adapting to Biased...")
         engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
+        _, gains_hist_bias, _, _, _, _ = engine_bias.run_simulation(seq_bias)
         final_gains_bias = gains_hist_bias[:, -1].copy()
         del gains_hist_bias, engine_bias
         gc.collect()
@@ -286,7 +217,7 @@ def diagnostic_sigma_sweep():
 
 
 # =============================================================================
-# DIAGNOSTIC 3: Tuning Width Sweep
+# DIAGNOSTIC 2: Tuning Width Sweep
 # =============================================================================
 
 def diagnostic_tuning_width_sweep():
@@ -314,7 +245,7 @@ def diagnostic_tuning_width_sweep():
         print(f"\n--- {label} ---")
 
         tunings = V1Tunings(N=N)
-        stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH,
+        stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH,
                                      tuning_width=tw)
 
         seq_uni = stim_gen.generate_input_ensembles(biased=False)
@@ -323,7 +254,7 @@ def diagnostic_tuning_width_sweep():
         # Uniform adaptation → normalization reference
         print("  Adapting to Uniform...")
         engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
+        _, gains_hist_uni, _, _, _, _ = engine_uni.run_simulation(seq_uni)
         final_gains_uni = gains_hist_uni[:, -1].copy()
         del gains_hist_uni, engine_uni
         gc.collect()
@@ -336,7 +267,7 @@ def diagnostic_tuning_width_sweep():
         # Biased adaptation → probe → normalize
         print("  Adapting to Biased...")
         engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
+        _, gains_hist_bias, _, _, _, _ = engine_bias.run_simulation(seq_bias)
         final_gains_bias = gains_hist_bias[:, -1].copy()
         del gains_hist_bias, engine_bias
         gc.collect()
@@ -359,85 +290,11 @@ def diagnostic_tuning_width_sweep():
     plt.tight_layout()
     plt.show()
 
-
-# =============================================================================
-# DIAGNOSTIC 4: White Noise Probe
-# =============================================================================
-
-def diagnostic_noise_probe(noise_level=0.4):
-    """
-    Probes the adaptive model with white noise added at all orientations.
-    Shows tuning curves for both the uniform- and biased-adapted states
-    side by side (1x2), so the effect of adaptation under noisy conditions
-    is visible.
-    """
-    print("\n" + "=" * 60)
-    print(f"  DIAGNOSTIC 4: Noisy Probe (noise_level={noise_level})")
-    print("=" * 60)
-
-    STREAM_LENGTH = 6000
-    tunings = V1Tunings(N=N)
-    stim_gen = StimulusGenerator(N=N, K=N, stream_length=STREAM_LENGTH)
-
-    seq_uni = stim_gen.generate_input_ensembles(biased=False)
-    seq_bias = stim_gen.generate_input_ensembles(biased=True)
-
-    # --- Adapt to Uniform ---
-    print("\nAdapting to Uniform Ensemble...")
-    engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_uni, _, _ = engine_uni.run_simulation(seq_uni)
-    final_gains_uni = gains_hist_uni[:, -1].copy()
-    del gains_hist_uni, engine_uni
-    gc.collect()
-
-    # --- Adapt to Biased ---
-    print("Adapting to Biased Ensemble...")
-    engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    _, gains_hist_bias, _, _ = engine_bias.run_simulation(seq_bias)
-    final_gains_bias = gains_hist_bias[:, -1].copy()
-    del gains_hist_bias, engine_bias
-    gc.collect()
-
-    # --- Noisy probes ---
-    print("Probing Uniform state (with noise)...")
-    tc_uni_raw = run_probe_noisy(frame, tunings, final_gains_uni,
-                                 probe_angles, noise_level=noise_level,
-                                 z_spont=Z_SPONT)
-    print("Probing Biased state (with noise)...")
-    tc_bias_raw = run_probe_noisy(frame, tunings, final_gains_bias,
-                                  probe_angles, noise_level=noise_level,
-                                  z_spont=Z_SPONT)
-
-    # --- Bin & Normalize per bin (uniform reference) ---
-    binned_uni = get_binned_curves(tc_uni_raw, tunings.theta, probe_angles, N_BINS)
-    binned_bias = get_binned_curves(tc_bias_raw, tunings.theta, probe_angles, N_BINS)
-
-    norm_uni = normalize_per_bin(binned_uni, binned_uni)
-    norm_bias = normalize_per_bin(binned_uni, binned_bias)
-
-    # --- Plot 1x2 ---
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-
-    plot_tuning_panel(axes[0], norm_uni, title="Uniform Ensemble")
-    axes[0].set_ylabel("Normalized Response")
-    axes[0].set_xlabel("Orientation Relative to Adaptor (\u00b0)")
-
-    plot_tuning_panel(axes[1], norm_bias, title="Biased Ensemble")
-    axes[1].set_xlabel("Orientation Relative to Adaptor (\u00b0)")
-
-    fig.suptitle(f"Diagnostic 4: Adaptive Tuning with White Noise "
-                 f"(\u03c3_noise = {noise_level})",
-                 fontweight='bold', fontsize=13)
-    plt.tight_layout()
-    plt.show()
-
-
 # =============================================================================
 # MAIN
 # =============================================================================
 
 if __name__ == "__main__":
-    #diagnostic_convergence()
-    diagnostic_sigma_sweep()
+    #diagnostic_sigma_sweep()
     diagnostic_tuning_width_sweep()
-    #diagnostic_noise_probe()
+
