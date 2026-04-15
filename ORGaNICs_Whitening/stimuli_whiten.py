@@ -55,18 +55,10 @@ class StimulusGenerator:
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
         profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta))
         
-<<<<<<< HEAD
-        # 5. Normalize and Scale (Matching your "generate_sequence" style)
-        # Normalize to 0-1 range 
-        profiles = 2.5*profiles / np.max(profiles)
-        
-        #profiles -= profiles.mean(axis=0, keepdims=True) # Centers the inputs so the stimuli have mean = 0
-=======
         # 5. Normalize, scale, then mean-center each time step
         profiles =  profiles / np.max(profiles)
         #profiles -= profiles.mean(axis=0, keepdims=True) # Centers the inputs so the stimuli have mean = 0
 
->>>>>>> target_practice
         return profiles
 
     def plot_tuning_curves(self):

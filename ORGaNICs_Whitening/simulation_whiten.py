@@ -72,18 +72,10 @@ class V1Dynamics:
         sqrt_y_plus = np.sqrt(y_plus) 
         
         if self.adaptive:
-<<<<<<< HEAD
-            v_t = self.frame.W.T @ y
-            gain_feedback = self.frame.W @ (g * v_t)
-            davg_dt = (-avg + np.linalg.norm(y)) / self.tau_avg
-            dg_dt = (v_t * v_t - (avg)**2/ N ) / self.tau_g # changed (avg)**2/ N to 1
-            dv_dt = (-v_t + self.frame.W.T @ y) / self.tau_v
-=======
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg # dynamics to calculate mean(v^2)
             dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # target set to the recent average of v^2
             dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v # dynamics converge to whitening objective
             gain_feedback = self.frame.W @ (g * v_state)
->>>>>>> target_practice
         else:
             gain_feedback = 0.0
             dg_dt = np.zeros(K)
