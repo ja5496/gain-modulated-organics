@@ -35,7 +35,7 @@ class Frame:
             self.centers = None
 
 class V1Dynamics:
-    def __init__(self, v1_model, frame, dt=0.05, adaptive=True):
+    def __init__(self, v1_model, frame, dt=0.1, adaptive=True):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt 

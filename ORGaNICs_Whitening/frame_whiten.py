@@ -140,10 +140,8 @@ if __name__ == "__main__":
     frame = Frame(dim=2, mercedes=False)
     print(f"Frame W shape: {frame.W.shape}")
     print(f"Frame vectors:\n{frame.W}")
-    
-    # This will block execution until you manually close the plot window
     frame.plot_frame() 
-    plt.close('all') # Good practice to clean up backend resources immediately
+    plt.close('all') 
 
     # Create and save N=169 bell-shaped frame + centers to csv for reuse in simulations
     np.random.seed(42)

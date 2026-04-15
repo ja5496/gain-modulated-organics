@@ -1,8 +1,9 @@
 """
 Carandini_plots.py
 
-Replicates cat V1 adaptation experiments (e.g., Benucci et al.) using ORGaNICs.
-Compares steady-state tuning curves after adaptation to Uniform vs. Biased ensembles.
+Replicates cat V1 adaptation experiments (e.g., Benucci et al.) using ORGaNICs + a 
+whitening objective. Compares steady-state tuning curves after adaptation to Uniform 
+vs. Biased ensembles.
 
 Methodology:
 1. "Adaptation Phase": Run the model on a long stream of stimuli to evolve gains.
@@ -33,7 +34,7 @@ def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
-              z_spont=0.1, scale=1.0):
+              z_spont=0.1):
     """
     Measures tuning curves by simulating the network response to specific
     probe orientations while holding gains constant. u, and a are taken from
@@ -45,23 +46,23 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
 
     W_yy = tunings.W_yy
 
-    dt = 0.05
+    dt = 0.1
     tau_y = 1.0
     tau_u = 2.0
     tau_a = 5.0
     beta = 1.0
-    sigma_const = 0.10
+    sigma = 0.1
 
     for i, angle in enumerate(probe_angles):
 
         # Start y near the spontaneous resting state driven by z_spont
-        y = z_spont * np.ones(N)
+        y = np.zeros(N)
 
         # Let u and a freely adapt from their most recent state
-        u = np.copy(frozen_u) if frozen_u is not None else np.zeros(N)
-        a = np.copy(frozen_a) if frozen_a is not None else np.zeros(N)
+        u = np.copy(frozen_u) 
+        a = np.copy(frozen_a) 
 
-        # Construct probe stimulus identically to generate_input_ensembles (max amplitude = 2.5)
+        # Construct probe stimulus identically to generate_input_ensembles 
         z_t = np.exp(stim_gen.tuning_width * np.cos(2 * (stim_gen.theta_inputs - angle)))
         z_t = z_t / np.max(z_t)
 
@@ -87,7 +88,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
             pool_term = tunings.N_matrix @ (y_plus * (u_plus ** 2))
 
             dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
-            du = (-u + (sigma_const**2) + pool_term) / tau_u
+            du = (-u + (sigma / 2)**2 + pool_term) / tau_u
             da = (-a + u_plus + a*u_plus) / tau_a
 
             y += dt * dy
@@ -130,17 +131,6 @@ if __name__ == "__main__":
     print("Initializing...")
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
-
-    S = frame.W @ frame.W.T                          
-    eigvals, eigvecs = np.linalg.eigh(S)
-    S_inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
-    N_neu, K_neu = frame.W.shape
-    frame.W = np.sqrt(K_neu / N_neu) * (S_inv_sqrt @ frame.W)
-
-    WWT = frame.W @ frame.W.T
-    eigvals_check = np.linalg.eigvalsh(WWT)
-    print(f"Eigenvalue ratio: {eigvals_check.max()/eigvals_check.min():.6f}")
-
     stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
     
     adaptor_idx = N // 2
@@ -164,29 +154,25 @@ if __name__ == "__main__":
     
     results = {}
     
-    # --- SCENARIO A: ORGaNICs (Non-Adaptive) ---
+    # --- SCENARIO A: Non-Adaptive ORGaNICs ---
     print("\n--- Running Non-Adaptive Models ---")
     
-    engine_org_uni = V1Dynamics(tunings, frame, adaptive=False)
-    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _ = engine_org_uni.run_simulation(seq_uni)
-    
+    engine_non_adapt = V1Dynamics(tunings, frame, adaptive=False)
+
+    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _ = engine_non_adapt.run_simulation(seq_uni)
     results['org_uni'] = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
-                                   frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1],
-                                   z_spont=Z_SPONT)
+                                   frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1])
 
-    engine_org_bias = V1Dynamics(tunings, frame, adaptive=False)
-    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _ = engine_org_bias.run_simulation(seq_bias)
-
+    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _ = engine_non_adapt.run_simulation(seq_bias)
     results['org_bias'] = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
-                                    frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1],
-                                    z_spont=Z_SPONT)
+                                    frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1])
 
     # --- SCENARIO B: Adaptive ORGaNICs ---
     print("\n--- Running Adaptive Models ---")
 
     print("Adapting to Uniform Ensemble...")
-    engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_vsq_hist_uni = engine_uni.run_simulation(seq_uni)
+    engine_adapt = V1Dynamics(tunings, frame, adaptive=True)
+    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_vsq_hist_uni = engine_adapt.run_simulation(seq_uni)
 
     final_gains_uni = gains_hist_uni[:, -1]
     final_u_uni = u_hist_uni[:, -1]
@@ -194,12 +180,10 @@ if __name__ == "__main__":
 
     print("Probing Uniform State...")
     results['adp_uni'] = run_probe(frame, tunings, stim_gen, final_gains_uni, probe_angles,
-                                   frozen_u=final_u_uni, frozen_a=final_a_uni,
-                                   z_spont=Z_SPONT)
+                                   frozen_u=final_u_uni, frozen_a=final_a_uni)
 
     print("Adapting to Biased Ensemble...")
-    engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_vsq_hist_bias = engine_bias.run_simulation(seq_bias)
+    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_vsq_hist_bias = engine_adapt.run_simulation(seq_bias)
 
     final_gains_bias = gains_hist_bias[:, -1]
     final_u_bias = u_hist_bias[:, -1]
@@ -207,8 +191,7 @@ if __name__ == "__main__":
 
     print("Probing Biased State...")
     results['adp_bias'] = run_probe(frame, tunings, stim_gen, final_gains_bias, probe_angles,
-                                    frozen_u=final_u_bias, frozen_a=final_a_bias,
-                                    z_spont=Z_SPONT)
+                                    frozen_u=final_u_bias, frozen_a=final_a_bias)
 
     # 4. Processing & Normalization
     print("\nProcessing data for plotting...")
@@ -280,9 +263,6 @@ if __name__ == "__main__":
     # =================================================================
     # FIGURE 2: Average Response per Orientation Bin Over Whole Stream
     # =================================================================
-    print("\n" + "=" * 50)
-    print("  FIGURE 2: Average Response per Orientation Bin")
-    print("=" * 50)
 
     AVG_WINDOW = 4000 # Taking the average over a later period where gains come to steady state.
     discrete_step_rad = np.pi / N 
@@ -293,8 +273,8 @@ if __name__ == "__main__":
     neuron_bin_idx = np.clip(neuron_bin_idx, 0, N_BINS - 1)
 
     def get_binned_activity(rates, window):
-        duration = 20
-        keep = 5 
+        duration = 20 # Make sure this matches up with "duration" in stimuli_whiten.py
+        keep = 5 # keep the last 5 time steps of the response so it is only at normalization steady state
         steady_rates = rates[:, -window:]
         n_time_steps = steady_rates.shape[1]
         
@@ -349,9 +329,6 @@ if __name__ == "__main__":
     # =================================================================
     # FIGURE 3: Subset of Gain Dynamics (Last 1000 Steps)
     # =================================================================
-    print("\n" + "=" * 50)
-    print("  FIGURE 4: Subset of Gain Dynamics")
-    print("=" * 50)
 
     LAST_STEPS = 10000
     N_GAIN_SUBSET = 50
@@ -413,28 +390,3 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.show()
-
-
-'''    # =================================================================
-    # FIGURE 6 (disabled): Diagnostic — avg v² per frame vector vs orientation
-    # =================================================================
-    print("\n" + "=" * 50)
-    print("  FIGURE 5: v² vs Frame Vector Orientation (Biased)")
-    print("=" * 50)
-
-    # Per-frame-vector average v² during biased adaptation
-    avg_vsq_per_k = np.mean(v_hist_bias ** 2, axis=1)   # (K,)
-
-    # Orientation centers stored directly in the frame (radians)
-    pref_k_deg = frame.centers * 180 / np.pi
-    pref_rel = (pref_k_deg - adaptor_deg + 90) % 180 - 90  # relative to adaptor
-
-    fig5, ax5 = plt.subplots(figsize=(7, 4))
-    ax5.scatter(pref_rel, avg_vsq_per_k, s=4, alpha=0.4, color='steelblue', edgecolors='none')
-    ax5.axvline(0, color='red', linestyle='--', linewidth=1.5, label='Adaptor')
-    ax5.set_xlabel("Frame vector orientation relative to adaptor (°)", fontsize=12)
-    ax5.set_ylabel("Average v²", fontsize=12)
-    ax5.set_title("Avg v² per frame vector vs orientation\n(biased ensemble)", fontsize=13, fontweight='bold')
-    ax5.legend()
-    fig5.tight_layout()
-    plt.show()'''
