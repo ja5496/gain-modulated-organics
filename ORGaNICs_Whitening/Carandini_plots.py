@@ -30,7 +30,7 @@ Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneo
 
 np.random.seed(20)
 
-def gaussian_rectify(y, threshold=0.5, sigma=0.25, r_max=1.0):
+def gaussian_rectify(y, threshold=0.6, sigma=0.35, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
@@ -46,7 +46,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
 
     W_yy = tunings.W_yy
 
-    dt = 0.1
+    dt = 0.05
     tau_y = 1.0
     tau_u = 2.0
     tau_a = 5.0

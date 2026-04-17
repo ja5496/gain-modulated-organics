@@ -35,7 +35,7 @@ class Frame:
             self.centers = None
 
 class V1Dynamics:
-    def __init__(self, v1_model, frame, dt=0.1, adaptive=True):
+    def __init__(self, v1_model, frame, dt=0.05, adaptive=True):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt 
@@ -52,7 +52,7 @@ class V1Dynamics:
         self.sigma = 0.1
         self.alpha = 0.0
 
-    def gaussian_rectify(self, y, threshold=0.5, sigma=0.25, r_max=1.0):
+    def gaussian_rectify(self, y, threshold=0.6, sigma=0.35, r_max=1.0):
         # Rectification function (crudely) estimates firing rates from membrane potential
         return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
@@ -73,7 +73,7 @@ class V1Dynamics:
         
         if self.adaptive:
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg # dynamics to calculate mean(v^2)
-            dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # target set to the recent average of v^2
+            dg_dt = np.maximum((v_state * v_state - avg_vsq),0) / self.tau_g # target set to the recent average of v^2
             dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v # dynamics converge to whitening objective
             gain_feedback = self.frame.W @ (g * v_state)
         else:
