@@ -62,7 +62,7 @@ class V1Dynamics:
         y = state[0:N]
         u = state[N:2*N]
         a = state[2*N:3*N]
-        g = state[3*N:3*N+K]
+        g = np.maximum(state[3*N:3*N+K], 0)
         v_state = state[3*N+K:3*N+2*K]
         avg_vsq = state[3*N+2*K:3*N+2*K+1]
         
@@ -73,7 +73,7 @@ class V1Dynamics:
         
         if self.adaptive:
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg # dynamics to calculate mean(v^2)
-            dg_dt = np.maximum((v_state * v_state - avg_vsq),0) / self.tau_g # target set to the recent average of v^2
+            dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # target set to the recent average of v^2
             dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v # dynamics converge to whitening objective
             gain_feedback = self.frame.W @ (g * v_state)
         else:
