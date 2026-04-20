@@ -24,7 +24,7 @@ N = 169                  # Number of primary neurons
 N_BINS = 13              # Aggregation bins for visualization
 STREAM_LENGTH = 10140    # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
-PROBE_RES = 180          # Resolution of tuning curve probe (number of angles)
+PROBE_RES = 360          # Resolution of tuning curve probe (number of angles)
 Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneous rate;
                          # ~0.16 of max firing at Z_SPONT=0.3 with threshold=0.5, sigma=0.2)
 
@@ -386,6 +386,37 @@ if __name__ == "__main__":
 
     axes4[2].set_xlabel("Time-step", fontsize=13, fontweight='bold', color='black', labelpad=8)
     axes4[2].xaxis.label.set_color(DARK_GREY)
+
+    plt.tight_layout()
+    plt.show()
+
+    # =================================================================
+    # FIGURE 4: Tuning Curve Peak Shifts (Adaptive ORGaNICs)
+    # =================================================================
+
+    binned_adp_uni  = get_binned_curves(results['adp_uni'],  tunings.theta, probe_angles, N_BINS)
+    binned_adp_bias = get_binned_curves(results['adp_bias'], tunings.theta, probe_angles, N_BINS)
+
+    peak_deg_uni  = probe_angles_deg[np.argmax(binned_adp_uni,  axis=1)]
+    peak_deg_bias = probe_angles_deg[np.argmax(binned_adp_bias, axis=1)]
+    peak_shifts   = peak_deg_bias - peak_deg_uni
+
+    bin_numbers = np.arange(1, N_BINS + 1)
+
+    fig_shifts, ax_shifts = plt.subplots(1, 1, figsize=(6, 4))
+
+    ax_shifts.axhline(0, color='grey', linestyle='-', linewidth=1.5, zorder=1)
+    ax_shifts.scatter(bin_numbers, peak_shifts, color='#00008B', s=100, zorder=2)
+
+    ax_shifts.set_title("Tuning Shifts", fontweight='bold', fontsize=15)
+    ax_shifts.set_ylabel("Degrees", fontweight='bold', fontsize=13)
+    ax_shifts.set_xlabel("Bin", fontweight='bold', fontsize=13)
+    ax_shifts.set_xticks(bin_numbers)
+    ax_shifts.grid(False)
+
+    for spine in ax_shifts.spines.values():
+        spine.set_edgecolor('black')
+        spine.set_linewidth(2.5)
 
     plt.tight_layout()
     plt.show()
