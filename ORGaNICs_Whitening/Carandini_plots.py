@@ -261,70 +261,69 @@ if __name__ == "__main__":
     plt.show()
 
     # =================================================================
-    # FIGURE 2: Average Response per Orientation Bin Over Whole Stream
+    # FIGURE 2: Biased-Ensemble Average Response (from Tuning Curves)
     # =================================================================
 
-    AVG_WINDOW = 4000 # Taking the average over a later period where gains come to steady state.
-    discrete_step_rad = np.pi / N 
-    bin_edges = np.linspace(0, np.pi, N_BINS + 1) - (discrete_step_rad / 2)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    bin_centers_deg = bin_centers * 180 / np.pi
-    neuron_bin_idx = np.digitize(tunings.theta, bin_edges) - 1
-    neuron_bin_idx = np.clip(neuron_bin_idx, 0, N_BINS - 1)
+    # Build biased ensemble stream:
+    # - one of each non-adaptor orientation (N-1 = 168)
+    # - adaptor repeated (N-1)//2 = 84 times so it is exactly 1/3 of the stream
+    n_non_adaptor = N - 1
+    n_adaptor_reps = n_non_adaptor // 2
+    non_adaptor_angles = np.concatenate([
+        stim_gen.theta_inputs[:adaptor_idx],
+        stim_gen.theta_inputs[adaptor_idx + 1:]
+    ])
+    biased_stream = np.concatenate([
+        non_adaptor_angles,
+        np.full(n_adaptor_reps, adaptor_rad)
+    ])
 
-    def get_binned_activity(rates, window):
-        duration = 20 # Make sure this matches up with "duration" in stimuli_whiten.py
-        keep = 5 # keep the last 5 time steps of the response so it is only at normalization steady state
-        steady_rates = rates[:, -window:]
-        n_time_steps = steady_rates.shape[1]
-        
-        time_mask = (np.arange(n_time_steps) % duration) >= (duration - keep)
-        means = np.mean(steady_rates[:, time_mask], axis=1) 
-        
-        binned = np.zeros(N_BINS)
-        for b in range(N_BINS):
-            bin_mask = neuron_bin_idx == b
-            if bin_mask.any():
-                binned[b] = np.mean(means[bin_mask])
-                
-        return binned
+    # Map each stream orientation to the nearest probe-angle index
+    probe_idx_for_stream = np.argmin(
+        np.abs(biased_stream[:, None] - probe_angles[None, :]), axis=1
+    )
 
-    print("\nAdaptive + Uniform (10k steps)...")
-    peaks_adp_uni = get_binned_activity(adapt_uniform_rates, AVG_WINDOW)
-    del adapt_uniform_rates; gc.collect()
+    # Average tuning-curve response across the stream for each neuron
+    avg_org2 = np.mean(results['org_bias'][:, probe_idx_for_stream], axis=1)
+    avg_adp2 = np.mean(results['adp_bias'][:, probe_idx_for_stream], axis=1)
 
-    print("Adaptive + Biased (10k steps)...")
-    peaks_adp_bias = get_binned_activity(adapt_biased_rates, AVG_WINDOW)
-    del adapt_biased_rates; gc.collect()
+    # Normalize so the population mean sits at y = 1
+    norm_avg_org2 = avg_org2 / np.mean(avg_org2)
+    norm_avg_adp2 = avg_adp2 / np.mean(avg_adp2)
 
-    print("ORGaNICs + Biased (10k steps)...")
-    peaks_org_bias = get_binned_activity(org_bias_rates, AVG_WINDOW)
-    del org_bias_rates; gc.collect()
+    # Sort neurons by preferred orientation relative to the adaptor
+    neuron_prefs_deg = tunings.theta * 180 / np.pi
+    x_neuron = (neuron_prefs_deg - adaptor_deg + 90) % 180 - 90
+    sort_neuron_idx = np.argsort(x_neuron)
 
-    x_peak = (bin_centers_deg - adaptor_deg + 90) % 180 - 90
-    sort_idx_2 = np.argsort(x_peak)
-    x_peak_sorted = x_peak[sort_idx_2]
-
-    norm_adp_bias = peaks_adp_bias / np.mean(peaks_adp_bias)
-    norm_org_bias = peaks_org_bias / np.mean(peaks_org_bias)
+    FIG2_DARK_ORANGE = '#CC5500'
+    FIG2_DARK_GREY   = '#333333'
 
     fig2, ax2 = plt.subplots(1, 1, figsize=(6, 4))
 
     ax2.axhline(1, color='grey', linestyle='--', linewidth=1.2, zorder=1)
-    ax2.plot(x_peak_sorted, norm_adp_bias[sort_idx_2], 'o-', color='steelblue',
-             linewidth=2, markersize=5, label='Adaptive')
-    ax2.plot(x_peak_sorted, norm_org_bias[sort_idx_2], 's-', color='coral',
-             linewidth=2, markersize=5, label='Non-Adaptive')
-    ax2.set_title("Biased Ensemble: Normalized Response", fontweight='bold')
-    ax2.set_ylabel("Response / Mean Response")
-    ax2.set_xlabel("Orientation (°)")
+    ax2.plot(x_neuron[sort_neuron_idx], norm_avg_org2[sort_neuron_idx],
+             color=FIG2_DARK_GREY, linewidth=2.5, label='Non-Adaptive ORGaNICs')
+    ax2.plot(x_neuron[sort_neuron_idx], norm_avg_adp2[sort_neuron_idx],
+             color=FIG2_DARK_ORANGE, linewidth=2.5, label='Adaptive ORGaNICs')
+
+    ax2.set_title("Average Activity (Biased Ensemble)", fontweight='bold')
+    ax2.set_ylabel("Normalized Response", fontweight='bold')
+    ax2.set_xlabel("Neuron Preference (deg)", fontweight='bold')
     ax2.set_xlim(-90, 90)
-    ax2.legend()
+    ax2.legend(loc='upper right')
     ax2.grid(False)
 
-    fig2.suptitle("Average Steady State Response", fontweight='bold', fontsize=13)
+    for spine in ax2.spines.values():
+        spine.set_edgecolor('black')
+        spine.set_linewidth(2.5)
+
     plt.tight_layout()
     plt.show()
+
+    # Free simulation rate arrays before Figure 3
+    del org_uniform_rates, org_bias_rates, adapt_uniform_rates, adapt_biased_rates
+    gc.collect()
 
     # =================================================================
     # FIGURE 3: Subset of Gain Dynamics (Last 1000 Steps)
