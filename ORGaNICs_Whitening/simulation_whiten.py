@@ -44,8 +44,8 @@ class V1Dynamics:
         self.tau_y = 1.0      
         self.tau_a = 5.0      
         self.tau_u = 2.0      
-        self.tau_g = 100.0    
-        self.tau_v = 20      
+        self.tau_g = 50.0    
+        self.tau_v = 50      
         self.tau_avg = 0.5
         
         self.beta = 1.0
@@ -73,7 +73,7 @@ class V1Dynamics:
         
         if self.adaptive:
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg # dynamics to calculate mean(v^2)
-            dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # target set to the recent average of v^2
+            dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # target set to the recent average of v^2 (avg_vsq)
             dv_dt = (-v_state + self.frame.W.T @ y) / self.tau_v # dynamics converge to whitening objective
             gain_feedback = self.frame.W @ (g * v_state)
         else:

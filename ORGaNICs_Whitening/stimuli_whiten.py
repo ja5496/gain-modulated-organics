@@ -9,7 +9,7 @@ These responses are fed into our V1 dynamics as the input layer.
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, num_angles = 169, stream_length = 10140, tuning_width = 0.3, Ensemble=False):
+    def __init__(self, N=60, num_angles = 169, stream_length = 10140, tuning_width = 0.4, Ensemble=False):
         self.N = N # Number of primary neurons
         self.num_angles = num_angles # Number of distinct input orientations
         self.stream_length = stream_length # Total length of the input stream
@@ -53,7 +53,9 @@ class StimulusGenerator:
 
         # Generate stimulus curves using broadcasting - matrix of shape (K_stimuli, stream_length).
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
-        profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta))
+        delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
+        #profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
+        profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) + 0.2 # GAUSSIAN PROFILE
         
         # 5. Normalize, scale, then mean-center each time step
         profiles =  profiles / np.max(profiles)
@@ -74,7 +76,9 @@ class StimulusGenerator:
         
         for i in range(169):
             # Tuning curve for neuron i (preferred orientation = self.theta[i])
-            profile = np.exp(self.tuning_width * np.cos(2*(theta_fine - self.theta_inputs[i])))
+            delta_theta = theta_fine - self.theta_inputs[i]
+            delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
+            profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) + 0.2 
             profile = profile / np.max(profile)
             ax.plot(theta_fine_deg, profile, color=colors[i], alpha=0.7, linewidth=1.2)
         

@@ -7,6 +7,8 @@ of primary neurons and K >= N(N+1)/2 (I set this equal in this code). Taken from
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import scipy
+from stimuli_whiten import StimulusGenerator
 
 class Frame:
     def __init__(self, dim: int, mercedes: bool = True, sigma: float = 0.3, noise_std: float = 0.05):
@@ -17,8 +19,8 @@ class Frame:
             print(f"Building Smooth Mercedes Frame (N={self.dim}, K={self.K})...")
             self.W = self.mercedes()
         else:
-            print(f"Building Bell-Shaped Frame (N={self.dim}, K={self.K})...")
-            self.W = self.bell_shaped_frame(sigma=sigma, noise_std=noise_std)
+            print(f"Building Optimal Frame (N={self.dim}, K={self.K})...")
+            self.W = self.optimal_frame()
         self.g = np.zeros(self.K) # Initialize gains at 0.
 
     def mercedes(self) -> np.ndarray:
@@ -71,83 +73,43 @@ class Frame:
 
         return W
 
-    def bell_shaped_frame(self, sigma: float = 0.3, noise_std: float = 0.05) -> np.ndarray:
-        """
-        Build an (N, K) frame of Gaussian-shaped unit vectors.
-        Each column: Gaussian centered at a random orientation in [0, pi),
-        projected onto N equally-spaced neuron angles with periodic BCs
-        (wrapped angular distance, period pi), then mean-centered, noise-added,
-        and L2-normalized.
-        """
-        N, K = self.dim, self.K
-        theta = np.linspace(0, np.pi, N, endpoint=False)
-        centers = np.random.uniform(0, np.pi, size=K)
-        self.centers = centers  # store orientation centers for downstream use
-        W = np.zeros((N, K))
-        for k in range(K):
-            d = theta - centers[k]
-            d_wrapped = d - np.pi * np.round(d / np.pi)
-            col = np.exp(-2 * (d_wrapped / sigma) ** 2)
-            #col -= col.mean()
-            col += np.random.randn(N) * noise_std
-            col /= np.linalg.norm(col)
-            W[:, k] = col
+    def optimal_frame(self) -> np.ndarray:
+        N = self.dim
+        stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=10140) 
+        orientation_inputs = np.array(stim_gen.generate_input_ensembles(biased=False))
+        cov_matrix = np.cov(orientation_inputs, rowvar=True)
+        eigenvalues, W = np.linalg.eigh(cov_matrix)
+        eigenvalues = np.clip(eigenvalues, 0, None)
+        print(np.sort(eigenvalues)[::-1])
+        norms = np.linalg.norm(W, axis=0)
+        W = W / norms
+        Lambda = np.diag((np.sqrt(eigenvalues) - 1) * norms**2)
+
+        # Compute C_ss^(1/2) via W_orig = W * norms
+        W_orig = W * norms[np.newaxis, :]
+        cov_sqrt = W_orig @ np.diag(np.sqrt(eigenvalues)) @ W_orig.T
+        reconstruction = np.eye(N) + W @ Lambda @ W.T
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        vmin = min(cov_sqrt.min(), reconstruction.min())
+        vmax = max(cov_sqrt.max(), reconstruction.max())
+        for ax, mat, title in zip(axes, [cov_sqrt, reconstruction], [r'$C_{ss}^{1/2}$', r'$I + W\Lambda W^\top$']):
+            im = ax.imshow(mat, cmap='viridis', vmin=vmin, vmax=vmax)
+            ax.set_title(title)
+            plt.colorbar(im, ax=ax)
+        fig2, ax2 = plt.subplots(figsize=(5, 4))
+        im2 = ax2.imshow(W, cmap='viridis')
+        ax2.set_title(r'Frame $W$')
+        plt.colorbar(im2, ax=ax2)
+        plt.show()
+        plt.tight_layout()
+
         return W
 
-    def plot_frame(self):
-        '''
-        Visualize the frame vectors in 2D. Only works when N=2.
-        Plots each of the K unit vectors as arrows from the origin.
-        '''
-        if self.dim != 2:
-            raise ValueError(f"Plotting only supported for N=2, got N={self.dim}")
-        
-        fig, ax = plt.subplots(figsize=(6, 6))
-        
-        # Plot each frame vector as an arrow from the origin
-        colors = plt.cm.viridis(np.linspace(0, 1, self.K))
-        for k in range(self.K):
-            vec = self.W[:, k]
-            ax.arrow(0, 0, vec[0], vec[1], 
-                     head_width=0.08, head_length=0.05, 
-                     fc=colors[k], ec=colors[k], 
-                     linewidth=2, label=f'w_{k+1}')
-        
-        # Plot the unit circle for reference
-        theta = np.linspace(0, 2*np.pi, 100)
-        ax.plot(np.cos(theta), np.sin(theta), 'k--', alpha=0.3, linewidth=1)
-        
-        # Formatting
-        ax.set_xlim(-1.3, 1.3)
-        ax.set_ylim(-1.3, 1.3)
-        ax.set_aspect('equal')
-        ax.axhline(0, color='gray', linewidth=0.5)
-        ax.axvline(0, color='gray', linewidth=0.5)
-        ax.set_xlabel('Dim 1')
-        ax.set_ylabel('Dim 2')
-        ax.set_title(f'Overcomplete Frame (N={self.dim}, K={self.K})')
-        ax.legend(loc='upper right')
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
 
 
 if __name__ == "__main__":
-   if __name__ == "__main__":
-    # Visualize with N=2, K=3
-    np.random.seed(22) # For reproducibility
-    frame = Frame(dim=2, mercedes=False)
-    print(f"Frame W shape: {frame.W.shape}")
-    print(f"Frame vectors:\n{frame.W}")
-    frame.plot_frame() 
-    plt.close('all') 
-
-    # Create and save N=169 bell-shaped frame + centers to csv for reuse in simulations
     np.random.seed(42)
-    frame_169 = Frame(dim=169, mercedes=False)
-    np.savetxt("Frames/N169_Frame_bell_shaped.csv", frame_169.W, delimiter=",")
-    np.savetxt("Frames/N169_Frame_bell_shaped_centers.csv", frame_169.centers, delimiter=",")
-
-    print(f"Saved N=169 bell-shaped frame (shape: {frame_169.W.shape})")
-    print(f"Saved N=169 orientation centers (shape: {frame_169.centers.shape})")
+    optimal_uniform_frame_169 = Frame(dim=169, mercedes=False)
+    np.savetxt("Frames/N169_optimal_uniform_Frame.csv", optimal_uniform_frame_169.W, delimiter=",")
+ 

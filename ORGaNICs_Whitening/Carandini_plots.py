@@ -130,7 +130,7 @@ if __name__ == "__main__":
     # 1. Initialize
     print("Initializing...")
     tunings = V1Tunings(N=N)
-    frame = Frame(csv_path="Frames/N169_Frame.csv")
+    frame = Frame(csv_path="Frames/N169_optimal_uniform_Frame.csv")
     stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
     
     adaptor_idx = N // 2
@@ -218,7 +218,7 @@ if __name__ == "__main__":
     sort_idx = np.argsort(x_axis)
     x_axis_sorted = x_axis[sort_idx]
     
-    blue_colors = plt.cm.RdPu(np.linspace(0.2, 1.0, N_BINS))
+    blue_colors = plt.cm.Blues(np.linspace(0.2, 1.0, N_BINS))
     
     discrete_step = 180 / N 
     bins_hist = np.linspace(0, 180, N_BINS + 1) - (discrete_step / 2)
@@ -226,11 +226,11 @@ if __name__ == "__main__":
     weights_bias = np.ones_like(hist_bias) / len(hist_bias)
 
     axes[0, 0].hist(hist_uni, bins=bins_hist, weights=weights_uni, color='black', rwidth=0.9)
-    axes[0, 0].set_title("Uniform Ensemble", fontweight='bold')
-    axes[0, 0].set_ylabel("Probability")
+    axes[0, 0].set_title("Uniform Ensemble", fontweight='bold', fontsize=18)
+    axes[0, 0].set_ylabel("Probability", fontsize=18)
     
     axes[0, 1].hist(hist_bias, bins=bins_hist, weights=weights_bias, color='black', rwidth=0.9)
-    axes[0, 1].set_title("Biased Ensemble", fontweight='bold')
+    axes[0, 1].set_title("Biased Ensemble", fontweight='bold', fontsize=18)
     
     for ax in axes[0]:
         ax.set_xlim(0, 180)
@@ -240,13 +240,13 @@ if __name__ == "__main__":
         axes[1, 0].plot(x_axis_sorted, row2_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         axes[1, 1].plot(x_axis_sorted, row2_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
-    axes[1, 0].set_ylabel("Non-Adaptive\nNormalized Response", fontweight='bold')
+    axes[1, 0].set_ylabel("Non-Adaptive\nORGaNICs Response", fontsize=18)
     
     for i in range(N_BINS):
         axes[2, 0].plot(x_axis_sorted, row3_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         axes[2, 1].plot(x_axis_sorted, row3_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
         
-    axes[2, 0].set_ylabel("Adaptive\nNormalized Response", fontweight='bold')
+    axes[2, 0].set_ylabel("Adaptive ORGaNICs\n Response", fontsize=18)
 
     for r in [1, 2]:
         for c in [0, 1]:
@@ -255,7 +255,7 @@ if __name__ == "__main__":
             ax.grid(False, alpha=0.3)
             
             if r == 2:
-                ax.set_xlabel("Orientation Relative to Adaptor (°)")
+                ax.set_xlabel("Stimulus Orientation(°)", fontsize = 18)
     
     plt.tight_layout()
     plt.show()
@@ -406,7 +406,7 @@ if __name__ == "__main__":
     fig_shifts, ax_shifts = plt.subplots(1, 1, figsize=(6, 4))
 
     ax_shifts.axhline(0, color='grey', linestyle='-', linewidth=1.5, zorder=1)
-    ax_shifts.scatter(bin_numbers, peak_shifts, color='#00008B', s=100, zorder=2)
+    ax_shifts.plot(bin_numbers, peak_shifts, 'o-', color='#00008B', linewidth=2.5, markersize=8, zorder=2)
 
     ax_shifts.set_title("Tuning Shifts", fontweight='bold', fontsize=15)
     ax_shifts.set_ylabel("Degrees", fontweight='bold', fontsize=13)
