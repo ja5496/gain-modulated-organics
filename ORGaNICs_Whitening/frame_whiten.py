@@ -76,7 +76,7 @@ class Frame:
     def optimal_frame(self) -> np.ndarray:
         N = self.dim
         stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=10140) 
-        orientation_inputs = np.array(stim_gen.generate_input_ensembles(biased=False))
+        orientation_inputs = np.array(stim_gen.generate_input_ensembles(biased=True, mean_center=False))
         cov_matrix = np.cov(orientation_inputs, rowvar=True)
         eigenvalues, W = np.linalg.eigh(cov_matrix)
         eigenvalues = np.clip(eigenvalues, 0, None)
@@ -111,5 +111,5 @@ class Frame:
 if __name__ == "__main__":
     np.random.seed(42)
     optimal_uniform_frame_169 = Frame(dim=169, mercedes=False)
-    np.savetxt("Frames/N169_optimal_uniform_Frame.csv", optimal_uniform_frame_169.W, delimiter=",")
+    np.savetxt("Frames/N169_optimal_biased_Frame.csv", optimal_uniform_frame_169.W, delimiter=",")
  

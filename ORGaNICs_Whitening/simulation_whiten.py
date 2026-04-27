@@ -44,8 +44,8 @@ class V1Dynamics:
         self.tau_y = 1.0      
         self.tau_a = 5.0      
         self.tau_u = 2.0      
-        self.tau_g = 50.0    
-        self.tau_v = 50      
+        self.tau_g = 250.0    
+        self.tau_v = 250      
         self.tau_avg = 0.5
         
         self.beta = 1.0

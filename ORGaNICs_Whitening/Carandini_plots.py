@@ -63,7 +63,9 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
         a = np.copy(frozen_a) 
 
         # Construct probe stimulus identically to generate_input_ensembles 
-        z_t = np.exp(stim_gen.tuning_width * np.cos(2 * (stim_gen.theta_inputs - angle)))
+        delta = stim_gen.theta_inputs - angle
+        delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
+        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) + 0.2
         z_t = z_t / np.max(z_t)
 
         # 2. Settle to steady state

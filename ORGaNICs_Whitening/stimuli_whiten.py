@@ -9,7 +9,7 @@ These responses are fed into our V1 dynamics as the input layer.
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, num_angles = 169, stream_length = 10140, tuning_width = 0.4, Ensemble=False):
+    def __init__(self, N=60, num_angles = 169, stream_length = 10140, tuning_width = 0.75, Ensemble=False):
         self.N = N # Number of primary neurons
         self.num_angles = num_angles # Number of distinct input orientations
         self.stream_length = stream_length # Total length of the input stream
@@ -19,7 +19,7 @@ class StimulusGenerator:
         self.theta_tunings = np.linspace(0, np.pi, N, endpoint=False)
         self.theta_inputs = np.linspace(0, np.pi, num_angles, endpoint=False)
 
-    def generate_input_ensembles(self, biased=False):
+    def generate_input_ensembles(self, biased=False, mean_center=False):
         '''
         Generate uniform or biased ensemble of raised cosine input profiles  
         centered at random orientations. 
@@ -33,7 +33,7 @@ class StimulusGenerator:
         # Append it on itself until it reaches self.stream_length
         duration = 20 # Stimuli are flashed for a period of (duration * dt).  
         num_inputs = int(self.stream_length / duration) # number of stimuli shown 
-        repeats = int(np.ceil(num_inputs / self.num_angles)) # amount one stimuli should be repeated in uniform ensemble
+        repeats = int(np.ceil(num_inputs / self.num_angles)) # The amount each stimulus should be repeated in uniform ensemble
         indices = np.tile(base_indices, repeats)[:self.stream_length] 
 
         # Optionally overwrite roughly 33% of the indices with the adaptor index
@@ -58,8 +58,9 @@ class StimulusGenerator:
         profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) + 0.2 # GAUSSIAN PROFILE
         
         # 5. Normalize, scale, then mean-center each time step
-        profiles =  profiles / np.max(profiles)
-        #profiles -= profiles.mean(axis=0, keepdims=True) # Centers the inputs so the stimuli have mean = 0
+        profiles = profiles / np.max(profiles)
+        if mean_center:
+            profiles -= profiles.mean(axis=0, keepdims=True)
 
         return profiles
 
