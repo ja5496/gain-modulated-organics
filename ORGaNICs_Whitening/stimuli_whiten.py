@@ -61,6 +61,33 @@ class StimulusGenerator:
 
         return profiles
 
+    def plot_covariance_matrices(self):
+        '''Plot heatmaps of the covariance matrix for both uniform and biased ensembles.'''
+        uni  = self.generate_input_ensembles(biased=False)
+        bias = self.generate_input_ensembles(biased=True)
+        cov_uni  = np.cov(uni,  rowvar=True)
+        cov_bias = np.cov(bias, rowvar=True)
+
+        ticks = np.linspace(0, self.num_angles - 1, 5).astype(int)
+        tick_labels = [f"{int(self.theta_inputs[t] * 180 / np.pi)}°" for t in ticks]
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        for ax, mat, title in zip(axes, [cov_uni, cov_bias],
+                                  ['Uniform Ensemble', 'Biased Ensemble']):
+            im = ax.imshow(mat, cmap='viridis', aspect='auto')
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            ax.set_title(title, fontsize=20, fontweight='bold', pad=12)
+            ax.set_xlabel('Orientation', fontsize=18, fontweight='bold')
+            ax.set_ylabel('Orientation', fontsize=18, fontweight='bold')
+            ax.set_xticks(ticks); ax.set_xticklabels(tick_labels, fontsize=14)
+            ax.set_yticks(ticks); ax.set_yticklabels(tick_labels, fontsize=14)
+            for spine in ax.spines.values():
+                spine.set_linewidth(2.5)
+            ax.tick_params(width=2.5, length=6)
+
+        plt.tight_layout()
+        plt.show()
+
     def plot_tuning_curves(self):
         '''Visualize the tuning curve for each neuron as raised cosines.'''
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -92,6 +119,6 @@ if __name__ == "__main__":
 
     # --- Example Usage ---
     stim_gen = StimulusGenerator()
-    stim_gen.generate_input_ensembles(biased=True)
+    stim_gen.plot_covariance_matrices()
     stim_gen.plot_tuning_curves()
     
