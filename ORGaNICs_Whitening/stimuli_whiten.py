@@ -55,7 +55,7 @@ class StimulusGenerator:
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
         delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
         #profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
-        profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) + 0.2 # GAUSSIAN PROFILE
+        profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) # GAUSSIAN PROFILE
         
         # 5. Normalize, scale, then mean-center each time step
         profiles = profiles / np.max(profiles)

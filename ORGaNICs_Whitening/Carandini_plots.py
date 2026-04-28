@@ -65,7 +65,8 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
         # Construct probe stimulus identically to generate_input_ensembles 
         delta = stim_gen.theta_inputs - angle
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
-        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) + 0.2
+        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) 
+        #z_t = np.exp(stim_gen.tuning_width * np.cos(2 * delta)) # RAISED COSINE
         z_t = z_t / np.max(z_t)
 
         # 2. Settle to steady state
@@ -132,7 +133,7 @@ if __name__ == "__main__":
     # 1. Initialize
     print("Initializing...")
     tunings = V1Tunings(N=N)
-    frame = Frame(csv_path="Frames/N169_optimal_uniform_Frame.csv")
+    frame = Frame(csv_path="Frames/N169_optimal_Frame.csv")
     stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
     
     adaptor_idx = N // 2

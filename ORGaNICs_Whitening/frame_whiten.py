@@ -11,14 +11,20 @@ import scipy
 from stimuli_whiten import StimulusGenerator
 
 class Frame:
-    def __init__(self, dim: int, mercedes: bool = True, sigma: float = 0.3, noise_std: float = 0.05):
+    def __init__(self, dim: int, frame_type: str = 'mercedes', sigma: float = 0.3, noise_std: float = 0.05):
         self.dim = int(dim) # Number of primary neurons
-        self.K = int(self.dim * (self.dim + 1) // 2)
+        self.sigma = sigma
         self.centers = None  # Only set for bell-shaped frames
-        if mercedes:
+        if frame_type == 'mercedes':
+            self.K = int(self.dim * (self.dim + 1) // 2)
             print(f"Building Smooth Mercedes Frame (N={self.dim}, K={self.K})...")
             self.W = self.mercedes()
+        elif frame_type == 'gaussian':
+            self.K = 2 * self.dim
+            print(f"Building Gaussian Frame (N={self.dim}, K={self.K})...")
+            self.W = self.create_gaussian_frame()
         else:
+            self.K = int(self.dim * (self.dim + 1) // 2)
             print(f"Building Optimal Frame (N={self.dim}, K={self.K})...")
             self.W = self.optimal_frame()
         self.g = np.zeros(self.K) # Initialize gains at 0.
@@ -73,10 +79,24 @@ class Frame:
 
         return W
 
+    def create_gaussian_frame(self) -> np.ndarray:
+        N, K = self.dim, self.K
+        theta = np.linspace(0, np.pi, N, endpoint=False)
+        centers = np.linspace(0, np.pi, K, endpoint=False)
+
+        W = np.zeros((N, K))
+        for k in range(K):
+            delta = theta - centers[k]
+            delta = (delta + np.pi / 2) % np.pi - np.pi / 2
+            col = np.exp(-delta ** 2 / (2 * self.sigma ** 2))
+            W[:, k] = col / np.linalg.norm(col)
+
+        return W
+
     def optimal_frame(self) -> np.ndarray:
         N = self.dim
         stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=10140) 
-        orientation_inputs = np.array(stim_gen.generate_input_ensembles(biased=True, mean_center=False))
+        orientation_inputs = np.array(stim_gen.generate_input_ensembles(biased=True, mean_center=True))
         cov_matrix = np.cov(orientation_inputs, rowvar=True)
         eigenvalues, W = np.linalg.eigh(cov_matrix)
         eigenvalues = np.clip(eigenvalues, 0, None)
@@ -85,16 +105,20 @@ class Frame:
         W = W / norms
         Lambda = np.diag((np.sqrt(eigenvalues) - 1) * norms**2)
 
+
         # Compute C_ss^(1/2) via W_orig = W * norms
         W_orig = W * norms[np.newaxis, :]
         cov_sqrt = W_orig @ np.diag(np.sqrt(eigenvalues)) @ W_orig.T
         reconstruction = np.eye(N) + W @ Lambda @ W.T
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        vmin = min(cov_sqrt.min(), reconstruction.min())
-        vmax = max(cov_sqrt.max(), reconstruction.max())
-        for ax, mat, title in zip(axes, [cov_sqrt, reconstruction], [r'$C_{ss}^{1/2}$', r'$I + W\Lambda W^\top$']):
-            im = ax.imshow(mat, cmap='viridis', vmin=vmin, vmax=vmax)
+        # Whitening matrix C_ss^(-1/2): pinv handles rank deficiency gracefully
+        cov_sqrt_inv = np.linalg.pinv(cov_sqrt)
+
+        fig, axes = plt.subplots(1, 4, figsize=(20, 4))
+        mats = [cov_matrix, cov_sqrt, reconstruction, cov_sqrt_inv]
+        titles = [r'$C_{ss}$', r'$C_{ss}^{1/2}$', r'$I + W\Lambda W^\top$', r'$C_{ss}^{-1/2}$ (whitening matrix)']
+        for ax, mat, title in zip(axes, mats, titles):
+            im = ax.imshow(mat, cmap='viridis')
             ax.set_title(title)
             plt.colorbar(im, ax=ax)
         fig2, ax2 = plt.subplots(figsize=(5, 4))
@@ -107,9 +131,11 @@ class Frame:
         return W
 
 
-
 if __name__ == "__main__":
     np.random.seed(42)
-    optimal_uniform_frame_169 = Frame(dim=169, mercedes=False)
-    np.savetxt("Frames/N169_optimal_biased_Frame.csv", optimal_uniform_frame_169.W, delimiter=",")
+    choice = input("Choose frame type [mercedes/gaussian/optimal]: ").strip().lower()
+    while choice not in ('mercedes', 'gaussian', 'optimal'):
+        choice = input("Invalid choice. Enter mercedes, gaussian, or optimal: ").strip().lower()
+    frame = Frame(dim=169, frame_type=choice)
+    np.savetxt(f"Frames/N169_{choice}_Frame.csv", frame.W, delimiter=",")
  
