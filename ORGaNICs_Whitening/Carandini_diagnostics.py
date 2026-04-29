@@ -161,7 +161,7 @@ def diagnostic_sigma_sweep():
     print("  DIAGNOSTIC 1: Sigma Sweep (sigma_exc=0.2)")
     print("=" * 60)
 
-    STREAM_LENGTH = 10140
+    STREAM_LENGTH = 10920
     sigma_exc = 0.15
     sigma_inh_values = [0.4, 0.5, 0.6, 0.7]
 
@@ -234,7 +234,7 @@ def diagnostic_tuning_width_sweep():
     print("  DIAGNOSTIC 3: Tuning Width Sweep (w = 1 – 6)")
     print("=" * 60)
 
-    STREAM_LENGTH = 10140
+    STREAM_LENGTH = 10920
     tuning_widths = [1, 1.5, 2, 2.5]
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))

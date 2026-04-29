@@ -26,8 +26,7 @@ from simulation_whiten import V1Dynamics, Frame
 
 # ── Shared parameters ──────────────────────────────────────────────────────────
 N           = 169
-STREAM_LEN  = 10140   # must match Carandini: num_inputs=507, one_third_split=507//3=169=K
-                      # (with 6760: one_third_split=112<K, biased ensemble is asymmetric)
+STREAM_LEN  = 10920   # num_inputs=546, one_third_split=182≈1 full cycle; num_angles=169 divides evenly across N_BINS=13
 PROBE_RES   = 90
 PROBE_STEPS = 100
 N_BINS      = 13

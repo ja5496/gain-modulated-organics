@@ -22,7 +22,7 @@ from simulation_whiten import Frame, V1Dynamics
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
 N_BINS = 13              # Aggregation bins for visualization
-STREAM_LENGTH = 10140    # Length of adaptation stream (steps)
+STREAM_LENGTH = 10920    # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
 PROBE_RES = 360          # Resolution of tuning curve probe (number of angles)
 Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneous rate;
@@ -46,10 +46,10 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
 
     W_yy = tunings.W_yy
 
-    dt = 0.05
-    tau_y = 1.0
-    tau_u = 2.0
-    tau_a = 5.0
+    dt = 0.1
+    tau_y = 0.4
+    tau_u = 0.8
+    tau_a = 2.0
     beta = 1.0
     sigma = 0.1
 
@@ -65,7 +65,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
         # Construct probe stimulus identically to generate_input_ensembles 
         delta = stim_gen.theta_inputs - angle
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
-        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) 
+        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) + 0.5
         #z_t = np.exp(stim_gen.tuning_width * np.cos(2 * delta)) # RAISED COSINE
         z_t = z_t / np.max(z_t)
 
@@ -133,7 +133,7 @@ if __name__ == "__main__":
     # 1. Initialize
     print("Initializing...")
     tunings = V1Tunings(N=N)
-    frame = Frame(csv_path="Frames/N169_optimal_Frame.csv")
+    frame = Frame(csv_path="Frames/N169_identity_Frame.csv")
     stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
     
     adaptor_idx = N // 2

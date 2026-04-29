@@ -7,7 +7,8 @@ of primary neurons and K >= N(N+1)/2 (I set this equal in this code). Taken from
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import scipy
+from scipy.special import erf
+from scipy.linalg import sqrtm
 from stimuli_whiten import StimulusGenerator
 
 class Frame:
@@ -23,11 +24,14 @@ class Frame:
             self.K = 2 * self.dim
             print(f"Building Gaussian Frame (N={self.dim}, K={self.K})...")
             self.W = self.create_gaussian_frame()
+        elif frame_type == 'identity':
+            print(f"Building Identity Frame (N={self.dim}, N={self.dim})...")
+            self.W = self.create_identity_frame()
         else:
             self.K = int(self.dim * (self.dim + 1) // 2)
             print(f"Building Optimal Frame (N={self.dim}, K={self.K})...")
             self.W = self.optimal_frame()
-        self.g = np.zeros(self.K) # Initialize gains at 0.
+            self.g = np.zeros(self.K) # Initialize gains at 0.
 
     def mercedes(self) -> np.ndarray:
         N, K = self.dim, self.K
@@ -78,6 +82,10 @@ class Frame:
             current_max_coherences = np.maximum(current_max_coherences, new_dots)
 
         return W
+    
+    def create_identity_frame(self) -> np.ndarray:
+        N = self.dim
+        return np.eye(N)
 
     def create_gaussian_frame(self) -> np.ndarray:
         N, K = self.dim, self.K
@@ -89,14 +97,43 @@ class Frame:
             delta = theta - centers[k]
             delta = (delta + np.pi / 2) % np.pi - np.pi / 2
             col = np.exp(-delta ** 2 / (2 * self.sigma ** 2))
+            #col = Frame.gaussian_rectify(col)
             W[:, k] = col / np.linalg.norm(col)
 
-        return W
+        # Transform to tight frame + handle noise: 
+        G = W @ W.T
+        S, U = np.linalg.eigh(G)
+        S = np.maximum(S, 1e-10) 
+        G_inv_sqrt = U @ np.diag(1.0 / np.sqrt(S)) @ U.T
+        W_tight = G_inv_sqrt @ W
+        tight_norms = np.linalg.norm(W_tight, axis=0)
+        W_tight = W_tight / tight_norms
+        
+        W_tight = np.real(W_tight)
+        #W_tight = np.maximum(W_tight, 0)
+
+        _, ax = plt.subplots(figsize=(5, 4))
+        im = ax.imshow(W_tight, cmap='viridis', aspect='auto')
+        ax.set_title(r'Frame $W$ (Gaussian)', fontsize=14)
+        ax.set_xlabel('Frame vector index', fontsize=12)
+        ax.set_ylabel('Neuron index', fontsize=12)
+        plt.colorbar(im, ax=ax)
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.0)
+        ax.tick_params(width=2.0, length=5)
+        plt.tight_layout()
+        plt.show()
+
+        return W_tight
+    
+    def gaussian_rectify(y, threshold=0.6, sigma=0.35, r_max=1.0):
+        return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
     def optimal_frame(self) -> np.ndarray:
         N = self.dim
-        stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=10140) 
+        stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=10920)
         orientation_inputs = np.array(stim_gen.generate_input_ensembles(biased=True, mean_center=True))
+        orientation_inputs = Frame.gaussian_rectify(orientation_inputs)
         cov_matrix = np.cov(orientation_inputs, rowvar=True)
         eigenvalues, W = np.linalg.eigh(cov_matrix)
         eigenvalues = np.clip(eigenvalues, 0, None)
@@ -133,9 +170,9 @@ class Frame:
 
 if __name__ == "__main__":
     np.random.seed(42)
-    choice = input("Choose frame type [mercedes/gaussian/optimal]: ").strip().lower()
-    while choice not in ('mercedes', 'gaussian', 'optimal'):
-        choice = input("Invalid choice. Enter mercedes, gaussian, or optimal: ").strip().lower()
+    choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
+    while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
+        choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
     frame = Frame(dim=169, frame_type=choice)
     np.savetxt(f"Frames/N169_{choice}_Frame.csv", frame.W, delimiter=",")
  

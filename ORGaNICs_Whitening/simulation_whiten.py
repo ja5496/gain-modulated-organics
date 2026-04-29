@@ -35,18 +35,18 @@ class Frame:
             self.centers = None
 
 class V1Dynamics:
-    def __init__(self, v1_model, frame, dt=0.05, adaptive=True):
+    def __init__(self, v1_model, frame, dt=0.1, adaptive=True):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt 
         self.adaptive = adaptive  
         
-        self.tau_y = 1.0      
-        self.tau_a = 5.0      
-        self.tau_u = 2.0      
-        self.tau_g = 100.0    
-        self.tau_v = 50      
-        self.tau_avg = 0.5
+        self.tau_y = 0.2 # from 1
+        self.tau_a = 1.0 # from 5   
+        self.tau_u = 0.4 # from 2
+        self.tau_g = 100.0 
+        self.tau_v = 50.0    
+        self.tau_avg = 10 
         
         self.beta = 1.0
         self.sigma = 0.1
