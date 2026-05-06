@@ -234,14 +234,14 @@ if __name__ == "__main__":
 
     print("Running adaptive simulation (uniform)...")
     engine_uni2 = V1Dynamics(tunings, frame, adaptive=True)
-    rates_uni2, gains_uni2, u_uni2, a_uni2 = engine_uni2.run_simulation(seq_uni)
+    rates_uni2, gains_uni2, u_uni2, a_uni2, *_ = engine_uni2.run_simulation(seq_uni)
     final_gains_uni2 = gains_uni2[:, -1]
     final_u_uni2     = u_uni2[:, -1]
     del rates_uni2, gains_uni2, u_uni2, a_uni2; gc.collect()
 
     print("Running adaptive simulation (biased)...")
     engine_bias2 = V1Dynamics(tunings, frame, adaptive=True)
-    rates_bias2, gains_bias2, u_bias2, a_bias2 = engine_bias2.run_simulation(seq_bias)
+    rates_bias2, gains_bias2, u_bias2, a_bias2, *_ = engine_bias2.run_simulation(seq_bias)
     final_gains_bias2 = gains_bias2[:, -1]
     final_u_bias2     = u_bias2[:, -1]
     del rates_bias2, gains_bias2, u_bias2, a_bias2; gc.collect()

@@ -35,22 +35,28 @@ class Frame:
             self.centers = None
 
 class V1Dynamics:
-    def __init__(self, v1_model, frame, dt=0.1, adaptive=True):
+    def __init__(self, v1_model, frame, dt=0.1, adaptive=True, input_adaptive=True):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt 
-        self.adaptive = adaptive  
-        
+        self.adaptive = adaptive
+        self.input_adaptive = input_adaptive
+
         self.tau_y = 0.2 # from 1
         self.tau_a = 1.0 # from 5   
         self.tau_u = 0.4 # from 2
         self.tau_g = 100.0 
         self.tau_v = 50.0    
         self.tau_avg = 10 
+        self.tau_avg_z = 400
         
-        self.beta = 1.0
         self.sigma = 0.1
         self.alpha = 0.0
+
+        if input_adaptive:
+            self.beta = None
+        else:
+            self.beta = 1.0
 
     def gaussian_rectify(self, y, threshold=0.6, sigma=0.35, r_max=1.0):
         # Rectification function (crudely) estimates firing rates from membrane potential
@@ -64,13 +70,23 @@ class V1Dynamics:
         a = state[2*N:3*N]
         g = np.maximum(state[3*N:3*N+K], 0)
         v_state = state[3*N+K:3*N+2*K]
-        avg_vsq = state[3*N+2*K:3*N+2*K+1]
+        avg_z = state[3*N+2*K:4*N+2*K]
+        avg_vsq = state[4*N+2*K:4*N+2*K+1]
+        
         
         u_plus = self.gaussian_rectify(u)
         y_plus = self.gaussian_rectify(y)
         a_plus = self.gaussian_rectify(a)
         sqrt_y_plus = np.sqrt(y_plus) 
         
+        # avg_z tracks normalized input; updated independently of whitening gain adaptation
+        z_min, z_max = z_t.min(), z_t.max()
+        scaled_z_t = (z_t - z_min) / (z_max - z_min + 1e-8)
+        if self.input_adaptive:
+            davg_z_dt = (-avg_z + scaled_z_t) / self.tau_avg_z
+        else:
+            davg_z_dt = np.zeros(N)
+
         if self.adaptive:
             davg_vsq_dt = (-avg_vsq + np.mean(v_state * v_state)) / self.tau_avg # dynamics to calculate mean(v^2)
             dg_dt = (v_state * v_state - avg_vsq) / self.tau_g # target set to the recent average of v^2 (avg_vsq)
@@ -83,7 +99,12 @@ class V1Dynamics:
             davg_vsq_dt = np.zeros(1)
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
-        input_drive = (self.beta * z_t) / 2 
+        if self.input_adaptive:
+            beta = 1 - 0.2 * avg_z  # Common stimuli are less effective at driving the cortex
+        else:
+            beta = self.beta
+
+        input_drive = (beta * z_t) / 2
         
         sigma_term = (self.sigma / 2) ** 2
         pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
@@ -93,14 +114,14 @@ class V1Dynamics:
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
         
-        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt, davg_vsq_dt])
+        return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt, davg_z_dt, davg_vsq_dt])
         
     def run_simulation(self, stimulus_stream):
         N, n_steps = stimulus_stream.shape 
         K = self.frame.K
         
-        state = np.zeros(3*N + 2*K + 1)
-        state[3*N + 2*K] = 1.0  # initialize avg_vsq to a non-zero baseline
+        state = np.zeros(4*N + 2*K + 1)
+        state[4*N + 2*K] = 1.0  # initialize avg_vsq to a non-zero baseline
 
         # Tracking histories for later analysis + figures
         y_hist = np.zeros((N, n_steps))
@@ -108,6 +129,7 @@ class V1Dynamics:
         u_hist = np.zeros((N, n_steps))
         a_hist = np.zeros((N, n_steps))
         v_hist = np.zeros((K, n_steps))
+        avg_z_hist = np.zeros((N, n_steps))
         avg_vsq_hist = np.zeros(n_steps)
         
         mode_str = "Adaptive" if self.adaptive else "Non-Adaptive"
@@ -132,7 +154,8 @@ class V1Dynamics:
             a_hist[:, t] = state[2*N:3*N]
             gains_hist[:, t] = state[3*N:3*N+K]
             v_hist[:, t] = state[3*N+K:3*N+2*K]
-            avg_vsq_hist[t] = state[3*N+2*K]
+            avg_z_hist[:, t] = state[3*N+2*K:4*N+2*K]
+            avg_vsq_hist[t] = state[4*N+2*K]
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
-        return y_hist, gains_hist, u_hist, a_hist, v_hist, avg_vsq_hist
+        return y_hist, gains_hist, u_hist, a_hist, v_hist, avg_z_hist, avg_vsq_hist

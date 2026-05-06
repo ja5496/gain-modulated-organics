@@ -181,7 +181,7 @@ def diagnostic_sigma_sweep():
         # Adapt to uniform → normalization reference
         print("  Adapting to Uniform...")
         engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_uni, _, _, _, _ = engine_uni.run_simulation(seq_uni)
+        _, gains_hist_uni, _, _, _, _, _ = engine_uni.run_simulation(seq_uni)
         final_gains_uni = gains_hist_uni[:, -1].copy()
         del gains_hist_uni, engine_uni
         gc.collect()
@@ -193,7 +193,7 @@ def diagnostic_sigma_sweep():
         # Adapt to biased → probe → normalize
         print("  Adapting to Biased...")
         engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_bias, _, _, _, _ = engine_bias.run_simulation(seq_bias)
+        _, gains_hist_bias, _, _, _, _, _ = engine_bias.run_simulation(seq_bias)
         final_gains_bias = gains_hist_bias[:, -1].copy()
         del gains_hist_bias, engine_bias
         gc.collect()
@@ -254,7 +254,7 @@ def diagnostic_tuning_width_sweep():
         # Uniform adaptation → normalization reference
         print("  Adapting to Uniform...")
         engine_uni = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_uni, _, _, _, _ = engine_uni.run_simulation(seq_uni)
+        _, gains_hist_uni, _, _, _, _, _ = engine_uni.run_simulation(seq_uni)
         final_gains_uni = gains_hist_uni[:, -1].copy()
         del gains_hist_uni, engine_uni
         gc.collect()
@@ -267,7 +267,7 @@ def diagnostic_tuning_width_sweep():
         # Biased adaptation → probe → normalize
         print("  Adapting to Biased...")
         engine_bias = V1Dynamics(tunings, frame, adaptive=True)
-        _, gains_hist_bias, _, _, _, _ = engine_bias.run_simulation(seq_bias)
+        _, gains_hist_bias, _, _, _, _, _ = engine_bias.run_simulation(seq_bias)
         final_gains_bias = gains_hist_bias[:, -1].copy()
         del gains_hist_bias, engine_bias
         gc.collect()

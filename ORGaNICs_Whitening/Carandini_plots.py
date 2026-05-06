@@ -34,7 +34,7 @@ def gaussian_rectify(y, threshold=0.6, sigma=0.35, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
-              z_spont=0.1):
+              frozen_avg_z=None, z_spont=0.1):
     """
     Measures tuning curves by simulating the network response to specific
     probe orientations while holding gains constant. u, and a are taken from
@@ -50,7 +50,8 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
     tau_y = 0.4
     tau_u = 0.8
     tau_a = 2.0
-    beta = 1.0
+    # Freeze beta at the end-of-adaptation state; fall back to 1.0 if no avg_z was tracked
+    beta = 1 - 0.2 * frozen_avg_z if frozen_avg_z is not None else 1.0
     sigma = 0.1
 
     for i, angle in enumerate(probe_angles):
@@ -133,7 +134,7 @@ if __name__ == "__main__":
     # 1. Initialize
     print("Initializing...")
     tunings = V1Tunings(N=N)
-    frame = Frame(csv_path="Frames/N169_identity_Frame.csv")
+    frame = Frame(csv_path="Frames/N169_Frame.csv")
     stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
     
     adaptor_idx = N // 2
@@ -160,13 +161,13 @@ if __name__ == "__main__":
     # --- SCENARIO A: Non-Adaptive ORGaNICs ---
     print("\n--- Running Non-Adaptive Models ---")
     
-    engine_non_adapt = V1Dynamics(tunings, frame, adaptive=False)
+    engine_non_adapt = V1Dynamics(tunings, frame, adaptive=False, input_adaptive=False)
 
-    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _ = engine_non_adapt.run_simulation(seq_uni)
+    org_uniform_rates, _, u_hist_org_uni, a_hist_org_uni, _, _, _ = engine_non_adapt.run_simulation(seq_uni)
     results['org_uni'] = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
                                    frozen_u=u_hist_org_uni[:, -1], frozen_a=a_hist_org_uni[:, -1])
 
-    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _ = engine_non_adapt.run_simulation(seq_bias)
+    org_bias_rates, _, u_hist_org_bias, a_hist_org_bias, _, _, _ = engine_non_adapt.run_simulation(seq_bias)
     results['org_bias'] = run_probe(frame, tunings, stim_gen, fixed_gains=None, probe_angles=probe_angles,
                                     frozen_u=u_hist_org_bias[:, -1], frozen_a=a_hist_org_bias[:, -1])
 
@@ -174,8 +175,8 @@ if __name__ == "__main__":
     print("\n--- Running Adaptive Models ---")
 
     print("Adapting to Uniform Ensemble...")
-    engine_adapt = V1Dynamics(tunings, frame, adaptive=True)
-    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_vsq_hist_uni = engine_adapt.run_simulation(seq_uni)
+    engine_adapt = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=True)
+    adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_z_hist_uni, avg_vsq_hist_uni = engine_adapt.run_simulation(seq_uni)
 
     final_gains_uni = gains_hist_uni[:, -1]
     final_u_uni = u_hist_uni[:, -1]
@@ -183,10 +184,11 @@ if __name__ == "__main__":
 
     print("Probing Uniform State...")
     results['adp_uni'] = run_probe(frame, tunings, stim_gen, final_gains_uni, probe_angles,
-                                   frozen_u=final_u_uni, frozen_a=final_a_uni)
+                                   frozen_u=final_u_uni, frozen_a=final_a_uni,
+                                   frozen_avg_z=avg_z_hist_uni[:, -1])
 
     print("Adapting to Biased Ensemble...")
-    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_vsq_hist_bias = engine_adapt.run_simulation(seq_bias)
+    adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_z_hist_bias, avg_vsq_hist_bias = engine_adapt.run_simulation(seq_bias)
 
     final_gains_bias = gains_hist_bias[:, -1]
     final_u_bias = u_hist_bias[:, -1]
@@ -194,7 +196,8 @@ if __name__ == "__main__":
 
     print("Probing Biased State...")
     results['adp_bias'] = run_probe(frame, tunings, stim_gen, final_gains_bias, probe_angles,
-                                    frozen_u=final_u_bias, frozen_a=final_a_bias)
+                                    frozen_u=final_u_bias, frozen_a=final_a_bias,
+                                    frozen_avg_z=avg_z_hist_bias[:, -1])
 
     # 4. Processing & Normalization
     print("\nProcessing data for plotting...")
@@ -418,6 +421,34 @@ if __name__ == "__main__":
     ax_shifts.grid(False)
 
     for spine in ax_shifts.spines.values():
+        spine.set_edgecolor('black')
+        spine.set_linewidth(2.5)
+
+    plt.tight_layout()
+    plt.show()
+
+    # =================================================================
+    # FIGURE 5: Calculated Average Stimuli (avg_z)
+    # =================================================================
+
+    neuron_angles_deg = tunings.theta * 180 / np.pi
+
+    fig_avgz, ax_avgz = plt.subplots(1, 1, figsize=(7, 5))
+
+    ax_avgz.plot(neuron_angles_deg, avg_z_hist_uni[:, -1],
+                 color='#6BAED6', linewidth=3.5, label='Uniform Ensemble')
+    ax_avgz.plot(neuron_angles_deg, avg_z_hist_bias[:, -1],
+                 color='#08306B', linewidth=3.5, label='Biased Ensemble')
+
+    ax_avgz.set_title("Calculated Average Stimuli", fontweight='bold', fontsize=18)
+    ax_avgz.set_xlabel("Stimulus Angle (°)", fontweight='bold', fontsize=15)
+    ax_avgz.set_ylabel("avg_z", fontweight='bold', fontsize=15)
+    ax_avgz.set_xlim(0, 180)
+    ax_avgz.grid(False)
+    ax_avgz.legend(fontsize=13)
+    ax_avgz.tick_params(axis='both', width=2.5, length=6, labelsize=13)
+
+    for spine in ax_avgz.spines.values():
         spine.set_edgecolor('black')
         spine.set_linewidth(2.5)
 
