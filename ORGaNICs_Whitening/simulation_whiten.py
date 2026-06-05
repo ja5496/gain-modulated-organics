@@ -100,7 +100,7 @@ class V1Dynamics:
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
         if self.input_adaptive:
-            beta = 1 - 0.2 * avg_z  # Common stimuli are less effective at driving the cortex
+            beta = 1 - 0.4 * avg_z  # Common stimuli are less effective at driving the cortex
         else:
             beta = self.beta
 

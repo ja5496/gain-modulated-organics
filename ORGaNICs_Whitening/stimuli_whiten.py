@@ -19,14 +19,32 @@ class StimulusGenerator:
         self.theta_tunings = np.linspace(0, np.pi, N, endpoint=False)
         self.theta_inputs = np.linspace(0, np.pi, num_angles, endpoint=False)
 
-    def generate_input_ensembles(self, biased=False, mean_center=False):
+    def generate_input_ensembles(self, biased=False, mean_center=False,
+                                 von_mises=False, von_mises_center=0.0,
+                                 von_mises_kappa=4.0):
         '''
-        Generate uniform or biased ensemble of raised cosine input profiles  
-        centered at random orientations. 
-        
+        Generate uniform or biased ensemble of raised cosine input profiles
+        centered at random orientations.
+
         Returns:
             np.ndarray: Shape ( num_angles{number of distinct stimuli} , stream_length )
         '''
+        if von_mises:
+            duration = 20
+            num_inputs = int(self.stream_length / duration)
+            mu = np.deg2rad(von_mises_center)
+            centers_raw = np.random.vonmises(mu, von_mises_kappa, num_inputs)
+            centers_raw = ((centers_raw % np.pi) + np.pi) % np.pi  # wrap to [0, π)
+            centers = np.repeat(centers_raw, duration)  # shape: (stream_length,)
+
+            delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
+            delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
+            profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) + 0.3
+            profiles = profiles / np.max(profiles)
+            if mean_center:
+                profiles -= profiles.mean(axis=0, keepdims=True)
+            return profiles
+
         # Generate the indices of all the distinct stimuli
         base_indices = np.arange(self.num_angles)
         
@@ -116,8 +134,54 @@ class StimulusGenerator:
         plt.tight_layout()
         plt.show()
 
+    def plot_von_mises_distributions(self, von_mises_kappa=4.0, num_samples=5000):
+        '''Plot KDE curves for von Mises @ 0°, von Mises @ 90°, and uniform.'''
+        from scipy.stats import gaussian_kde
+        n = num_samples
+
+        # Uniform centers
+        base = np.arange(self.num_angles)
+        reps = n // self.num_angles
+        idx = np.tile(base, reps)
+        np.random.shuffle(idx)
+        centers_uniform = np.rad2deg(self.theta_inputs[idx])
+
+        # Von Mises @ 0°
+        raw0 = np.random.vonmises(0.0, von_mises_kappa, n)
+        centers_vm0 = np.rad2deg(((raw0 % np.pi) + np.pi) % np.pi)
+
+        # Von Mises @ 90°
+        raw90 = np.random.vonmises(np.deg2rad(90), von_mises_kappa, n)
+        centers_vm90 = np.rad2deg(((raw90 % np.pi) + np.pi) % np.pi)
+
+        theta_deg = np.linspace(0, 180, 500)
+
+        # Circular KDE: augment with ±180° shifted copies so the KDE wraps
+        # correctly at both edges; multiply by 3 to restore density normalization.
+        def circular_kde(data):
+            aug = np.concatenate([data - 180, data, data + 180])
+            return gaussian_kde(aug)(theta_deg) * 3
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(theta_deg, circular_kde(centers_uniform),
+                color='gray',      lw=2, label='Uniform')
+        ax.plot(theta_deg, circular_kde(centers_vm0),
+                color='steelblue', lw=2, label='Von Mises, center=0°')
+        ax.plot(theta_deg, circular_kde(centers_vm90),
+                color='tomato',    lw=2, label='Von Mises, center=90°')
+
+        ax.set_xlabel('Stimulus orientation (degrees)')
+        ax.set_ylabel('Probability density')
+        ax.set_title('Stimulus center distributions')
+        ax.set_xlim(0, 180)
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
+
+
 if __name__ == "__main__":
     stim_gen = StimulusGenerator()
-    stim_gen.plot_covariance_matrices()
-    stim_gen.plot_tuning_curves()
+    #stim_gen.plot_covariance_matrices()
+    #stim_gen.plot_tuning_curves()
+    stim_gen.plot_von_mises_distributions()
     

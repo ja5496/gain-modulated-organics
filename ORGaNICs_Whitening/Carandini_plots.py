@@ -175,7 +175,7 @@ if __name__ == "__main__":
     print("\n--- Running Adaptive Models ---")
 
     print("Adapting to Uniform Ensemble...")
-    engine_adapt = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=True)
+    engine_adapt = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=False)
     adapt_uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_z_hist_uni, avg_vsq_hist_uni = engine_adapt.run_simulation(seq_uni)
 
     final_gains_uni = gains_hist_uni[:, -1]
@@ -243,14 +243,14 @@ if __name__ == "__main__":
         ax.tick_params(labelbottom=False)
 
     for i in range(N_BINS):
-        axes[1, 0].plot(x_axis_sorted, row2_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
-        axes[1, 1].plot(x_axis_sorted, row2_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
-        
+        axes[1, 0].plot(x_axis_sorted, row2_uni[i][sort_idx], color=blue_colors[i], linewidth=2.0)
+        axes[1, 1].plot(x_axis_sorted, row2_bias[i][sort_idx], color=blue_colors[i], linewidth=2.0)
+
     axes[1, 0].set_ylabel("Non-Adaptive\nORGaNICs Response", fontsize=18)
-    
+
     for i in range(N_BINS):
-        axes[2, 0].plot(x_axis_sorted, row3_uni[i][sort_idx], color=blue_colors[i], linewidth=1.5)
-        axes[2, 1].plot(x_axis_sorted, row3_bias[i][sort_idx], color=blue_colors[i], linewidth=1.5)
+        axes[2, 0].plot(x_axis_sorted, row3_uni[i][sort_idx], color=blue_colors[i], linewidth=2.0)
+        axes[2, 1].plot(x_axis_sorted, row3_bias[i][sort_idx], color=blue_colors[i], linewidth=2.0)
         
     axes[2, 0].set_ylabel("Adaptive ORGaNICs\n Response", fontsize=18)
 
@@ -302,7 +302,7 @@ if __name__ == "__main__":
     x_neuron = (neuron_prefs_deg - adaptor_deg + 90) % 180 - 90
     sort_neuron_idx = np.argsort(x_neuron)
 
-    FIG2_DARK_ORANGE = '#CC5500'
+    FIG2_DARK_ORANGE = '#800020'
     FIG2_DARK_GREY   = '#333333'
 
     fig2, ax2 = plt.subplots(1, 1, figsize=(6, 4))
