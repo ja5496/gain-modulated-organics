@@ -89,23 +89,19 @@ class StimulusGenerator:
 
     import numpy as np
 
-    def generate_contrast_stream(self, mean_contrast, contrast_sigma=0.2, **kwargs):
+    def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=0.75, **kwargs):
         '''
-        Generates a stimulus stream scaled by contrasts drawn from a truncated 
-        log-normal distribution bounded between 0 and 1.
-        
+        Generates a stimulus stream scaled by contrasts drawn from a truncated
+        log-normal distribution bounded between 10^-3 and 1.
+
         Args:
-            mean_contrast (float): Target mean contrast (0 to 1).
+            peak_ln_contrast (float): ln(contrast) at which the distribution peaks (mode in log-space).
             contrast_sigma (float): Standard deviation of the underlying normal distribution.
             **kwargs: Arguments to pass to generate_input_ensembles.
-            
+
         Returns:
             np.ndarray: Contrast-scaled stream of shape (num_angles, stream_length).
         '''
-        # Handle absolute zero contrast edge-case
-        if mean_contrast <= 0:
-            return np.zeros((self.num_angles, self.stream_length))
-            
         # 1. Generate base normalized profiles from existing function
         profiles = self.generate_input_ensembles(**kwargs)
 
@@ -114,27 +110,26 @@ class StimulusGenerator:
         #    profiles.shape[1] may be shorter than self.stream_length)
         duration = 20  # Matches the duration in generate_input_ensembles
         num_inputs = profiles.shape[1] // duration
-        
-        # 3. Parameterize the log-normal distribution
-        # Shifting mu by (sigma^2 / 2) ensures the expected value equals mean_contrast
-        mu = np.log(mean_contrast) - (contrast_sigma**2 / 2)
-        
-        # 4. Fast rejection sampling for strict truncation in (0, 1]
+
+        # 3. peak_ln_contrast is the mean of the underlying normal (mode in log-space)
+        mu = peak_ln_contrast
+
+        # 4. Fast rejection sampling for strict truncation in [1e-3, 1]
         contrasts = np.empty(num_inputs)
         mask = np.ones(num_inputs, dtype=bool)
-        
+
         while mask.any():
             # Draw samples only for the indices that still need valid values
             samples = np.random.lognormal(mean=mu, sigma=contrast_sigma, size=mask.sum())
-            valid = (samples > 0) & (samples <= 1.0)
-            
+            valid = (samples >= 1e-3) & (samples <= 1.0)
+
             # Assign valid samples and update the mask
             contrasts[np.where(mask)[0][valid]] = samples[valid]
             mask[np.where(mask)[0][valid]] = False
-            
+
         # 5. Expand contrast array to match the temporal stream length
         contrast_stream = np.repeat(contrasts, duration)
-        
+
         # 6. Scale the normalized profiles via NumPy broadcasting
         return profiles * contrast_stream
 
@@ -192,7 +187,7 @@ class StimulusGenerator:
         plt.tight_layout()
         plt.show()
 
-    def plot_von_mises_distributions(self, von_mises_kappa=2.0, num_samples=5000):
+    def plot_von_mises_distributions(self, von_mises_kappa=4.0, num_samples=5000):
         '''Plot KDE curves for von Mises @ 0°, von Mises @ 90°, and uniform.'''
         from scipy.stats import gaussian_kde
         n = num_samples
@@ -238,27 +233,56 @@ class StimulusGenerator:
         plt.show()
 
 
-    def plot_contrast_distributions(self, mean_contrasts=(0.109, 0.223, 0.460),
-                                     contrast_sigma=0.2,
-                                     titles=('Low Contrast', 'Medium Contrast', 'High Contrast')):
-        '''Plot probability vs ln(contrast) for three log-normal distributions overlaid.'''
-        colors = ('steelblue', 'seagreen', 'tomato')
+    def plot_contrast_distributions(self, peak_ln_contrasts=(0, -1.5, -3),
+                                     contrast_sigma=1.5,
+                                     titles=('High Contrast', 'Medium Contrast', 'Low Contrast')):
+        '''Plot probability vs ln(contrast) for three truncated log-normal distributions overlaid.'''
+        from scipy.stats import truncnorm
+        colors = ('tomato', 'seagreen', 'steelblue')
         fig, ax = plt.subplots(figsize=(7, 5))
-        x_ln = np.linspace(-5, 1, 500)
+        ln_lo = np.log(1e-3)  # lower truncation bound in log-space (~-6.9)
+        ln_hi = 0.0           # upper truncation bound in log-space
+        x_pad = 1.5           # how far past each boundary to extend the x axis
+        x_full = np.linspace(ln_lo - x_pad, ln_hi + x_pad, 2000)
+        in_range = (x_full >= ln_lo) & (x_full <= ln_hi)
 
-        for mean_c, title, color in zip(mean_contrasts, titles, colors):
-            mu_ln = np.log(mean_c) - contrast_sigma**2 / 2
-            pdf = (np.exp(-(x_ln - mu_ln)**2 / (2 * contrast_sigma**2))
-                   / (contrast_sigma * np.sqrt(2 * np.pi)))
-            ax.plot(x_ln, pdf, lw=2, color=color, label=title)
-            ax.fill_between(x_ln, pdf, alpha=0.2, color=color)
+        for peak_ln, title, color in zip(peak_ln_contrasts, titles, colors):
+            mu_ln = peak_ln
+            pdf_raw = (np.exp(-(x_full - mu_ln)**2 / (2 * contrast_sigma**2))
+                       / (contrast_sigma * np.sqrt(2 * np.pi)))
+            # Normalize so the truncated area integrates to 1
+            Z = np.trapz(pdf_raw[in_range], x_full[in_range])
+            pdf_norm = pdf_raw / Z
+
+            # Geometric mean: exp(E[Y]) where Y is the truncated normal
+            a_std = (ln_lo - mu_ln) / contrast_sigma
+            b_std = (ln_hi - mu_ln) / contrast_sigma
+            dist = truncnorm(a_std, b_std, loc=mu_ln, scale=contrast_sigma)
+            geom_mean = np.exp(dist.mean())
+
+            label = f"{title}  (geom. mean = {geom_mean:.3f})"
+            # Faded dashed tails outside the allowed range
+            ax.plot(x_full, np.where(~in_range, pdf_norm, np.nan),
+                    lw=1.5, color=color, ls='--', alpha=0.35)
+            # Solid filled curve within the allowed range
+            ax.plot(x_full, np.where(in_range, pdf_norm, np.nan),
+                    lw=2, color=color, label=label)
+            ax.fill_between(x_full, np.where(in_range, pdf_norm, 0),
+                            alpha=0.2, color=color)
+
+        # Shade excluded regions and mark truncation boundaries
+        ax.axvspan(ln_lo - x_pad, ln_lo, color='gray', alpha=0.08)
+        ax.axvspan(ln_hi, ln_hi + x_pad, color='gray', alpha=0.08)
+        ax.axvline(ln_lo, color='gray', lw=1.5, ls=':', alpha=0.7)
+        ax.axvline(ln_hi, color='gray', lw=1.5, ls=':', alpha=0.7)
 
         ax.set_xlabel(r'$\ln(\mathrm{contrast})$', fontsize=16, fontweight='bold')
         ax.set_ylabel(r'$P(\mathrm{contrast})$', fontsize=16, fontweight='bold')
-        ax.set_xlim(-3, 0)
+        ax.set_xlim(ln_lo - x_pad, ln_hi + x_pad)
         ax.spines[['top', 'right']].set_visible(False)
         ax.spines[['left', 'bottom']].set_color('gray')
         ax.tick_params(colors='gray', labelsize=13)
+        ax.legend(fontsize=11, loc='upper left')
         plt.tight_layout()
         plt.show()
 
@@ -267,6 +291,6 @@ if __name__ == "__main__":
     stim_gen = StimulusGenerator()
     #stim_gen.plot_covariance_matrices()
     #stim_gen.plot_tuning_curves()
-    stim_gen.plot_von_mises_distributions(von_mises_kappa=1.0)
+    stim_gen.plot_von_mises_distributions()
     stim_gen.plot_contrast_distributions()
     

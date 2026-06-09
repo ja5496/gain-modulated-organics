@@ -286,9 +286,9 @@ if __name__ == "__main__":
         frame = Frame(csv_path="Frames/N169_Frame.csv")
         dynamics = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=False)
         stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
-        low_contrast_stream = stim_gen.generate_contrast_stream(mean_contrast=0.109)
-        medium_contrast_stream = stim_gen.generate_contrast_stream(mean_contrast=0.223)
-        high_contrast_stream = stim_gen.generate_contrast_stream(mean_contrast=0.460)
+        low_contrast_stream = stim_gen.generate_contrast_stream(peak_ln_contrast=-3)
+        medium_contrast_stream = stim_gen.generate_contrast_stream(peak_ln_contrast=-1.5)
+        high_contrast_stream = stim_gen.generate_contrast_stream(peak_ln_contrast=0)
         probe_contrast = 0.1357
         probe_angle = np.pi / 2          # 90 degrees
         results = {}
