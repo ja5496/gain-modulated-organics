@@ -21,7 +21,7 @@ class StimulusGenerator:
 
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
-                                 von_mises_kappa=4.0):
+                                 von_mises_kappa=2.0):
         '''
         Generate uniform or biased ensemble of raised cosine input profiles
         centered at random orientations.
@@ -51,8 +51,11 @@ class StimulusGenerator:
         # Append it on itself until it reaches self.stream_length
         duration = 20 # Stimuli are flashed for a period of (duration * dt).  
         num_inputs = int(self.stream_length / duration) # number of stimuli shown 
-        repeats = num_inputs // self.num_angles  # floor: only complete cycles, so every orientation appears exactly repeats times
-        indices = np.tile(base_indices, repeats)
+        n_full  = num_inputs // self.num_angles
+        n_extra = num_inputs % self.num_angles
+        full_indices  = np.tile(base_indices, n_full)
+        extra_indices = np.random.choice(base_indices, size=n_extra, replace=False)
+        indices = np.concatenate([full_indices, extra_indices])
 
         # Optionally overwrite roughly 33% of the indices with the adaptor index
         if biased:
@@ -76,7 +79,9 @@ class StimulusGenerator:
         profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
         
         # 5. Normalize, scale, then mean-center each time step
-        profiles = profiles / np.max(profiles)
+        scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+        profiles = scale * profiles / np.max(profiles)
+        
         if mean_center:
             profiles -= profiles.mean(axis=0, keepdims=True)
 
@@ -172,8 +177,9 @@ class StimulusGenerator:
         for i in range(self.num_angles):
             delta_theta = theta_fine - self.theta_inputs[i]
             delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
-            profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) + 0.3
-            profile = profile / np.max(profile)
+            profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3
+            scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+            profile = scale * profile / np.max(profile)
             ax.plot(theta_fine_deg, profile, color=colors[i], alpha=0.7, linewidth=1.2)
 
         ax.set_xlabel("Orientation (deg)")
@@ -186,7 +192,7 @@ class StimulusGenerator:
         plt.tight_layout()
         plt.show()
 
-    def plot_von_mises_distributions(self, von_mises_kappa=4.0, num_samples=5000):
+    def plot_von_mises_distributions(self, von_mises_kappa=2.0, num_samples=5000):
         '''Plot KDE curves for von Mises @ 0°, von Mises @ 90°, and uniform.'''
         from scipy.stats import gaussian_kde
         n = num_samples
@@ -222,11 +228,12 @@ class StimulusGenerator:
         ax.plot(theta_deg, circular_kde(centers_vm90),
                 color='tomato',    lw=2, label='Von Mises, center=90°')
 
-        ax.set_xlabel('Stimulus orientation (degrees)')
-        ax.set_ylabel('Probability density')
-        ax.set_title('Stimulus center distributions')
+        ax.set_xlabel('Stimulus orientation (degrees)', fontsize=16, fontweight='bold')
+        ax.set_ylabel('Probability density', fontsize=16, fontweight='bold')
+        ax.set_title('Stimulus center distributions', fontsize=16, fontweight='bold')
         ax.set_xlim(0, 180)
-        ax.legend()
+        ax.tick_params(labelsize=13)
+        ax.legend(fontsize=13)
         plt.tight_layout()
         plt.show()
 
@@ -234,23 +241,24 @@ class StimulusGenerator:
     def plot_contrast_distributions(self, mean_contrasts=(0.109, 0.223, 0.460),
                                      contrast_sigma=0.2,
                                      titles=('Low Contrast', 'Medium Contrast', 'High Contrast')):
-        '''Plot probability vs ln(contrast) for three log-normal distributions.'''
-        fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharey=True)
+        '''Plot probability vs ln(contrast) for three log-normal distributions overlaid.'''
+        colors = ('steelblue', 'seagreen', 'tomato')
+        fig, ax = plt.subplots(figsize=(7, 5))
         x_ln = np.linspace(-5, 1, 500)
 
-        for ax, mean_c, title in zip(axes, mean_contrasts, titles):
+        for mean_c, title, color in zip(mean_contrasts, titles, colors):
             mu_ln = np.log(mean_c) - contrast_sigma**2 / 2
             pdf = (np.exp(-(x_ln - mu_ln)**2 / (2 * contrast_sigma**2))
                    / (contrast_sigma * np.sqrt(2 * np.pi)))
-            ax.plot(x_ln, pdf, lw=2, color='darkorange')
-            ax.fill_between(x_ln, pdf, alpha=0.3, color='darkorange')
-            ax.set_xlabel(r'$\ln(\mathrm{contrast})$', fontsize=14, fontweight='bold')
-            ax.set_title(title, fontsize=14, fontweight='bold')
-            ax.spines[['top', 'right']].set_visible(False)
-            ax.spines[['left', 'bottom']].set_color('gray')
-            ax.tick_params(colors='gray')
+            ax.plot(x_ln, pdf, lw=2, color=color, label=title)
+            ax.fill_between(x_ln, pdf, alpha=0.2, color=color)
 
-        axes[0].set_ylabel(r'$P$', fontsize=20, fontweight='bold')
+        ax.set_xlabel(r'$\ln(\mathrm{contrast})$', fontsize=16, fontweight='bold')
+        ax.set_ylabel(r'$P(\mathrm{contrast})$', fontsize=16, fontweight='bold')
+        ax.set_xlim(-3, 0)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.spines[['left', 'bottom']].set_color('gray')
+        ax.tick_params(colors='gray', labelsize=13)
         plt.tight_layout()
         plt.show()
 
@@ -259,6 +267,6 @@ if __name__ == "__main__":
     stim_gen = StimulusGenerator()
     #stim_gen.plot_covariance_matrices()
     #stim_gen.plot_tuning_curves()
-    stim_gen.plot_von_mises_distributions()
+    stim_gen.plot_von_mises_distributions(von_mises_kappa=1.0)
     stim_gen.plot_contrast_distributions()
     
