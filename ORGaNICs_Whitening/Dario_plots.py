@@ -1,5 +1,5 @@
 """
-Carandini_plots.py
+Dario_plots.py
 
 Replicates mouse V1 adaptation experiments using adaptive ORGaNICs.
 
@@ -7,6 +7,8 @@ Figure 1: Analysis of post-adaptation log-normal components. Stimuli belong to o
 distributions: (A) Von Mises Centered at 0 degrees (B) Von Mises Centered at 90 degrees or 
 (C) Uniform across orientations. Recreates plots from Figure 5 of Dario's "Contrast and 
 Pattern Adaptation..."
+
+
 
 
 """
@@ -29,7 +31,7 @@ PROBE_RES = 90
 def gaussian_rectify(y, threshold=0.6, sigma=0.35, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
-def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, probe_angles):
+def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, probe_angles, contrast=1.0):
     """
     Measures response at each orientation between 0 and 180 while holding gains constant. 
     u, and a are taken from their last values and allowed to adapt.
@@ -45,7 +47,6 @@ def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, pro
     tau_y = 0.4
     tau_u = 0.8
     tau_a = 2.0
-    # Freeze beta at the end-of-adaptation state; fall back to 1.0 if no avg_z was tracked
     beta = 1.0
     sigma = 0.1
 
@@ -61,8 +62,8 @@ def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, pro
         # Construct probe stimulus identically to generate_input_ensembles 
         delta = stim_gen.theta_inputs - angle
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
-        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) 
-        z_t = z_t / np.max(z_t)
+        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
+        z_t = contrast * z_t / np.max(z_t)
 
         # 2. Settle to steady state
         for _ in range(PROBE_STEPS):
@@ -120,20 +121,57 @@ def calc_moments(responses):
     return P_0, mu, variance
 
 
+def probe_single_stimulus(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a,
+                          angle, contrast):
+    """Steady-state firing-rate vector (N,) for one orientation at a given contrast."""
+    N_neurons = frame.dim
+    W_yy = tunings.W_yy
+    dt, tau_y, tau_u, tau_a, beta, sigma = 0.1, 0.4, 0.8, 2.0, 1.0, 0.1
+
+    y = np.zeros(N_neurons)
+    u = np.copy(frozen_u)
+    a = np.copy(frozen_a)
+
+    delta = stim_gen.theta_inputs - angle
+    delta = (delta + np.pi/2) % np.pi - np.pi/2
+    profile = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
+    z_t = contrast * profile / np.max(profile)
+
+    for _ in range(PROBE_STEPS):
+        u_plus      = gaussian_rectify(u)
+        y_plus      = gaussian_rectify(y)
+        a_plus      = gaussian_rectify(a)
+        sqrt_y_plus = np.sqrt(y_plus)
+
+        v_t           = frame.W.T @ y
+        gain_feedback = frame.W @ (fixed_gains * v_t) if fixed_gains is not None else 0.0
+        recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
+        input_drive   = (beta * z_t) / 2
+        pool_term     = tunings.N_matrix @ (y_plus * (u_plus ** 2))
+
+        dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
+        du = (-u + (sigma / 2)**2 + pool_term)   / tau_u
+        da = (-a + u_plus + a * u_plus)           / tau_a
+
+        y += dt * dy
+        u += dt * du
+        a += dt * da
+
+    return gaussian_rectify(y)
+
+
 if __name__ == "__main__":
     
+    print(' ----------- FIGURE 1 -----------')
+
     # 1. Initialize
     print("Initializing...")
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
     stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
-    
-    # Initialize inputs
     VM_0_stream = stim_gen.generate_input_ensembles(von_mises=True, von_mises_center=0)
     VM_90_stream = stim_gen.generate_input_ensembles(von_mises=True, von_mises_center=90)
     uniform_stream = stim_gen.generate_input_ensembles()
-
-    # Set up probe
     probe_angles = np.linspace(0, np.pi, PROBE_RES)
     probe_angles_deg = probe_angles * 180 / np.pi
     results = {}
@@ -147,13 +185,11 @@ if __name__ == "__main__":
     final_gains_VM_0 = gains_hist_VM_0[:, -1]
     final_u_VM_0 = u_hist_VM_0[:, -1]
     final_a_VM_0 = a_hist_VM_0[:, -1]
-
     print("Adapting to Ensemble B (Von Mises at 90 degrees)...")
     VM_90_rates, gains_hist_VM_90, u_hist_VM_90, a_hist_VM_90, v_hist_VM_90, avg_z_hist_VM_90, avg_vsq_hist_VM_90 = engine_adapt.run_simulation(VM_90_stream)
     final_gains_VM_90 = gains_hist_VM_90[:, -1]
     final_u_VM_90 = u_hist_VM_90[:, -1]
     final_a_VM_90 = a_hist_VM_90[:, -1]
-
     print("Adapting to Ensemble C (Uniform)...")
     uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_z_hist_uni, avg_vsq_hist_uni = engine_adapt.run_simulation(uniform_stream)
     final_gains_uni = gains_hist_uni[:, -1]
@@ -165,41 +201,32 @@ if __name__ == "__main__":
 
     print("Probing VM_0 context...")
     responses_VM_0 = get_responses(frame, tunings, stim_gen, final_gains_VM_0, final_u_VM_0, final_a_VM_0, probe_angles)
-
     print("Probing VM_90 context...")
     responses_VM_90 = get_responses(frame, tunings, stim_gen, final_gains_VM_90, final_u_VM_90, final_a_VM_90, probe_angles)
-
     print("Probing uniform context...")
     responses_uni = get_responses(frame, tunings, stim_gen, final_gains_uni, final_u_uni, final_a_uni, probe_angles)
-
     # --- Compute Moments ---
     P0_VM_0,  mu_VM_0,  var_VM_0  = calc_moments(responses_VM_0)
     P0_VM_90, mu_VM_90, var_VM_90 = calc_moments(responses_VM_90)
     P0_uni,   mu_uni,   var_uni   = calc_moments(responses_uni)
-
     # --- Context ensemble densities P(θ) at probe orientations ---
     kappa = 4.0
     p_VM_0  = np.exp(kappa * np.cos(2 * (probe_angles - 0.0)))
     p_VM_0 /= np.trapz(p_VM_0, probe_angles)
-
     p_VM_90  = np.exp(kappa * np.cos(2 * (probe_angles - np.deg2rad(90))))
     p_VM_90 /= np.trapz(p_VM_90, probe_angles)
-
     p_uni = np.ones_like(probe_angles) / np.pi
-
     log_p_VM_0  = np.log(p_VM_0)
     log_p_VM_90 = np.log(p_VM_90)
     log_p_uni   = np.log(p_uni)
 
     # --- Figure ---
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-
     colors = {'VM_0': 'steelblue', 'VM_90': 'tomato', 'uni': 'gray'}
     lw = 2
     labels = {'VM_0': 'Von Mises 0°', 'VM_90': 'Von Mises 90°', 'uni': 'Uniform'}
     fs_label = 14
     fs_ylabel = 26
-
     # Top-left: μ vs orientation
     ax = axes[0, 0]
     ax.plot(probe_angles_deg, mu_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
@@ -209,7 +236,6 @@ if __name__ == "__main__":
     ax.set_ylabel(r'$\mu$', fontsize=fs_ylabel, fontweight='bold')
     ax.set_xlim(0, 180)
     ax.legend()
-
     # Top-right: σ² vs orientation
     ax = axes[0, 1]
     ax.plot(probe_angles_deg, var_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
@@ -219,7 +245,6 @@ if __name__ == "__main__":
     ax.set_ylabel(r'$\sigma^2$', fontsize=fs_ylabel, fontweight='bold')
     ax.set_xlim(0, 180)
     ax.legend()
-
     # Bottom-left: μ vs log P(θ)
     ax = axes[1, 0]
     ax.plot(log_p_VM_0,  mu_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
@@ -228,7 +253,6 @@ if __name__ == "__main__":
     ax.set_xlabel(r'$\log\, P(\theta)$', fontsize=fs_label, fontweight='bold')
     ax.set_ylabel(r'$\mu$', fontsize=fs_ylabel, fontweight='bold')
     ax.legend()
-
     # Bottom-right: σ² vs log P(θ)
     ax = axes[1, 1]
     ax.plot(log_p_VM_0,  var_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
@@ -239,5 +263,146 @@ if __name__ == "__main__":
     ax.legend()
 
     plt.suptitle('Log-Normal Moments After Adaptation', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+
+
+    print(' ----------- FIGURE 2 + 3 -----------')
+    # 1. Initialize
+    print("Initializing...")
+    tunings = V1Tunings(N=N)
+    frame = Frame(csv_path="Frames/N169_Frame.csv")
+    stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
+    low_contrast_stream = stim_gen.generate_contrast_stream(mean_contrast=0.109)
+    high_contrast_stream = stim_gen.generate_contrast_stream(mean_contrast=0.223)
+    medium_contrast_stream = stim_gen.generate_contrast_stream(mean_contrast=0.460)
+    probe_contrast = 0.1357
+    probe_angle = np.pi / 2          # 90 degrees
+    results = {}
+
+    # --- Adaptation Stage ---
+    print("\n--- Running Adaptation Stage (Figure 2) ---")
+    engine_fig2 = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=False)
+
+    print("Adapting to high contrast stream...")
+    _, gains_hist_hi, u_hist_hi, a_hist_hi, *_ = engine_fig2.run_simulation(high_contrast_stream)
+    final_gains_hi = gains_hist_hi[:, -1]
+    final_u_hi     = u_hist_hi[:, -1]
+    final_a_hi     = a_hist_hi[:, -1]
+
+    print("Adapting to medium contrast stream...")
+    _, gains_hist_med, u_hist_med, a_hist_med, *_ = engine_fig2.run_simulation(medium_contrast_stream)
+    final_gains_med = gains_hist_med[:, -1]
+    final_u_med     = u_hist_med[:, -1]
+    final_a_med     = a_hist_med[:, -1]
+
+    print("Adapting to low contrast stream...")
+    _, gains_hist_lo, u_hist_lo, a_hist_lo, *_ = engine_fig2.run_simulation(low_contrast_stream)
+    final_gains_lo = gains_hist_lo[:, -1]
+    final_u_lo     = u_hist_lo[:, -1]
+    final_a_lo     = a_hist_lo[:, -1]
+
+    # --- Probe ---
+    print("Probing high contrast adapted state...")
+    r_hi  = probe_single_stimulus(frame, tunings, stim_gen,
+                                  final_gains_hi, final_u_hi, final_a_hi,
+                                  probe_angle, probe_contrast)
+
+    print("Probing medium contrast adapted state...")
+    r_med = probe_single_stimulus(frame, tunings, stim_gen,
+                                  final_gains_med, final_u_med, final_a_med,
+                                  probe_angle, probe_contrast)
+
+    # --- Figure 2 ---
+    def plot_response_hist(ax, responses, log_scale):
+        r = responses[responses > 0]
+        if log_scale:
+            bins = np.logspace(np.log10(r.min()), np.log10(r.max()), 30)
+            counts, edges = np.histogram(r, bins=bins, density=True)
+            centers = np.sqrt(edges[:-1] * edges[1:])
+            ax.bar(np.log10(centers), np.log10(np.maximum(counts, 1e-10)),
+                   width=np.diff(np.log10(edges)), color='darkorange',
+                   alpha=1.0, align='edge')
+        else:
+            counts, edges = np.histogram(responses, bins=30, density=True)
+            ax.bar((edges[:-1] + edges[1:]) / 2, counts, width=np.diff(edges),
+                   color='darkorange', alpha=1.0, align='edge')
+
+    def style_ax(ax):
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.spines[['left', 'bottom']].set_color('gray')
+        ax.tick_params(colors='gray')
+
+    fig2, axes2 = plt.subplots(2, 2, figsize=(10, 8))
+    fs = 18
+
+    for col, (title, r) in enumerate(zip(['High Contrast', 'Medium Contrast'], [r_hi, r_med])):
+        ax = axes2[0, col]
+        plot_response_hist(ax, r, log_scale=True)
+        ax.set_xlabel(r'$\log\, r$',    fontsize=fs, fontweight='bold')
+        ax.set_ylabel(r'$\log\, P(r)$', fontsize=fs, fontweight='bold')
+        ax.set_title(title, fontsize=fs, fontweight='bold')
+        style_ax(ax)
+
+        ax = axes2[1, col]
+        plot_response_hist(ax, r, log_scale=False)
+        ax.set_xlabel(r'$r$',    fontsize=fs, fontweight='bold')
+        ax.set_ylabel(r'$P(r)$', fontsize=fs, fontweight='bold')
+        style_ax(ax)
+
+    plt.suptitle('Response Distribution After Contrast Adaptation', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+    # ---- FIGURE 3 ----
+    print(' ----------- FIGURE 3 -----------')
+    probe_contrasts   = np.logspace(np.log10(0.04), np.log10(1.0), 20)
+    probe_angles_fig3 = np.linspace(0, np.pi, PROBE_RES)
+
+    conditions = [
+        ('Low',    'steelblue', final_gains_lo,  final_u_lo,  final_a_lo),
+        ('Medium', 'seagreen',  final_gains_med, final_u_med, final_a_med),
+        ('High',   'tomato',    final_gains_hi,  final_u_hi,  final_a_hi),
+    ]
+
+    mu_curves  = {}
+    var_curves = {}
+
+    for label, color, gains, u_f, a_f in conditions:
+        print(f"  Sweeping contrasts for {label} adapted state...")
+        mus, vars_ = [], []
+        for c in probe_contrasts:
+            resp = get_responses(frame, tunings, stim_gen, gains, u_f, a_f,
+                                 probe_angles_fig3, contrast=c)
+            _, mu_c, var_c = calc_moments(resp)
+            mus.append(np.nanmean(mu_c))
+            vars_.append(np.nanmean(var_c))
+        mu_curves[label]  = np.array(mus)
+        var_curves[label] = np.array(vars_)
+
+    fig3, (ax_mu, ax_var) = plt.subplots(1, 2, figsize=(12, 5))
+    ln_c = np.log(probe_contrasts)
+    fs3  = 18
+
+    for label, color, *_ in conditions:
+        ax_mu.plot(ln_c, mu_curves[label],  color=color, lw=2, label=label)
+        ax_var.plot(ln_c, var_curves[label], color=color, lw=2, label=label)
+
+    delta_mu  = np.nanmean(mu_curves['High'])  - np.nanmean(mu_curves['Low'])
+    delta_var = np.nanmean(var_curves['High']) - np.nanmean(var_curves['Low'])
+
+    for ax, ylabel, delta in [(ax_mu, r'$\mu$', delta_mu), (ax_var, r'$\sigma^2$', delta_var)]:
+        ax.set_xlabel(r'$\ln(\mathrm{contrast})$', fontsize=fs3, fontweight='bold')
+        ax.set_ylabel(ylabel, fontsize=fs3 + 6, fontweight='bold')
+        ax.legend(fontsize=12, loc='upper left')
+        ax.text(0.97, 0.97, fr'$\Delta={delta:+.3f}$', transform=ax.transAxes,
+                fontsize=13, ha='right', va='top',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='gray'))
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.spines[['left', 'bottom']].set_color('gray')
+        ax.tick_params(colors='gray')
+
+    plt.suptitle('Contrast Response After Adaptation', fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.show()

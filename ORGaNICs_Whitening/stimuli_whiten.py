@@ -82,6 +82,58 @@ class StimulusGenerator:
 
         return profiles
 
+    import numpy as np
+
+    def generate_contrast_stream(self, mean_contrast, contrast_sigma=0.2, **kwargs):
+        '''
+        Generates a stimulus stream scaled by contrasts drawn from a truncated 
+        log-normal distribution bounded between 0 and 1.
+        
+        Args:
+            mean_contrast (float): Target mean contrast (0 to 1).
+            contrast_sigma (float): Standard deviation of the underlying normal distribution.
+            **kwargs: Arguments to pass to generate_input_ensembles.
+            
+        Returns:
+            np.ndarray: Contrast-scaled stream of shape (num_angles, stream_length).
+        '''
+        # Handle absolute zero contrast edge-case
+        if mean_contrast <= 0:
+            return np.zeros((self.num_angles, self.stream_length))
+            
+        # 1. Generate base normalized profiles from existing function
+        profiles = self.generate_input_ensembles(**kwargs)
+
+        # 2. Determine number of distinct stimulus presentations from the actual
+        #    profile length (uniform path truncates to complete cycles, so
+        #    profiles.shape[1] may be shorter than self.stream_length)
+        duration = 20  # Matches the duration in generate_input_ensembles
+        num_inputs = profiles.shape[1] // duration
+        
+        # 3. Parameterize the log-normal distribution
+        # Shifting mu by (sigma^2 / 2) ensures the expected value equals mean_contrast
+        mu = np.log(mean_contrast) - (contrast_sigma**2 / 2)
+        
+        # 4. Fast rejection sampling for strict truncation in (0, 1]
+        contrasts = np.empty(num_inputs)
+        mask = np.ones(num_inputs, dtype=bool)
+        
+        while mask.any():
+            # Draw samples only for the indices that still need valid values
+            samples = np.random.lognormal(mean=mu, sigma=contrast_sigma, size=mask.sum())
+            valid = (samples > 0) & (samples <= 1.0)
+            
+            # Assign valid samples and update the mask
+            contrasts[np.where(mask)[0][valid]] = samples[valid]
+            mask[np.where(mask)[0][valid]] = False
+            
+        # 5. Expand contrast array to match the temporal stream length
+        contrast_stream = np.repeat(contrasts, duration)
+        
+        # 6. Scale the normalized profiles via NumPy broadcasting
+        return profiles * contrast_stream
+
+
     def plot_covariance_matrices(self):
         '''Plot heatmaps of the covariance matrix for both uniform and biased ensembles.'''
         uni  = self.generate_input_ensembles(biased=False)
@@ -179,9 +231,34 @@ class StimulusGenerator:
         plt.show()
 
 
+    def plot_contrast_distributions(self, mean_contrasts=(0.109, 0.223, 0.460),
+                                     contrast_sigma=0.2,
+                                     titles=('Low Contrast', 'Medium Contrast', 'High Contrast')):
+        '''Plot probability vs ln(contrast) for three log-normal distributions.'''
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharey=True)
+        x_ln = np.linspace(-5, 1, 500)
+
+        for ax, mean_c, title in zip(axes, mean_contrasts, titles):
+            mu_ln = np.log(mean_c) - contrast_sigma**2 / 2
+            pdf = (np.exp(-(x_ln - mu_ln)**2 / (2 * contrast_sigma**2))
+                   / (contrast_sigma * np.sqrt(2 * np.pi)))
+            ax.plot(x_ln, pdf, lw=2, color='darkorange')
+            ax.fill_between(x_ln, pdf, alpha=0.3, color='darkorange')
+            ax.set_xlabel(r'$\ln(\mathrm{contrast})$', fontsize=14, fontweight='bold')
+            ax.set_title(title, fontsize=14, fontweight='bold')
+            ax.spines[['top', 'right']].set_visible(False)
+            ax.spines[['left', 'bottom']].set_color('gray')
+            ax.tick_params(colors='gray')
+
+        axes[0].set_ylabel(r'$P$', fontsize=20, fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+
+
 if __name__ == "__main__":
     stim_gen = StimulusGenerator()
     #stim_gen.plot_covariance_matrices()
     #stim_gen.plot_tuning_curves()
     stim_gen.plot_von_mises_distributions()
+    stim_gen.plot_contrast_distributions()
     

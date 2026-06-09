@@ -159,3 +159,4 @@ class V1Dynamics:
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         return y_hist, gains_hist, u_hist, a_hist, v_hist, avg_z_hist, avg_vsq_hist
+
