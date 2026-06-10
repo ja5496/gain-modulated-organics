@@ -25,7 +25,7 @@ from simulation_whiten import Frame, V1Dynamics
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
 STREAM_LENGTH = 5460    # Length of adaptation stream (steps)
-PROBE_STEPS = 25
+PROBE_STEPS = 10
 PROBE_RES = 90
 
 def gaussian_rectify(y, threshold=0.6, sigma=0.35, r_max=1.0):
@@ -47,8 +47,10 @@ def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, pro
     tau_y = 0.4
     tau_u = 0.8
     tau_a = 2.0
+    tau_v = 100
     beta = 1.0
     sigma = 0.1
+    sigma_term = (sigma / 2) ** 2
 
     for i, angle in enumerate(probe_angles):
 
@@ -56,43 +58,48 @@ def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, pro
         y = np.zeros(N)
 
         # Let u and a freely adapt from their most recent state
-        u = np.copy(frozen_u) 
-        a = np.copy(frozen_a) 
+        u = np.copy(frozen_u)
+        a = np.copy(frozen_a)
+        v = np.zeros(K)
 
-        # Construct probe stimulus identically to generate_input_ensembles 
+        # Construct probe stimulus identically to generate_input_ensembles
         delta = stim_gen.theta_inputs - angle
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
         z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
         z_t = contrast * z_t / np.max(z_t)
 
-        # 2. Settle to steady state
-        for _ in range(PROBE_STEPS):
-            # Rectifications
-            u_plus = gaussian_rectify(u)
-            y_plus = gaussian_rectify(y)
-            a_plus = gaussian_rectify(a)
+        def derivs(y_, u_, a_, v_):
+            u_plus = gaussian_rectify(u_)
+            y_plus = gaussian_rectify(y_)
+            a_plus = gaussian_rectify(a_)
             sqrt_y_plus = np.sqrt(y_plus)
 
-            # Circuit Inputs
-            v_t = frame.W.T @ y  
             if fixed_gains is not None:
-                gain_feedback = frame.W @ (fixed_gains * v_t)
+                gain_feedback = frame.W @ (fixed_gains * v)
             else:
                 gain_feedback = 0.0
 
             recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
-            input_drive = (beta * z_t) / 2 
-
-            # Derivatives
+            input_drive = (beta * z_t) / 2
             pool_term = tunings.N_matrix @ (y_plus * (u_plus ** 2))
 
-            dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
-            du = (-u + (sigma / 2)**2 + pool_term) / tau_u
-            da = (-a + u_plus + a*u_plus) / tau_a
+            dy = (-y_ + input_drive + recurrent_drive - gain_feedback) / tau_y
+            du = (-u_ + sigma_term + pool_term) / tau_u
+            da = (-a_ + u_plus + a_ * u_plus) / tau_a
+            dv = (-v_ + frame.W.T @ y_) / tau_v
+            return dy, du, da, dv
 
-            y += dt * dy
-            u += dt * du
-            a += dt * da
+        # 2. Settle to steady state
+        for _ in range(PROBE_STEPS):
+            dy1, du1, da1, dv1 = derivs(y, u, a, v)
+            dy2, du2, da2, dv2 = derivs(y + 0.5*dt*dy1, u + 0.5*dt*du1, a + 0.5*dt*da1, v + 0.5*dt*dv1)
+            dy3, du3, da3, dv3 = derivs(y + 0.5*dt*dy2, u + 0.5*dt*du2, a + 0.5*dt*da2, v + 0.5*dt*dv2)
+            dy4, du4, da4, dv4 = derivs(y +     dt*dy3, u +     dt*du3, a +     dt*da3, v +     dt*dv3)
+
+            y += (dt / 6.0) * (dy1 + 2*dy2 + 2*dy3 + dy4)
+            u += (dt / 6.0) * (du1 + 2*du2 + 2*du3 + du4)
+            a += (dt / 6.0) * (da1 + 2*da2 + 2*da3 + da4)
+            v += (dt / 6.0) * (dv1 + 2*dv2 + 2*dv3 + dv4)
 
         # Record steady state response (firing rate)
         responses[:, i] = gaussian_rectify(y) # Gaussian rectify to estimate firing rate from membrane potential
@@ -167,7 +174,6 @@ def probe_single_stimulus(dynamics, frame, tunings, stim_gen, fixed_gains, froze
         u += (dt / 6.0) * (du1 + 2*du2 + 2*du3 + du4)
         a += (dt / 6.0) * (da1 + 2*da2 + 2*da3 + da4)
         v += (dt / 6.0) * (dv1 + 2*dv2 + 2*dv3 + dv4)
-        print(np.mean(v))
 
     firing_rates = dynamics.gaussian_rectify(y)
     return firing_rates
@@ -175,10 +181,11 @@ def probe_single_stimulus(dynamics, frame, tunings, stim_gen, fixed_gains, froze
 
 if __name__ == "__main__":
     
-    print(' ----------- FIGURE 1 -----------')
+    
     
     def Dario_fig1():
         # 1. Initialize
+        print(' ----------- FIGURE 1 -----------')
         print("Initializing...")
         tunings = V1Tunings(N=N)
         frame = Frame(csv_path="Frames/N169_Frame.csv")
@@ -235,9 +242,9 @@ if __name__ == "__main__":
         log_p_uni   = np.log(p_uni)
 
         # --- Figure ---
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        colors = {'VM_0': 'steelblue', 'VM_90': 'tomato', 'uni': 'gray'}
-        lw = 2
+        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+        colors = {'VM_0': '#36454F', 'VM_90': '#228B22', 'uni': '#CC5500'}
+        lw = 3
         labels = {'VM_0': 'Von Mises 0°', 'VM_90': 'Von Mises 90°', 'uni': 'Uniform'}
         fs_label = 14
         fs_ylabel = 26
@@ -252,12 +259,19 @@ if __name__ == "__main__":
         ax.legend()
         # Top-right: σ² vs orientation
         ax = axes[0, 1]
-        ax.plot(probe_angles_deg, var_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
-        ax.plot(probe_angles_deg, var_VM_90, color=colors['VM_90'], lw=lw, label=labels['VM_90'])
-        ax.plot(probe_angles_deg, var_uni,   color=colors['uni'],   lw=lw, label=labels['uni'])
+        ax.plot(probe_angles_deg, var_VM_0,  color=colors['VM_0'],  lw=lw)
+        ax.plot(probe_angles_deg, var_VM_90, color=colors['VM_90'], lw=lw)
+        ax.plot(probe_angles_deg, var_uni,   color=colors['uni'],   lw=lw)
         ax.set_xlabel('Orientation (°)', fontsize=fs_label, fontweight='bold')
         ax.set_ylabel(r'$\sigma^2$', fontsize=fs_ylabel, fontweight='bold')
         ax.set_xlim(0, 180)
+        ax.set_ylim(0.85, 1.0)
+        ax_in01 = ax.inset_axes([0.55, 0.55, 0.42, 0.42])
+        ax_in01.plot(probe_angles_deg, var_VM_0,  color=colors['VM_0'],  lw=1.5)
+        ax_in01.plot(probe_angles_deg, var_VM_90, color=colors['VM_90'], lw=1.5)
+        ax_in01.plot(probe_angles_deg, var_uni,   color=colors['uni'],   lw=1.5)
+        ax_in01.set_xlim(0, 180)
+        ax_in01.tick_params(labelsize=8, )
         # Bottom-left: μ vs log P(θ)
         ax = axes[1, 0]
         ax.plot(log_p_VM_0,  mu_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
@@ -267,11 +281,17 @@ if __name__ == "__main__":
         ax.set_ylabel(r'$\mu$', fontsize=fs_ylabel, fontweight='bold')
         # Bottom-right: σ² vs log P(θ)
         ax = axes[1, 1]
-        ax.plot(log_p_VM_0,  var_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
-        ax.plot(log_p_VM_90, var_VM_90, color=colors['VM_90'], lw=lw, label=labels['VM_90'])
-        ax.plot(log_p_uni,   var_uni,   color=colors['uni'],   lw=lw, label=labels['uni'])
+        ax.plot(log_p_VM_0,  var_VM_0,  color=colors['VM_0'],  lw=lw)
+        ax.plot(log_p_VM_90, var_VM_90, color=colors['VM_90'], lw=lw)
+        ax.plot(log_p_uni,   var_uni,   color=colors['uni'],   lw=lw)
         ax.set_xlabel(r'$\log\, P(\theta)$', fontsize=fs_label, fontweight='bold')
         ax.set_ylabel(r'$\sigma^2$', fontsize=fs_ylabel, fontweight='bold')
+        ax.set_ylim(0.85, 1.0)
+        ax_in11 = ax.inset_axes([0.55, 0.55, 0.42, 0.42])
+        ax_in11.plot(log_p_VM_0,  var_VM_0,  color=colors['VM_0'],  lw=1.5)
+        ax_in11.plot(log_p_VM_90, var_VM_90, color=colors['VM_90'], lw=1.5)
+        ax_in11.plot(log_p_uni,   var_uni,   color=colors['uni'],   lw=1.5)
+        ax_in11.tick_params(labelsize=8)
 
         plt.suptitle('Log-Normal Moments After Adaptation', fontsize=16, fontweight='bold')
         plt.tight_layout()
@@ -279,7 +299,7 @@ if __name__ == "__main__":
 
 
     def Dario_figs2and3():
-        print(' ----------- FIGURE 2 + 3 -----------')
+        print(' ----------- FIGURE 2 -----------')
         # 1. Initialize
         print("Initializing...")
         tunings = V1Tunings(N=N)
@@ -329,7 +349,6 @@ if __name__ == "__main__":
         # --- Figure 2 ---
         def plot_response_hist(ax, responses, log_scale):
             r = responses[responses > 0]
-            print(r)
             if r.size == 0:
                 return
             BIN_COLOR = '#CC7000'
@@ -375,15 +394,16 @@ if __name__ == "__main__":
         for col, (title, r) in enumerate(zip(['High Contrast', 'Medium Contrast'], [r_hi, r_med])):
             ax = axes2[0, col]
             plot_response_hist(ax, r, log_scale=True)
-            ax.set_xlabel(r'$\log\, r$',    fontsize=fs, fontweight='bold')
-            ax.set_ylabel(r'$\log\, P(r)$', fontsize=fs, fontweight='bold')
+            ax.set_xlabel(r'$\log\, (R)$',    fontsize=fs, fontweight='bold')
+            ax.set_ylabel(r'$\log\, P(R)$', fontsize=fs, fontweight='bold')
             ax.set_title(title, fontsize=fs, fontweight='bold')
             style_ax(ax)
+            ax.locator_params(axis='both', nbins=6)
 
             ax = axes2[1, col]
             plot_response_hist(ax, r, log_scale=False)
-            ax.set_xlabel(r'$r$',    fontsize=fs, fontweight='bold')
-            ax.set_ylabel(r'$P(r)$', fontsize=fs, fontweight='bold')
+            ax.set_xlabel(r'$Response \,(R)$',    fontsize=fs, fontweight='bold')
+            ax.set_ylabel(r'$P(R)$', fontsize=fs, fontweight='bold')
             style_ax(ax)
 
         plt.suptitle('Response Distribution After Contrast Adaptation', fontsize=14, fontweight='bold')
@@ -396,9 +416,9 @@ if __name__ == "__main__":
         probe_angles_fig3 = np.linspace(0, np.pi, PROBE_RES)
 
         conditions = [
-            ('Low',    'steelblue', final_gains_lo,  final_u_lo,  final_a_lo),
-            ('Medium', 'seagreen',  final_gains_med, final_u_med, final_a_med),
-            ('High',   'tomato',    final_gains_hi,  final_u_hi,  final_a_hi),
+            ('Low',    'green', final_gains_lo,  final_u_lo,  final_a_lo),
+            ('Medium', 'red',   final_gains_med, final_u_med, final_a_med),
+            ('High',   'black', final_gains_hi,  final_u_hi,  final_a_hi),
         ]
 
         mu_curves  = {}
@@ -407,11 +427,11 @@ if __name__ == "__main__":
         for label, color, gains, u_f, a_f in conditions:
             print(f"  Sweeping contrasts for {label} adapted state...")
             mus, vars_ = [], []
-            for c in probe_contrasts:
+            for c in tqdm(probe_contrasts, desc=f"{label} contrast sweep", leave=True):
                 resp = get_responses(frame, tunings, stim_gen, gains, u_f, a_f,
                                     probe_angles_fig3, contrast=c)
                 if label == 'Medium':
-                    print()
+                    ()
 
                 _, mu_c, var_c = calc_moments(resp)
                 mus.append(np.nanmean(mu_c))
@@ -445,5 +465,5 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.show()
 
-    #Dario_fig1()
-    Dario_figs2and3()
+    Dario_fig1()
+    #Dario_figs2and3()

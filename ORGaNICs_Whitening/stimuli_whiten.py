@@ -21,7 +21,7 @@ class StimulusGenerator:
 
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
-                                 von_mises_kappa=2.0):
+                                 von_mises_kappa=4.0):
         '''
         Generate uniform or biased ensemble of raised cosine input profiles
         centered at random orientations.
@@ -89,10 +89,10 @@ class StimulusGenerator:
 
     import numpy as np
 
-    def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=0.75, **kwargs):
+    def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=1.0, **kwargs):
         '''
         Generates a stimulus stream scaled by contrasts drawn from a truncated
-        log-normal distribution bounded between 10^-3 and 1.
+        log-normal distribution bounded between e^-3 and 1 (i.e., ln(contrast) ∈ [-3, 0]).
 
         Args:
             peak_ln_contrast (float): ln(contrast) at which the distribution peaks (mode in log-space).
@@ -121,7 +121,7 @@ class StimulusGenerator:
         while mask.any():
             # Draw samples only for the indices that still need valid values
             samples = np.random.lognormal(mean=mu, sigma=contrast_sigma, size=mask.sum())
-            valid = (samples >= 1e-3) & (samples <= 1.0)
+            valid = (samples >= np.exp(-3)) & (samples <= 1.0)
 
             # Assign valid samples and update the mask
             contrasts[np.where(mask)[0][valid]] = samples[valid]
@@ -217,11 +217,11 @@ class StimulusGenerator:
 
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(theta_deg, circular_kde(centers_uniform),
-                color='gray',      lw=2, label='Uniform')
+                color='#CC5500',   lw=3, label='Uniform')
         ax.plot(theta_deg, circular_kde(centers_vm0),
-                color='steelblue', lw=2, label='Von Mises, center=0°')
+                color='#36454F',   lw=3, label='Von Mises, center=0°')
         ax.plot(theta_deg, circular_kde(centers_vm90),
-                color='tomato',    lw=2, label='Von Mises, center=90°')
+                color='#228B22',   lw=3, label='Von Mises, center=90°')
 
         ax.set_xlabel('Stimulus orientation (degrees)', fontsize=16, fontweight='bold')
         ax.set_ylabel('Probability density', fontsize=16, fontweight='bold')
@@ -234,13 +234,13 @@ class StimulusGenerator:
 
 
     def plot_contrast_distributions(self, peak_ln_contrasts=(0, -1.5, -3),
-                                     contrast_sigma=1.5,
+                                     contrast_sigma=1.0,
                                      titles=('High Contrast', 'Medium Contrast', 'Low Contrast')):
         '''Plot probability vs ln(contrast) for three truncated log-normal distributions overlaid.'''
         from scipy.stats import truncnorm
-        colors = ('tomato', 'seagreen', 'steelblue')
+        colors = ('black', 'red', 'green')
         fig, ax = plt.subplots(figsize=(7, 5))
-        ln_lo = np.log(1e-3)  # lower truncation bound in log-space (~-6.9)
+        ln_lo = -3  # lower truncation bound in log-space (~-6.9)
         ln_hi = 0.0           # upper truncation bound in log-space
         x_pad = 1.5           # how far past each boundary to extend the x axis
         x_full = np.linspace(ln_lo - x_pad, ln_hi + x_pad, 2000)
@@ -260,7 +260,7 @@ class StimulusGenerator:
             dist = truncnorm(a_std, b_std, loc=mu_ln, scale=contrast_sigma)
             geom_mean = np.exp(dist.mean())
 
-            label = f"{title}  (geom. mean = {geom_mean:.3f})"
+            label = f"Geom. mean = {geom_mean:.3f}"
             # Faded dashed tails outside the allowed range
             ax.plot(x_full, np.where(~in_range, pdf_norm, np.nan),
                     lw=1.5, color=color, ls='--', alpha=0.35)
@@ -278,7 +278,7 @@ class StimulusGenerator:
 
         ax.set_xlabel(r'$\ln(\mathrm{contrast})$', fontsize=16, fontweight='bold')
         ax.set_ylabel(r'$P(\mathrm{contrast})$', fontsize=16, fontweight='bold')
-        ax.set_xlim(ln_lo - x_pad, ln_hi + x_pad)
+        ax.set_xlim(ln_lo, ln_hi)
         ax.spines[['top', 'right']].set_visible(False)
         ax.spines[['left', 'bottom']].set_color('gray')
         ax.tick_params(colors='gray', labelsize=13)

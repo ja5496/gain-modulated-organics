@@ -23,7 +23,7 @@ from stimuli_whiten import StimulusGenerator
 # --- Parameters ---
 N             = 169
 STREAM_LENGTH = 5460
-PROBE_STEPS   = 100
+PROBE_STEPS   = 5
 N_CONTRASTS   = 15
 FRAME_PATH    = "Frames/N169_Frame.csv"
 
