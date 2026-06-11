@@ -21,13 +21,15 @@ class StimulusGenerator:
 
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
-                                 von_mises_kappa=4.0):
+                                 von_mises_kappa=4.0, return_angles=False):
         '''
         Generate uniform or biased ensemble of raised cosine input profiles
         centered at random orientations.
 
         Returns:
             np.ndarray: Shape ( num_angles{number of distinct stimuli} , stream_length )
+            If return_angles=True, returns (profiles, centers) where centers is
+            the per-timestep stimulus angle array of shape (stream_length,).
         '''
         if von_mises:
             duration = 20
@@ -40,9 +42,12 @@ class StimulusGenerator:
             delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
             delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
             profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3
-            profiles = profiles / np.max(profiles)
+            scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+            profiles = scale * profiles / np.max(profiles)
             if mean_center:
                 profiles -= profiles.mean(axis=0, keepdims=True)
+            if return_angles:
+                return profiles, centers
             return profiles
 
         # Generate the indices of all the distinct stimuli
@@ -85,11 +90,14 @@ class StimulusGenerator:
         if mean_center:
             profiles -= profiles.mean(axis=0, keepdims=True)
 
+        if return_angles:
+            return profiles, centers
         return profiles
 
     import numpy as np
 
-    def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=1.0, **kwargs):
+    def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=1.0,
+                                 return_metadata=False, **kwargs):
         '''
         Generates a stimulus stream scaled by contrasts drawn from a truncated
         log-normal distribution bounded between e^-3 and 1 (i.e., ln(contrast) ∈ [-3, 0]).
@@ -97,13 +105,18 @@ class StimulusGenerator:
         Args:
             peak_ln_contrast (float): ln(contrast) at which the distribution peaks (mode in log-space).
             contrast_sigma (float): Standard deviation of the underlying normal distribution.
+            return_metadata (bool): If True, return (stream, angles_per_pres, contrasts_per_pres)
+                where angles_per_pres and contrasts_per_pres are per-stimulus-presentation arrays.
             **kwargs: Arguments to pass to generate_input_ensembles.
 
         Returns:
-            np.ndarray: Contrast-scaled stream of shape (num_angles, stream_length).
+            np.ndarray or tuple: Contrast-scaled stream, or 3-tuple if return_metadata=True.
         '''
         # 1. Generate base normalized profiles from existing function
-        profiles = self.generate_input_ensembles(**kwargs)
+        if return_metadata:
+            profiles, centers = self.generate_input_ensembles(return_angles=True, **kwargs)
+        else:
+            profiles = self.generate_input_ensembles(**kwargs)
 
         # 2. Determine number of distinct stimulus presentations from the actual
         #    profile length (uniform path truncates to complete cycles, so
@@ -131,7 +144,11 @@ class StimulusGenerator:
         contrast_stream = np.repeat(contrasts, duration)
 
         # 6. Scale the normalized profiles via NumPy broadcasting
-        return profiles * contrast_stream
+        stream = profiles * contrast_stream
+        if return_metadata:
+            angles_per_pres = centers[::duration]   # one angle per presentation
+            return stream, angles_per_pres, contrasts
+        return stream
 
 
     def plot_covariance_matrices(self):

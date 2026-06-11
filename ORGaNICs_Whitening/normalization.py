@@ -23,7 +23,7 @@ from stimuli_whiten import StimulusGenerator
 # --- Parameters ---
 N             = 169
 STREAM_LENGTH = 5460
-PROBE_STEPS   = 5
+PROBE_STEPS   = 20
 N_CONTRASTS   = 15
 FRAME_PATH    = "Frames/N169_Frame.csv"
 
@@ -39,7 +39,7 @@ def profile(theta, input_width=0.75, center_angle=None):
 
 # ----- STEP 2: Probe function -----
 
-def probe_normalization(z_profile, dynamics, fixed_gains, n_steps=PROBE_STEPS):
+def probe_normalization(z_profile, dynamics, fixed_gains, last_v, n_steps=PROBE_STEPS):
     """
     Run n_steps of ORGaNICs with fixed gains and return ||y_ss||.
     gain_feedback is computed dynamically each step as W @ (g * W.T @ y),
@@ -49,8 +49,9 @@ def probe_normalization(z_profile, dynamics, fixed_gains, n_steps=PROBE_STEPS):
     y = np.zeros(N)
     u = np.zeros(N)
     a = np.zeros(N)
-    v = np.zeros(dynamics.frame.K)
+    v = last_v.copy()
     tau_v = 100
+    print(np.mean(v))
 
     sigma_term = (dynamics.sigma / 2) ** 2
     dt = dynamics.dt
@@ -81,6 +82,7 @@ def probe_normalization(z_profile, dynamics, fixed_gains, n_steps=PROBE_STEPS):
         u += (dt / 6.0) * (du1 + 2*du2 + 2*du3 + du4)
         a += (dt / 6.0) * (da1 + 2*da2 + 2*da3 + da4)
         v += (dt / 6.0) * (dv1 + 2*dv2 + 2*dv3 + dv4)
+        #print('variance magnitude', np.mean(v))
 
     firing_rates = dynamics.gaussian_rectify(y)
     return np.linalg.norm(firing_rates)
@@ -119,8 +121,10 @@ if __name__ == "__main__":
     print("Adapting to uniform ensemble...")
     uniform_stream = stim_gen.generate_input_ensembles(biased=False)
     engine = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=False)
-    _, gains_hist, _, _, _, _, _ = engine.run_simulation(uniform_stream)
+    _, gains_hist, _, _, v_hist, _, _ = engine.run_simulation(uniform_stream)
     uniform_gains = gains_hist[:, -1]
+    last_variance = v_hist[:,-1]
+    print("calculated last variance: ", np.mean(last_variance))
 
     # Contrast sweep (log-spaced so points are evenly distributed on log axis)
     contrasts   = np.logspace(-2, 0, N_CONTRASTS)
@@ -128,13 +132,13 @@ if __name__ == "__main__":
 
     print("Probing with g = 0...")
     responses_zero = np.array([
-        probe_normalization(c * stim_profile, engine, zero_gains)
+        probe_normalization(c * stim_profile, engine, zero_gains, last_variance)
         for c in contrasts
     ])
 
     print("Probing with uniform ensemble gains...")
     responses_uniform = np.array([
-        probe_normalization(c * stim_profile, engine, uniform_gains)
+        probe_normalization(c * stim_profile, engine, uniform_gains, last_variance)
         for c in contrasts
     ])
 
@@ -152,9 +156,9 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(figsize=(7, 5))
 
     ax.plot(contrasts, responses_zero,    color=burgundy, linewidth=3.0,
-            label=f'Gains = 0  (C₅₀ = {c50_zero:.2f})')
+            label=f'No Adaptation')
     ax.plot(contrasts, responses_uniform, color=navy,     linewidth=3.0,
-            label=f'Uniform Ensemble Gains  (C₅₀ = {c50_uniform:.2f})')
+            label=f'After Contrast Adaptation')
 
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)

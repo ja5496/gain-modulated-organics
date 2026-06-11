@@ -25,8 +25,8 @@ from simulation_whiten import Frame, V1Dynamics
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
 STREAM_LENGTH = 5460    # Length of adaptation stream (steps)
-PROBE_STEPS = 10
-PROBE_RES = 90
+PROBE_STEPS = 20
+PROBE_RES = 20
 
 def gaussian_rectify(y, threshold=0.6, sigma=0.35, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
@@ -65,8 +65,9 @@ def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, pro
         # Construct probe stimulus identically to generate_input_ensembles
         delta = stim_gen.theta_inputs - angle
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
+        scale = 15
         z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
-        z_t = contrast * z_t / np.max(z_t)
+        z_t = contrast * scale * z_t / np.max(z_t)
 
         def derivs(y_, u_, a_, v_):
             u_plus = gaussian_rectify(u_)
@@ -107,6 +108,38 @@ def get_responses(frame, tunings, stim_gen, fixed_gains, frozen_u, frozen_a, pro
         # So for one neuron i, r_i(theta) = responses[i, theta]
 
     return responses
+
+def probe_ensemble_moments(y_hist, stim_angles, probe_angle_bins):
+    """
+    Compute log-normal moments at each probe orientation by averaging over the
+    statistical ensemble. y_hist is (N, T) membrane potentials from the probe
+    simulation; stim_angles is (T,) stimulus angle in radians per step.
+    Returns P_0, mu, variance each of shape (n_probes,).
+    Bins with no matching time steps return np.nan.
+    """
+
+    n_probes = len(probe_angle_bins)
+    firing_rates = gaussian_rectify(y_hist)   # (N, T)
+    bin_width = np.pi / n_probes
+
+    mu = np.full(n_probes, np.nan)
+    variance = np.full(n_probes, np.nan)
+    P_0 = np.full(n_probes, np.nan)
+
+    for i, theta in enumerate(probe_angle_bins):
+        d = (stim_angles - theta + np.pi / 2) % np.pi - np.pi / 2
+        mask = np.abs(d) < bin_width / 2
+        if not mask.any():
+            continue
+        rates = firing_rates[:, mask].flatten().astype(float)
+        P_0[i] = np.mean(rates == 0)
+        rates[rates == 0] = np.nan
+        log_r = np.log(rates)
+        mu[i] = np.nanmean(log_r)
+        variance[i] = np.nanvar(log_r)
+
+    return P_0, mu, variance
+
 
 def calc_moments(responses):
     '''Calculates log mean and log variance of the data for comparison with Dario's results'''
@@ -179,6 +212,32 @@ def probe_single_stimulus(dynamics, frame, tunings, stim_gen, fixed_gains, froze
     return firing_rates
 
 
+def pool_adaptation_responses(y_hist, contrasts_per_pres,
+                               dynamics, target_contrast=0.15, duration=20):
+    """
+    Pool end-of-presentation firing rates for all presentations whose contrast
+    falls within ~±40% of target_contrast (log-scale tolerance).
+
+    Returns (pooled_responses, n_presentations).
+    """
+    dist = np.abs(contrasts_per_pres - target_contrast)
+    tol = target_contrast * (np.exp(0.5) - 1)   # ~±40% relative window in linear space
+    near_mask = dist <= tol
+    if near_mask.sum() == 0:                     # fallback: nearest 10 presentations
+        tol = np.sort(dist)[min(9, len(dist) - 1)]
+        near_mask = dist <= tol
+
+    pres_idx = np.where(near_mask)[0]
+
+    pooled = []
+    for i in pres_idx:
+        t_end = (i + 1) * duration - 1
+        pooled.append(dynamics.gaussian_rectify(y_hist[:, t_end]))
+
+    pooled_responses = np.concatenate(pooled) if pooled else np.array([])
+    return pooled_responses, len(pres_idx)
+
+
 if __name__ == "__main__":
     
     
@@ -192,7 +251,7 @@ if __name__ == "__main__":
         stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
         VM_0_stream = stim_gen.generate_input_ensembles(von_mises=True, von_mises_center=0)
         VM_90_stream = stim_gen.generate_input_ensembles(von_mises=True, von_mises_center=90)
-        uniform_stream = stim_gen.generate_input_ensembles() / 15  # match VM stream amplitude (scale≈1)
+        uniform_stream = stim_gen.generate_input_ensembles()  
         probe_angles = np.linspace(0, np.pi, PROBE_RES)
         probe_angles_deg = probe_angles * 180 / np.pi
         results = {}
@@ -202,34 +261,52 @@ if __name__ == "__main__":
         engine_adapt = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=False)
 
         print("Adapting to Ensemble A (Von Mises at 0 degrees)...")
-        VM_0_rates, gains_hist_VM_0, u_hist_VM_0, a_hist_VM_0, v_hist_VM_0, avg_z_hist_VM_0, avg_vsq_hist_VM_0 = engine_adapt.run_simulation(VM_0_stream)
-        final_gains_VM_0 = gains_hist_VM_0[:, -1]
-        final_u_VM_0 = u_hist_VM_0[:, -1]
-        final_a_VM_0 = a_hist_VM_0[:, -1]
-        print("Adapting to Ensemble B (Von Mises at 90 degrees)...")
-        VM_90_rates, gains_hist_VM_90, u_hist_VM_90, a_hist_VM_90, v_hist_VM_90, avg_z_hist_VM_90, avg_vsq_hist_VM_90 = engine_adapt.run_simulation(VM_90_stream)
-        final_gains_VM_90 = gains_hist_VM_90[:, -1]
-        final_u_VM_90 = u_hist_VM_90[:, -1]
-        final_a_VM_90 = a_hist_VM_90[:, -1]
-        print("Adapting to Ensemble C (Uniform)...")
-        uniform_rates, gains_hist_uni, u_hist_uni, a_hist_uni, v_hist_uni, avg_z_hist_uni, avg_vsq_hist_uni = engine_adapt.run_simulation(uniform_stream)
-        final_gains_uni = gains_hist_uni[:, -1]
-        final_u_uni = u_hist_uni[:, -1]
-        final_a_uni = a_hist_uni[:, -1]
+        engine_adapt.run_simulation(VM_0_stream)
+        final_state_VM_0 = engine_adapt.last_state
 
-        # --- Probe Stage ---
+        print("Adapting to Ensemble B (Von Mises at 90 degrees)...")
+        engine_adapt.run_simulation(VM_90_stream)
+        final_state_VM_90 = engine_adapt.last_state
+
+        print("Adapting to Ensemble C (Uniform)...")
+        engine_adapt.run_simulation(uniform_stream)
+        final_state_uni = engine_adapt.last_state
+
+        # --- Probe Stage: full dynamics from exact final adaptation state ---
         print("\n--- Running Probe Stage ---")
 
         print("Probing VM_0 context...")
-        responses_VM_0 = get_responses(frame, tunings, stim_gen, final_gains_VM_0, final_u_VM_0, final_a_VM_0, probe_angles)
+        VM_0_probe_stream, VM_0_probe_angles = stim_gen.generate_input_ensembles(
+            von_mises=True, von_mises_center=0, return_angles=True)
+        y_hist_probe_VM_0, *_ = engine_adapt.run_simulation(
+            VM_0_probe_stream, initial_state=final_state_VM_0)
+
         print("Probing VM_90 context...")
-        responses_VM_90 = get_responses(frame, tunings, stim_gen, final_gains_VM_90, final_u_VM_90, final_a_VM_90, probe_angles)
+        VM_90_probe_stream, VM_90_probe_angles = stim_gen.generate_input_ensembles(
+            von_mises=True, von_mises_center=90, return_angles=True)
+        y_hist_probe_VM_90, *_ = engine_adapt.run_simulation(
+            VM_90_probe_stream, initial_state=final_state_VM_90)
+
         print("Probing uniform context...")
-        responses_uni = get_responses(frame, tunings, stim_gen, final_gains_uni, final_u_uni, final_a_uni, probe_angles)
-        # --- Compute Moments ---
-        P0_VM_0,  mu_VM_0,  var_VM_0  = calc_moments(responses_VM_0)
-        P0_VM_90, mu_VM_90, var_VM_90 = calc_moments(responses_VM_90)
-        P0_uni,   mu_uni,   var_uni   = calc_moments(responses_uni)
+        uni_probe_stream, uni_probe_angles = stim_gen.generate_input_ensembles(return_angles=True)
+        y_hist_probe_uni, *_ = engine_adapt.run_simulation(
+            uni_probe_stream, initial_state=final_state_uni)
+
+        # --- Compute Moments over ensemble ---
+        P0_VM_0,  mu_VM_0,  var_VM_0  = probe_ensemble_moments(y_hist_probe_VM_0,  VM_0_probe_angles,  probe_angles)
+        P0_VM_90, mu_VM_90, var_VM_90 = probe_ensemble_moments(y_hist_probe_VM_90, VM_90_probe_angles, probe_angles)
+        P0_uni,   mu_uni,   var_uni   = probe_ensemble_moments(y_hist_probe_uni,   uni_probe_angles,   probe_angles)
+
+        # Interpolate over angle bins that received no samples (NaN) so lines are continuous
+        def fill_nans(arr):
+            idx = np.arange(len(arr))
+            finite = np.isfinite(arr)
+            return np.interp(idx, idx[finite], arr[finite]) if not finite.all() else arr
+
+        mu_VM_0  = fill_nans(mu_VM_0);  var_VM_0  = fill_nans(var_VM_0)
+        mu_VM_90 = fill_nans(mu_VM_90); var_VM_90 = fill_nans(var_VM_90)
+        mu_uni   = fill_nans(mu_uni);   var_uni   = fill_nans(var_uni)
+
         # --- Context ensemble densities P(θ) at probe orientations ---
         kappa = 4.0
         p_VM_0  = np.exp(kappa * np.cos(2 * (probe_angles - 0.0)))
@@ -265,13 +342,6 @@ if __name__ == "__main__":
         ax.set_xlabel('Orientation (°)', fontsize=fs_label, fontweight='bold')
         ax.set_ylabel(r'$\sigma^2$', fontsize=fs_ylabel, fontweight='bold')
         ax.set_xlim(0, 180)
-        ax.set_ylim(0.85, 1.0)
-        ax_in01 = ax.inset_axes([0.55, 0.55, 0.42, 0.42])
-        ax_in01.plot(probe_angles_deg, var_VM_0,  color=colors['VM_0'],  lw=1.5)
-        ax_in01.plot(probe_angles_deg, var_VM_90, color=colors['VM_90'], lw=1.5)
-        ax_in01.plot(probe_angles_deg, var_uni,   color=colors['uni'],   lw=1.5)
-        ax_in01.set_xlim(0, 180)
-        ax_in01.tick_params(labelsize=8, )
         # Bottom-left: μ vs log P(θ)
         ax = axes[1, 0]
         ax.plot(log_p_VM_0,  mu_VM_0,  color=colors['VM_0'],  lw=lw, label=labels['VM_0'])
@@ -286,12 +356,6 @@ if __name__ == "__main__":
         ax.plot(log_p_uni,   var_uni,   color=colors['uni'],   lw=lw)
         ax.set_xlabel(r'$\log\, P(\theta)$', fontsize=fs_label, fontweight='bold')
         ax.set_ylabel(r'$\sigma^2$', fontsize=fs_ylabel, fontweight='bold')
-        ax.set_ylim(0.85, 1.0)
-        ax_in11 = ax.inset_axes([0.55, 0.55, 0.42, 0.42])
-        ax_in11.plot(log_p_VM_0,  var_VM_0,  color=colors['VM_0'],  lw=1.5)
-        ax_in11.plot(log_p_VM_90, var_VM_90, color=colors['VM_90'], lw=1.5)
-        ax_in11.plot(log_p_uni,   var_uni,   color=colors['uni'],   lw=1.5)
-        ax_in11.tick_params(labelsize=8)
 
         plt.suptitle('Log-Normal Moments After Adaptation', fontsize=16, fontweight='bold')
         plt.tight_layout()
@@ -304,13 +368,12 @@ if __name__ == "__main__":
         print("Initializing...")
         tunings = V1Tunings(N=N)
         frame = Frame(csv_path="Frames/N169_Frame.csv")
-        dynamics = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=False)
         stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
         low_contrast_stream = stim_gen.generate_contrast_stream(peak_ln_contrast=-3)
-        medium_contrast_stream = stim_gen.generate_contrast_stream(peak_ln_contrast=-1.5)
-        high_contrast_stream = stim_gen.generate_contrast_stream(peak_ln_contrast=0)
-        probe_contrast = 0.1357
-        probe_angle = np.pi / 2          # 90 degrees
+        medium_contrast_stream, _, contrasts_med = stim_gen.generate_contrast_stream(
+            peak_ln_contrast=-1.5, return_metadata=True)
+        high_contrast_stream, _, contrasts_hi = stim_gen.generate_contrast_stream(
+            peak_ln_contrast=0, return_metadata=True)
         results = {}
 
         # --- Adaptation Stage ---
@@ -318,13 +381,13 @@ if __name__ == "__main__":
         engine_fig2 = V1Dynamics(tunings, frame, adaptive=True, input_adaptive=False)
 
         print("Adapting to high contrast stream...")
-        _, gains_hist_hi, u_hist_hi, a_hist_hi, *_ = engine_fig2.run_simulation(high_contrast_stream)
+        y_hist_hi, gains_hist_hi, u_hist_hi, a_hist_hi, *_ = engine_fig2.run_simulation(high_contrast_stream)
         final_gains_hi = gains_hist_hi[:, -1]
         final_u_hi     = u_hist_hi[:, -1]
         final_a_hi     = a_hist_hi[:, -1]
 
         print("Adapting to medium contrast stream...")
-        _, gains_hist_med, u_hist_med, a_hist_med, *_ = engine_fig2.run_simulation(medium_contrast_stream)
+        y_hist_med, gains_hist_med, u_hist_med, a_hist_med, *_ = engine_fig2.run_simulation(medium_contrast_stream)
         final_gains_med = gains_hist_med[:, -1]
         final_u_med     = u_hist_med[:, -1]
         final_a_med     = a_hist_med[:, -1]
@@ -335,16 +398,14 @@ if __name__ == "__main__":
         final_u_lo     = u_hist_lo[:, -1]
         final_a_lo     = a_hist_lo[:, -1]
 
-        # --- Probe ---
-        print("Probing high contrast adapted state...")
-        r_hi  = probe_single_stimulus(dynamics, frame, tunings, stim_gen,
-                                    final_gains_hi, final_u_hi, final_a_hi,
-                                    probe_angle, probe_contrast)
+        # --- Pool responses from actual adaptation presentations ---
+        print("Pooling high contrast adaptation responses...")
+        r_hi, n_hi = pool_adaptation_responses(y_hist_hi, contrasts_hi, engine_fig2)
+        print(f"  n presentations: {n_hi}")
 
-        print("Probing medium contrast adapted state...")
-        r_med = probe_single_stimulus(dynamics, frame, tunings, stim_gen,
-                                    final_gains_med, final_u_med, final_a_med,
-                                    probe_angle, probe_contrast)
+        print("Pooling medium contrast adaptation responses...")
+        r_med, n_med = pool_adaptation_responses(y_hist_med, contrasts_med, engine_fig2)
+        print(f"  n presentations: {n_med}")
 
         # --- Figure 2 ---
         def plot_response_hist(ax, responses, log_scale):
@@ -391,12 +452,16 @@ if __name__ == "__main__":
         fig2, axes2 = plt.subplots(2, 2, figsize=(10, 8))
         fs = 18
 
-        for col, (title, r) in enumerate(zip(['High Contrast', 'Medium Contrast'], [r_hi, r_med])):
+        col_info = [
+            ('High Contrast',   r_hi,  n_hi),
+            ('Medium Contrast', r_med, n_med),
+        ]
+        for col, (title, r, n_pres) in enumerate(col_info):
             ax = axes2[0, col]
             plot_response_hist(ax, r, log_scale=True)
             ax.set_xlabel(r'$\log\, (R)$',    fontsize=fs, fontweight='bold')
             ax.set_ylabel(r'$\log\, P(R)$', fontsize=fs, fontweight='bold')
-            ax.set_title(title, fontsize=fs, fontweight='bold')
+            ax.set_title(f'{title}\n(n={n_pres})', fontsize=fs - 2, fontweight='bold')
             style_ax(ax)
             ax.locator_params(axis='both', nbins=6)
 

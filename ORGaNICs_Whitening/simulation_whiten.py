@@ -116,12 +116,15 @@ class V1Dynamics:
         
         return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt, davg_z_dt, davg_vsq_dt])
         
-    def run_simulation(self, stimulus_stream):
-        N, n_steps = stimulus_stream.shape 
+    def run_simulation(self, stimulus_stream, initial_state=None):
+        N, n_steps = stimulus_stream.shape
         K = self.frame.K
-        
-        state = np.zeros(4*N + 2*K + 1)
-        state[4*N + 2*K] = 1.0  # initialize avg_vsq to a non-zero baseline
+
+        if initial_state is not None:
+            state = initial_state.copy()
+        else:
+            state = np.zeros(4*N + 2*K + 1)
+            state[4*N + 2*K] = 1.0  # initialize avg_vsq to a non-zero baseline
 
         # Tracking histories for later analysis + figures
         y_hist = np.zeros((N, n_steps))
@@ -158,5 +161,6 @@ class V1Dynamics:
             avg_vsq_hist[t] = state[4*N+2*K]
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
+        self.last_state = state.copy()
         return y_hist, gains_hist, u_hist, a_hist, v_hist, avg_z_hist, avg_vsq_hist
 
