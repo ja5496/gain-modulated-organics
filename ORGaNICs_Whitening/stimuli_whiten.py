@@ -9,11 +9,12 @@ These responses are fed into our V1 dynamics as the input layer.
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, Ensemble=False):
+    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, Ensemble=False, contrast=1.0):
         self.N = N # Number of primary neurons
         self.num_angles = num_angles # Number of distinct input orientations
         self.stream_length = stream_length # Total length of the input stream
         self.tuning_width = tuning_width # Width of raised cosine input
+        self.contrast = contrast
 
         # Preferred orientations of the stimuli from 0 to pi
         self.theta_tunings = np.linspace(0, np.pi, N, endpoint=False)
@@ -43,7 +44,7 @@ class StimulusGenerator:
             delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
             profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3
             scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
-            profiles = scale * profiles / np.max(profiles)
+            profiles = self.contrast * scale * profiles / np.max(profiles)
             if mean_center:
                 profiles -= profiles.mean(axis=0, keepdims=True)
             if return_angles:
@@ -85,7 +86,7 @@ class StimulusGenerator:
         
         # 5. Normalize, scale, then mean-center each time step
         scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
-        profiles = scale * profiles / np.max(profiles)
+        profiles = self.contrast * scale * profiles / np.max(profiles)
         
         if mean_center:
             profiles -= profiles.mean(axis=0, keepdims=True)

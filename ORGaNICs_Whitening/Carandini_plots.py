@@ -22,7 +22,7 @@ from simulation_whiten import Frame, V1Dynamics
 # ---- Parameters ----
 N = 169                  # Number of primary neurons
 N_BINS = 13              # Aggregation bins for visualization
-STREAM_LENGTH = 10920    # Length of adaptation stream (steps)
+STREAM_LENGTH = 10140    # Length of adaptation stream (steps)
 PROBE_STEPS = 100        # Steps to settle for each probe stimulus
 PROBE_RES = 360          # Resolution of tuning curve probe (number of angles)
 Z_SPONT = 0.1            # Tonic LGN background drive (tune to control spontaneous rate;
@@ -34,7 +34,7 @@ def gaussian_rectify(y, threshold=0.6, sigma=0.35, r_max=1.0):
     return 0.5 * (1 + erf((y - threshold) / (sigma * np.sqrt(2)))) * r_max
 
 def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None, frozen_a=None,
-              frozen_avg_z=None, z_spont=0.1):
+              frozen_avg_z=None, frozen_v=None, z_spont=0.1):
     """
     Measures tuning curves by simulating the network response to specific
     probe orientations while holding gains constant. u, and a are taken from
@@ -50,6 +50,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
     tau_y = 0.4
     tau_u = 0.8
     tau_a = 2.0
+    tau_v = 50.0
     # Freeze beta at the end-of-adaptation state; fall back to 1.0 if no avg_z was tracked
     beta = 1 - 0.2 * frozen_avg_z if frozen_avg_z is not None else 1.0
     sigma = 0.1
@@ -60,18 +61,21 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
         y = np.zeros(N)
 
         # Let u and a freely adapt from their most recent state
-        u = np.copy(frozen_u) 
-        a = np.copy(frozen_a) 
+        u = np.copy(frozen_u)
+        a = np.copy(frozen_a)
+        v = frozen_v.copy() if frozen_v is not None else np.zeros(K)
 
         # Construct probe stimulus identically to generate_input_ensembles 
         delta = stim_gen.theta_inputs - angle
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
-        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) + 0.5
+        z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) #+ 0.3
         #z_t = np.exp(stim_gen.tuning_width * np.cos(2 * delta)) # RAISED COSINE
-        z_t = z_t / np.max(z_t)
+        contrast = 0.1
+        scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+        z_t = contrast * scale * z_t / np.max(z_t)
 
         # 2. Settle to steady state
-        for _ in range(PROBE_STEPS):
+        for step in range(PROBE_STEPS):
             # Rectifications
             u_plus = gaussian_rectify(u)
             y_plus = gaussian_rectify(y)
@@ -79,14 +83,13 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
             sqrt_y_plus = np.sqrt(y_plus)
 
             # Circuit Inputs
-            v_t = frame.W.T @ y  # match simulation: uses raw y (not centered)
             if fixed_gains is not None:
-                gain_feedback = frame.W @ (fixed_gains * v_t)
+                gain_feedback = frame.W @ (fixed_gains * v)
             else:
                 gain_feedback = 0.0
 
             recurrent_drive = (1.0 / (1.0 + a_plus)) * (W_yy @ sqrt_y_plus)
-            input_drive = (beta * z_t) / 2 
+            input_drive = (beta * z_t) / 2
 
             # Derivatives
             pool_term = tunings.N_matrix @ (y_plus * (u_plus ** 2))
@@ -94,13 +97,29 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
             dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
             du = (-u + (sigma / 2)**2 + pool_term) / tau_u
             da = (-a + u_plus + a*u_plus) / tau_a
+            dv = (-v + frame.W.T @ y) / tau_v
 
             y += dt * dy
             u += dt * du
             a += dt * da
+            v += dt * dv
+
+            # --- DIAGNOSTIC: print drive magnitudes on first angle, last step ---
+            if i == 0 and step == PROBE_STEPS - 1 and fixed_gains is not None:
+                print(f"  [DIAG probe i=0 final step]")
+                print(f"    mean |input_drive|    = {np.mean(np.abs(input_drive)):.4f}")
+                print(f"    mean |recurrent_drive|= {np.mean(np.abs(recurrent_drive)):.4f}")
+                print(f"    mean |gain_feedback|  = {np.mean(np.abs(gain_feedback)):.4f}")
+                print(f"    max  |gain_feedback|  = {np.max(np.abs(gain_feedback)):.4f}")
+                print(f"    mean y = {np.mean(y):.4f},  max y = {np.max(y):.4f},  min y = {np.min(y):.4f}")
 
         # Record steady state firing rate
         tuning_curves[:, i] = gaussian_rectify(y)
+
+        # --- DIAGNOSTIC: print raw tuning curve spread after first few angles ---
+        if i < 3 and fixed_gains is not None:
+            print(f"  [DIAG probe i={i}] mean firing rate = {np.mean(tuning_curves[:, i]):.4f},  "
+                  f"max = {np.max(tuning_curves[:, i]):.4f}")
 
     return tuning_curves
 
@@ -135,7 +154,7 @@ if __name__ == "__main__":
     print("Initializing...")
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
-    stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
+    stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH, contrast=0.1)
     
     adaptor_idx = N // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
@@ -183,9 +202,12 @@ if __name__ == "__main__":
     final_a_uni = a_hist_uni[:, -1]
 
     print("Probing Uniform State...")
+    print(f"  [DIAG] final_gains_uni: mean={np.mean(final_gains_uni):.4f}, "
+          f"max={np.max(final_gains_uni):.4f}, std={np.std(final_gains_uni):.4f}")
     results['adp_uni'] = run_probe(frame, tunings, stim_gen, final_gains_uni, probe_angles,
                                    frozen_u=final_u_uni, frozen_a=final_a_uni,
-                                   frozen_avg_z=avg_z_hist_uni[:, -1])
+                                   frozen_avg_z=avg_z_hist_uni[:, -1],
+                                   frozen_v=v_hist_uni[:, -1])
 
     print("Adapting to Biased Ensemble...")
     adapt_biased_rates, gains_hist_bias, u_hist_bias, a_hist_bias, v_hist_bias, avg_z_hist_bias, avg_vsq_hist_bias = engine_adapt.run_simulation(seq_bias)
@@ -195,9 +217,12 @@ if __name__ == "__main__":
     final_a_bias = a_hist_bias[:, -1]
 
     print("Probing Biased State...")
+    print(f"  [DIAG] final_gains_bias: mean={np.mean(final_gains_bias):.4f}, "
+          f"max={np.max(final_gains_bias):.4f}, std={np.std(final_gains_bias):.4f}")
     results['adp_bias'] = run_probe(frame, tunings, stim_gen, final_gains_bias, probe_angles,
                                     frozen_u=final_u_bias, frozen_a=final_a_bias,
-                                    frozen_avg_z=avg_z_hist_bias[:, -1])
+                                    frozen_avg_z=avg_z_hist_bias[:, -1],
+                                    frozen_v=v_hist_bias[:, -1])
 
     # 4. Processing & Normalization
     print("\nProcessing data for plotting...")
