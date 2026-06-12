@@ -42,11 +42,11 @@ class V1Dynamics:
         self.adaptive = adaptive
         self.input_adaptive = input_adaptive
 
-        self.tau_y = 0.2 # from 1
-        self.tau_a = 1.0 # from 5   
-        self.tau_u = 0.4 # from 2
+        self.tau_y = 0.2 
+        self.tau_a = 1.0  
+        self.tau_u = 0.4 
         self.tau_g = 100.0 
-        self.tau_v = 50.0    
+        self.tau_v = 100.0 # from 50
         self.tau_avg = 10 
         self.tau_avg_z = 400
         

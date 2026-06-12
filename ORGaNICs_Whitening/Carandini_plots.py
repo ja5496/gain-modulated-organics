@@ -70,7 +70,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
         z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) #+ 0.3
         #z_t = np.exp(stim_gen.tuning_width * np.cos(2 * delta)) # RAISED COSINE
-        contrast = 0.1
+        contrast = 0.05
         scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
         z_t = contrast * scale * z_t / np.max(z_t)
 
@@ -154,7 +154,7 @@ if __name__ == "__main__":
     print("Initializing...")
     tunings = V1Tunings(N=N)
     frame = Frame(csv_path="Frames/N169_Frame.csv")
-    stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH, contrast=0.1)
+    stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH, contrast=0.05)
     
     adaptor_idx = N // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
