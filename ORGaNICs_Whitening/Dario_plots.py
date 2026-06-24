@@ -216,12 +216,12 @@ def pool_adaptation_responses(y_hist, contrasts_per_pres,
                                dynamics, target_contrast=0.15, duration=20):
     """
     Pool end-of-presentation firing rates for all presentations whose contrast
-    falls within ~±40% of target_contrast (log-scale tolerance).
+    falls close to the target_contrast (log-scale tolerance).
 
     Returns (pooled_responses, n_presentations).
     """
     dist = np.abs(contrasts_per_pres - target_contrast)
-    tol = target_contrast * (np.exp(0.5) - 1)   # ~±40% relative window in linear space
+    tol = target_contrast * (np.exp(0.3) - 1)   # small relative window in linear space
     near_mask = dist <= tol
     if near_mask.sum() == 0:                     # fallback: nearest 10 presentations
         tol = np.sort(dist)[min(9, len(dist) - 1)]
@@ -530,5 +530,5 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.show()
 
-    Dario_fig1()
-    #Dario_figs2and3()
+    #Dario_fig1()
+    Dario_figs2and3()
