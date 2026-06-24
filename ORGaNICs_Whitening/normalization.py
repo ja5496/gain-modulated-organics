@@ -51,7 +51,6 @@ def probe_normalization(z_profile, dynamics, fixed_gains, last_v, n_steps=PROBE_
     a = np.zeros(N)
     v = last_v.copy()
     tau_v = 100
-    print(np.mean(v))
 
     sigma_term = (dynamics.sigma / 2) ** 2
     dt = dynamics.dt

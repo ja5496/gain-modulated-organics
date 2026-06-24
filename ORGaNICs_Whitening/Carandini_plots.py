@@ -50,7 +50,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
     tau_y = 0.4
     tau_u = 0.8
     tau_a = 2.0
-    tau_v = 50.0
+    tau_v = 100.0
     # Freeze beta at the end-of-adaptation state; fall back to 1.0 if no avg_z was tracked
     beta = 1 - 0.2 * frozen_avg_z if frozen_avg_z is not None else 1.0
     sigma = 0.1
@@ -150,6 +150,40 @@ def get_binned_curves(tuning_curves, neuron_preferences, probe_angles, n_bins=13
 
 if __name__ == "__main__":
     
+    ''' Changes to make: 
+    
+        1) Remove run_probe function calls
+        2) Get stimuli orientation history by setting "return_angles=True" in the stim_gen.generate_input_ensembles call
+            (a) This will give an array of length (stream_length) with the orientation centers of the stimuli
+            (b) Every entry in y_hist [membrane potentials of 169 neurons, stream_length] corresponds to the membrane potential 
+                so they need to be gaussian rectified
+            (c) Both arrays should be the same length (stream_length)
+        3) Modify get_binned_curves function: inputs = (stim_angles, firing_rates, num_bins)
+            (a) 13 neurons go in each bin. There are 169 neurons, so 13 bins. 
+            (b) Average all responses with the same stimuli angle (for every neuron, there is an array of their responses to each distinct angle)
+                (i) unbinned tuning curves are given by looking at entries for each neuron across the angles
+            (c) Create binned tuning curves: Average across 13 neuron responses for each bin
+                (ii) So now there is a 13 entry array for each angle, one per bin
+                (ii) Each bin now has firing rate averages corresponding to the evenly-spaced input angles -> binned tuning curve
+            (d) For each bin, record the angle the maximum value occurs 
+            (e) Return the tuning curves and the angles at which the peaks occur for each bin
+        4) Figure 1: Plot tuning curves that are calculated in this way.
+        5) Figure 2: Adjust Figure 2 to use the tuning curves calculated in this new way
+        6) Figure 3: No change
+        7) Figure 4: plot the peak shifts between uniform to biased ensemble calculated in the new way
+        8) Figure 5: delete the existing figure 5. Create a new plot: 
+            (a) new one-panel plot should show four tuning curves taken from Figure 1. 
+            (b) First two curves should be from the uniform ensemble - tuning curves from 
+                the adaptor bin (red, thick, solid) and a ~30 degree away flank bin (blue, thick, solid)
+            (c) Second two should be from the biased ensemble - tuning curves from the same bins as above 
+                (same colors, dashed, thick)
+            (d) No title. x-axis: "Orientation (degree symbol)", y-axis: "Response". Big bold font. Thick axes, 
+                only two tick labels for 0 and 1 on y axis, and 5 for x axis (45 degree increments with endpoints). 
+
+
+     
+     '''
+
     # 1. Initialize
     print("Initializing...")
     tunings = V1Tunings(N=N)
@@ -271,13 +305,13 @@ if __name__ == "__main__":
         axes[1, 0].plot(x_axis_sorted, row2_uni[i][sort_idx], color=blue_colors[i], linewidth=2.0)
         axes[1, 1].plot(x_axis_sorted, row2_bias[i][sort_idx], color=blue_colors[i], linewidth=2.0)
 
-    axes[1, 0].set_ylabel("Non-Adaptive\nORGaNICs Response", fontsize=18)
+    axes[1, 0].set_ylabel("Non-Adaptive", fontsize=18)
 
     for i in range(N_BINS):
         axes[2, 0].plot(x_axis_sorted, row3_uni[i][sort_idx], color=blue_colors[i], linewidth=2.0)
         axes[2, 1].plot(x_axis_sorted, row3_bias[i][sort_idx], color=blue_colors[i], linewidth=2.0)
         
-    axes[2, 0].set_ylabel("Adaptive ORGaNICs\n Response", fontsize=18)
+    axes[2, 0].set_ylabel("Adaptive", fontsize=18)
 
     for r in [1, 2]:
         for c in [0, 1]:

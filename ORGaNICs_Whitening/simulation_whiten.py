@@ -141,7 +141,6 @@ class V1Dynamics:
         
         for t in tqdm(range(n_steps)):
             z_t = stimulus_stream[:, t] 
-            
             # RK4 Simulation
             k1 = self._derivatives(state, z_t)
             k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t)
