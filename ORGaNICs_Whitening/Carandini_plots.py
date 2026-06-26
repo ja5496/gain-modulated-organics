@@ -69,7 +69,6 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
         delta = stim_gen.theta_inputs - angle
         delta = (delta + np.pi/2) % np.pi - np.pi/2  # same wrapping as StimulusGenerator
         z_t = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2)) #+ 0.3
-        #z_t = np.exp(stim_gen.tuning_width * np.cos(2 * delta)) # RAISED COSINE
         contrast = 0.05
         scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
         z_t = contrast * scale * z_t / np.max(z_t)
@@ -82,6 +81,7 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
             a_plus = gaussian_rectify(a)
             sqrt_y_plus = np.sqrt(y_plus)
 
+            #v = frame.W.T @ y
             # Circuit Inputs
             if fixed_gains is not None:
                 gain_feedback = frame.W @ (fixed_gains * v)
@@ -97,7 +97,8 @@ def run_probe(frame, tunings, stim_gen, fixed_gains, probe_angles, frozen_u=None
             dy = (-y + input_drive + recurrent_drive - gain_feedback) / tau_y
             du = (-u + (sigma / 2)**2 + pool_term) / tau_u
             da = (-a + u_plus + a*u_plus) / tau_a
-            dv = (-v + frame.W.T @ y) / tau_v
+            dv = (-v + frame.W.T @ y) / tau_v 
+
 
             y += dt * dy
             u += dt * du
@@ -149,40 +150,6 @@ def get_binned_curves(tuning_curves, neuron_preferences, probe_angles, n_bins=13
 # =============================================================================
 
 if __name__ == "__main__":
-    
-    ''' Changes to make: 
-    
-        1) Remove run_probe function calls
-        2) Get stimuli orientation history by setting "return_angles=True" in the stim_gen.generate_input_ensembles call
-            (a) This will give an array of length (stream_length) with the orientation centers of the stimuli
-            (b) Every entry in y_hist [membrane potentials of 169 neurons, stream_length] corresponds to the membrane potential 
-                so they need to be gaussian rectified
-            (c) Both arrays should be the same length (stream_length)
-        3) Modify get_binned_curves function: inputs = (stim_angles, firing_rates, num_bins)
-            (a) 13 neurons go in each bin. There are 169 neurons, so 13 bins. 
-            (b) Average all responses with the same stimuli angle (for every neuron, there is an array of their responses to each distinct angle)
-                (i) unbinned tuning curves are given by looking at entries for each neuron across the angles
-            (c) Create binned tuning curves: Average across 13 neuron responses for each bin
-                (ii) So now there is a 13 entry array for each angle, one per bin
-                (ii) Each bin now has firing rate averages corresponding to the evenly-spaced input angles -> binned tuning curve
-            (d) For each bin, record the angle the maximum value occurs 
-            (e) Return the tuning curves and the angles at which the peaks occur for each bin
-        4) Figure 1: Plot tuning curves that are calculated in this way.
-        5) Figure 2: Adjust Figure 2 to use the tuning curves calculated in this new way
-        6) Figure 3: No change
-        7) Figure 4: plot the peak shifts between uniform to biased ensemble calculated in the new way
-        8) Figure 5: delete the existing figure 5. Create a new plot: 
-            (a) new one-panel plot should show four tuning curves taken from Figure 1. 
-            (b) First two curves should be from the uniform ensemble - tuning curves from 
-                the adaptor bin (red, thick, solid) and a ~30 degree away flank bin (blue, thick, solid)
-            (c) Second two should be from the biased ensemble - tuning curves from the same bins as above 
-                (same colors, dashed, thick)
-            (d) No title. x-axis: "Orientation (degree symbol)", y-axis: "Response". Big bold font. Thick axes, 
-                only two tick labels for 0 and 1 on y axis, and 5 for x axis (45 degree increments with endpoints). 
-
-
-     
-     '''
 
     # 1. Initialize
     print("Initializing...")
@@ -487,29 +454,36 @@ if __name__ == "__main__":
     plt.show()
 
     # =================================================================
-    # FIGURE 5: Calculated Average Stimuli (avg_z)
+    # FIGURE 5: Adaptor & Flank Tuning Curves (Uniform vs Biased)
     # =================================================================
 
-    neuron_angles_deg = tunings.theta * 180 / np.pi
+    # Identify which bin the adaptor neuron falls into using the same
+    # binning logic as get_binned_curves, then pick a flank ~2 bins away.
+    _discrete_step = np.pi / N
+    _bin_edges = np.linspace(0, np.pi, N_BINS + 1) - (_discrete_step / 2)
+    _neuron_bins = np.clip(np.digitize(tunings.theta, _bin_edges) - 1, 0, N_BINS - 1)
+    adaptor_bin = int(_neuron_bins[adaptor_idx])  # bin containing ~90° neuron = 6
+    flank_bin   = adaptor_bin - 2                  # ~28° away = bin 4
 
-    fig_avgz, ax_avgz = plt.subplots(1, 1, figsize=(7, 5))
+    lw = 3
+    fig5, ax5 = plt.subplots(1, 1, figsize=(5, 3))
 
-    ax_avgz.plot(neuron_angles_deg, avg_z_hist_uni[:, -1],
-                 color='#6BAED6', linewidth=3.5, label='Uniform Ensemble')
-    ax_avgz.plot(neuron_angles_deg, avg_z_hist_bias[:, -1],
-                 color='#08306B', linewidth=3.5, label='Biased Ensemble')
+    ax5.plot(probe_angles_deg, row3_uni[adaptor_bin, :],  color='red',  linewidth=lw, linestyle='-')
+    ax5.plot(probe_angles_deg, row3_uni[flank_bin,   :],  color='blue', linewidth=lw, linestyle='-')
+    ax5.plot(probe_angles_deg, row3_bias[adaptor_bin, :], color='red',  linewidth=lw, linestyle='--')
+    ax5.plot(probe_angles_deg, row3_bias[flank_bin,   :], color='blue', linewidth=lw, linestyle='--')
 
-    ax_avgz.set_title("Calculated Average Stimuli", fontweight='bold', fontsize=18)
-    ax_avgz.set_xlabel("Stimulus Angle (°)", fontweight='bold', fontsize=15)
-    ax_avgz.set_ylabel("avg_z", fontweight='bold', fontsize=15)
-    ax_avgz.set_xlim(0, 180)
-    ax_avgz.grid(False)
-    ax_avgz.legend(fontsize=13)
-    ax_avgz.tick_params(axis='both', width=2.5, length=6, labelsize=13)
+    ax5.set_xlabel("Orientation (°)", fontsize=16, fontweight='bold')
+    ax5.set_ylabel("Response",        fontsize=16, fontweight='bold')
+    ax5.set_xlim(0, 180)
+    ax5.set_ylim(0, 1)
+    ax5.set_xticks([0, 45, 90, 135, 180])
+    ax5.set_yticks([0, 1])
+    ax5.tick_params(labelsize=14)
+    ax5.grid(False)
 
-    for spine in ax_avgz.spines.values():
-        spine.set_edgecolor('black')
-        spine.set_linewidth(2.5)
+    for spine in ax5.spines.values():
+        spine.set_linewidth(3)
 
     plt.tight_layout()
     plt.show()
