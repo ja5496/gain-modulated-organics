@@ -22,7 +22,7 @@ class StimulusGenerator:
 
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
-                                 von_mises_kappa=4.0, return_angles=False):
+                                 von_mises_kappa=4.0, return_angles=False, duration=20):
         '''
         Generate uniform or biased ensemble of raised cosine input profiles
         centered at random orientations.
@@ -33,7 +33,6 @@ class StimulusGenerator:
             the per-timestep stimulus angle array of shape (stream_length,).
         '''
         if von_mises:
-            duration = 20
             num_inputs = int(self.stream_length / duration)
             mu = np.deg2rad(von_mises_center)
             centers_raw = np.random.vonmises(mu, von_mises_kappa, num_inputs)
@@ -55,7 +54,6 @@ class StimulusGenerator:
         base_indices = np.arange(self.num_angles)
         
         # Append it on itself until it reaches self.stream_length
-        duration = 20 # Stimuli are flashed for a period of (duration * dt).  
         num_inputs = int(self.stream_length / duration) # number of stimuli shown 
         n_full  = num_inputs // self.num_angles
         n_extra = num_inputs % self.num_angles

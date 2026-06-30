@@ -1,0 +1,277 @@
+"""
+Analytic_responses.py
+
+Calculates neural firing rates for a known input distribution using analytical expressions 
+and a self-consistency loop.
+
+Methodology:
+1. Optimal gains are calculated assuming a context of normalized responses to a given input distribution.
+2. Expected response of primary neurons over the context, mu = <y>, is calculated via a self-consistency loop
+3. A closed-form expression for firing rates as a function of input, optimal gains, and mu is used to calculate 
+    steady state responses.
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from simulation_whiten import V1Dynamics, Frame
+from tunings_whiten import V1Tunings
+from stimuli_whiten import StimulusGenerator
+from tqdm import tqdm
+import scipy
+
+sigma = 0.1       # normalization constant (matches V1Dynamics default)
+N_matrix = None   # set in __main__ after V1Tunings is instantiated
+
+def get_optimal_gains(stimuli, frame, label=''):
+    N = frame.shape[0]
+    covariance_array = []
+    for z in tqdm(stimuli, desc="  building covariance", leave=True):
+        y = z / np.sqrt(sigma**2 + N_matrix @ (z * z))
+        covariance_array.append(y)
+
+    C_yy = np.cov(np.array(covariance_array), rowvar=False)
+    sqrt_C_yy = scipy.linalg.sqrtm(C_yy)
+    A = sqrt_C_yy - 0.001 * np.eye(N)
+
+    WTW  = frame.T @ frame                              # (K, K)
+    WTAW = frame.T @ A @ frame                          # (K, K)
+    g_opt = np.linalg.pinv(WTW**2) @ np.diag(WTAW)     # (K,)
+    g_opt = np.maximum(g_opt, 0.0)
+
+    residual = ((frame * g_opt) @ frame.T)
+    fig, ax = plt.subplots(figsize=(4, 4)); im = ax.imshow(residual, cmap='RdBu_r', aspect='auto'); plt.colorbar(im, ax=ax); ax.set_title(f"sqrt(C_yy) − (WgW.T + I)  [{label}]"); plt.tight_layout(); plt.show()
+
+    return g_opt
+
+def get_mu(stimuli, frame, optimal_gains, alpha=0.1, Beta=0.5):
+
+    # Self-consistency loop to calculate mu given the input dataset and optimal gains
+
+    N, K = frame.shape
+    M = (frame * optimal_gains) @ frame.T  # avoids building a K×K diagonal matrix
+    mu = np.zeros(N)
+    diff = 1
+
+    pbar = tqdm(desc="  mu convergence", unit="iter")
+    while diff > 1e-6:
+        y_total = 0
+
+        for z in tqdm(stimuli, desc="    stimuli", leave=False):
+            z_prime = Beta * z - M @ mu
+            y_total += z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime * z_prime))
+
+        mu_new = y_total / len(stimuli)
+        mu_old = mu.copy()
+        diff = np.linalg.norm(mu_new - mu_old)
+        mu += alpha * (mu_new - mu_old)
+        pbar.set_postfix(diff=f"{diff:.2e}")
+        pbar.update(1)
+    pbar.close()
+
+    return mu
+        
+def get_response(stimulus, mu, M, Beta=0.5):
+    z_prime = Beta * stimulus - M @ mu
+    y = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
+    return y
+
+if __name__ == "__main__":
+
+    N = 169
+    N_BINS = 13
+
+    # Initialize model components
+    print("Initializing...")
+    tunings   = V1Tunings(N=N)
+    frame_obj = Frame(csv_path="Frames/N169_Frame.csv")
+    W = frame_obj.W  # raw (N, K) numpy array used by the analytic functions
+
+    # Set globals required by the analytic functions above
+    N_matrix = tunings.N_matrix
+
+    # (a) Stimulus streams.
+    #     Uniform: each of the num_angles orientations shown once (duration=1).
+    #     Biased: every non-adaptor orientation shown once + adaptor shown
+    #     n_non_adaptor//2 extra times, giving exactly equal non-adaptor counts.
+    #     (generate_input_ensembles' biased mode replaces the first 1/3 of a tiled
+    #     index array, which leaves orientations above the adaptor appearing twice
+    #     and those below appearing once — so we build the biased stream manually.)
+    duration   = 1
+    num_angles = N
+    stim_gen = StimulusGenerator(N=N, num_angles=num_angles,
+                                 stream_length=num_angles, contrast=0.05)
+
+    print("Generating stimulus streams...")
+    seq_uni, centers_uni = stim_gen.generate_input_ensembles(
+        biased=False, return_angles=True, duration=duration)
+    stimuli_uni = list(seq_uni.T)
+
+    # Build biased stream manually for equal non-adaptor representation
+    adaptor_idx = num_angles // 2
+    adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
+    n_non_adaptor  = num_angles - 1           # 168
+    n_adaptor_reps = n_non_adaptor // 2       # 84  →  adaptor ≈ 1/3 of total
+
+    non_adaptor_thetas = np.concatenate([
+        stim_gen.theta_inputs[:adaptor_idx],
+        stim_gen.theta_inputs[adaptor_idx + 1:]
+    ])
+    centers_bias = np.concatenate([
+        non_adaptor_thetas,
+        np.full(n_adaptor_reps, adaptor_rad)
+    ])
+    np.random.shuffle(centers_bias)
+
+    delta = stim_gen.theta_inputs[:, None] - centers_bias[None, :]
+    delta = (delta + np.pi / 2) % np.pi - np.pi / 2
+    seq_bias = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
+    seq_bias = stim_gen.contrast * 15 * seq_bias / np.max(seq_bias)
+    stimuli_bias = list(seq_bias.T)
+
+    # (b) Optimal gains for each context
+    print("Computing optimal gains (uniform)...")
+    g_opt_uni  = get_optimal_gains(stimuli_uni,  W, label='uniform')
+    print("Computing optimal gains (biased)...")
+    g_opt_bias = get_optimal_gains(stimuli_bias, W, label='biased')
+
+    # (c) Self-consistent mu for each context
+    print("Computing mu (uniform)...")
+    mu_uni  = get_mu(stimuli_uni,  W, g_opt_uni)
+    print("Computing mu (biased)...")
+    mu_bias = get_mu(stimuli_bias, W, g_opt_bias)
+
+    fig_mu, ax_mu = plt.subplots(figsize=(6, 3))
+    ax_mu.plot(mu_uni,  label='uniform')
+    ax_mu.plot(mu_bias, label='biased')
+    ax_mu.set_xlabel("Neuron index"); ax_mu.set_ylabel("mu"); ax_mu.legend(); plt.tight_layout(); plt.show()
+
+    # (d) Distinct stimulus vectors — one per input orientation, same for both contexts.
+    #     Built directly from theta_inputs so every orientation is guaranteed present.
+    distinct_stimuli = []
+    for angle in stim_gen.theta_inputs:
+        delta = stim_gen.theta_inputs - angle
+        delta = (delta + np.pi / 2) % np.pi - np.pi / 2
+        z = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
+        z = stim_gen.contrast * 15 * z / np.max(z)
+        distinct_stimuli.append(z)
+
+    n_distinct     = len(distinct_stimuli)
+    responses_uni  = np.zeros((N, n_distinct))
+    responses_bias = np.zeros((N, n_distinct))
+
+    # Precompute the N×N feedback matrices once (avoids recomputing per stimulus)
+    M_uni  = (W * g_opt_uni)  @ W.T
+    M_bias = (W * g_opt_bias) @ W.T
+
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4)); [axes[i].imshow(m, cmap='RdBu_r', aspect='auto') or axes[i].set_title(t) for i, (m, t) in enumerate([(M_uni, 'M — uniform'), (M_bias, 'M — biased')])]; plt.tight_layout(); plt.show()
+
+    print("Computing steady-state responses...")
+    for j, z in enumerate(tqdm(distinct_stimuli)):
+        responses_uni[:, j]  = get_response(z, mu_uni,  M_uni)
+        responses_bias[:, j] = get_response(z, mu_bias, M_bias)
+
+    # (e) Tuning curves: each neuron's response across the 180° input range.
+    #     probe_angles == stim_gen.theta_inputs == the "centers" output from stimuli_whiten.
+    probe_angles     = stim_gen.theta_inputs
+    probe_angles_deg = probe_angles * 180 / np.pi
+
+    tuning_curves_uni  = responses_uni   # shape (N, n_distinct)
+    tuning_curves_bias = responses_bias
+
+    # (f) Binned tuning curves — same logic and dimensions as Carandini_plots.py
+    def get_binned_curves(tuning_curves, neuron_preferences, probe_angs, n_bins=13):
+        N_neurons     = len(neuron_preferences)
+        discrete_step = np.pi / N_neurons
+        bin_edges     = np.linspace(0, np.pi, n_bins + 1) - (discrete_step / 2)
+        binned_response    = np.zeros((n_bins, len(probe_angs)))
+        neuron_bin_indices = np.digitize(neuron_preferences, bin_edges) - 1
+        neuron_bin_indices = np.clip(neuron_bin_indices, 0, n_bins - 1)
+        for b in range(n_bins):
+            mask = neuron_bin_indices == b
+            if np.any(mask):
+                binned_response[b, :] = np.mean(tuning_curves[mask, :], axis=0)
+        return binned_response
+
+    def process_pair(tc_uni_raw, tc_bias_raw):
+        binned_uni  = get_binned_curves(tc_uni_raw,  tunings.theta, probe_angles, N_BINS)
+        binned_bias = get_binned_curves(tc_bias_raw, tunings.theta, probe_angles, N_BINS)
+        bin_max = np.max(binned_uni, axis=1, keepdims=True)
+        bin_min = np.min(binned_uni, axis=1, keepdims=True)
+        norm_uni  = (binned_uni  - bin_min) / (bin_max - bin_min + 1e-9)
+        norm_bias = (binned_bias - bin_min) / (bin_max - bin_min + 1e-9)
+        return norm_uni, norm_bias
+
+    binned_uni, binned_bias = process_pair(tuning_curves_uni, tuning_curves_bias)
+
+    # (g) Figure 1 — top row (input histograms) and bottom row (analytic tuning curves)
+    adaptor_idx = num_angles // 2
+    adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
+    adaptor_deg = adaptor_rad * 180 / np.pi
+
+    uni_angles_deg  = centers_uni  * 180 / np.pi
+    bias_angles_deg = centers_bias * 180 / np.pi
+
+    discrete_step_hist = 180 / N
+    bins_hist    = np.linspace(0, 180, N_BINS + 1) - (discrete_step_hist / 2)
+    weights_uni  = np.ones_like(uni_angles_deg)  / len(uni_angles_deg)
+    weights_bias = np.ones_like(bias_angles_deg) / len(bias_angles_deg)
+
+    x_axis        = (probe_angles_deg - adaptor_deg + 90) % 180 - 90
+    sort_idx      = np.argsort(x_axis)
+    x_axis_sorted = x_axis[sort_idx]
+
+    blue_colors = plt.cm.Blues(np.linspace(0.2, 1.0, N_BINS))
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 6), sharey='row',
+                             gridspec_kw={'height_ratios': [0.8, 1.0]})
+
+    axes[0, 0].hist(uni_angles_deg,  bins=bins_hist, weights=weights_uni,
+                    color='black', rwidth=0.9)
+    axes[0, 0].set_title("Uniform Ensemble",  fontweight='bold', fontsize=18)
+    axes[0, 0].set_ylabel("Probability", fontsize=18)
+
+    axes[0, 1].hist(bias_angles_deg, bins=bins_hist, weights=weights_bias,
+                    color='black', rwidth=0.9)
+    axes[0, 1].set_title("Biased Ensemble", fontweight='bold', fontsize=18)
+
+    for ax in axes[0]:
+        ax.set_xlim(0, 180)
+        ax.tick_params(labelbottom=False)
+
+    for i in range(N_BINS):
+        axes[1, 0].plot(x_axis_sorted, binned_uni[i][sort_idx],
+                        color=blue_colors[i], linewidth=2.0)
+        axes[1, 1].plot(x_axis_sorted, binned_bias[i][sort_idx],
+                        color=blue_colors[i], linewidth=2.0)
+
+    axes[1, 0].set_ylabel("Analytic Response", fontsize=18)
+
+    for c in [0, 1]:
+        ax = axes[1, c]
+        ax.set_xlim(-90, 90)
+        ax.grid(False)
+        ax.set_xlabel("Stimulus Orientation (°)", fontsize=18)
+
+    plt.tight_layout()
+    plt.show()
+
+
+    # (h) Gain histogram — small plot, dark green bins, bold axes, no gridlines
+    DARK_GREEN = '#006400'
+
+    fig3, ax3 = plt.subplots(figsize=(4, 3))
+    ax3.hist(g_opt_uni,  bins=20, color=DARK_GREEN, rwidth=0.9,
+             label='Uniform', alpha=0.85)
+    ax3.hist(g_opt_bias, bins=20, color='#228B22',  rwidth=0.9,
+             label='Biased',  alpha=0.70)
+    ax3.set_xlabel("Gain Value", fontsize=14, fontweight='bold')
+    ax3.set_ylabel("Count",      fontsize=14, fontweight='bold')
+    ax3.set_title("Gain Distribution", fontsize=13, fontweight='bold')
+    ax3.legend(fontsize=11)
+    ax3.grid(False)
+    for spine in ax3.spines.values():
+        spine.set_edgecolor('black')
+        spine.set_linewidth(2.5)
+    ax3.tick_params(axis='both', width=2.5, length=6, labelsize=11)
+    plt.tight_layout()
+    plt.show()
