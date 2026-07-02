@@ -68,7 +68,7 @@ def get_mu(stimuli, frame, optimal_gains, alpha=0.1, Beta=0.5):
         y_total = 0
 
         for z in tqdm(stimuli, desc="    stimuli", leave=False):
-            z_prime = Beta * z - M @ mu
+            z_prime = 2*(Beta * z - M @ mu)
             y_total += z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime * z_prime))
 
         mu_new = y_total / len(stimuli)
@@ -83,18 +83,18 @@ def get_mu(stimuli, frame, optimal_gains, alpha=0.1, Beta=0.5):
         
 def get_response_perceptual(stimulus, mu, M, Beta=0.5):
     gain_feedback = M @ mu
-    z_prime = Beta * stimulus - gain_feedback
+    z_prime = 2*(Beta * stimulus - gain_feedback)
     y = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
 
-    rectified_y = (np.maximum(y,0))**2
+    rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
 
 def get_response_fast_mod(stimulus, mu, M, Beta=0.5):
     gain_feedback = M @ mu
-    z_prime = Beta * stimulus - gain_feedback
+    z_prime = 2*(Beta * stimulus - gain_feedback)
     y = stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2)) - gain_feedback
 
-    rectified_y = (np.maximum(y,0))**2
+    rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
 
 if __name__ == "__main__":
@@ -190,10 +190,10 @@ if __name__ == "__main__":
 
     print("Computing steady-state responses...")
     for j, z in enumerate(tqdm(distinct_stimuli)):
-        #responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
-        #responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
-        responses_uni[:, j]  = get_response_fast_mod(z, mu_uni,  M_uni)
-        responses_bias[:, j] = get_response_fast_mod(z, mu_bias, M_bias)
+        responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
+        responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
+        #responses_uni[:, j]  = get_response_fast_mod(z, mu_uni,  M_uni)
+        #responses_bias[:, j] = get_response_fast_mod(z, mu_bias, M_bias)
 
     # (e) Tuning curves: each neuron's response across the 180° input range.
     probe_angles     = stim_gen.theta_inputs
