@@ -22,21 +22,26 @@ import scipy
 sigma = 0.1       # normalization constant (matches V1Dynamics default)
 N_matrix = None   # set in __main__ after V1Tunings is instantiated
 
-def get_optimal_gains(stimuli, frame, label=''):
+def get_optimal_gains(stimuli, frame, label='', no_norm=False):
     N, K = frame.shape  # N = 169, K ~ 14000
     
     # Vectorize covariance generation (Removes the slow Python loop)
     stimuli = np.asarray(stimuli)
-    Z_sq = stimuli ** 2
+    Beta = 0.5
+    raw_input_drive = stimuli * Beta
+    Z_sq = (raw_input_drive) ** 2
     denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
-    covariance_array = stimuli / denom
+    covariance_array = raw_input_drive / denom
     
-    C_yy = np.cov(covariance_array, rowvar=False)
+    if no_norm == True:
+        Covariance = np.cov(raw_input_drive, rowvar=False)
+    else:
+        Covariance = np.cov(covariance_array, rowvar=False)
 
     # Fast symmetric matrix square root (Safer and faster than general scipy.linalg.sqrtm)
-    eigvals, eigvecs = np.linalg.eigh(C_yy)
-    sqrt_C_yy = eigvecs @ np.diag(np.sqrt(np.maximum(eigvals, 0))) @ eigvecs.T
-    A = sqrt_C_yy - np.eye(N)
+    eigvals, eigvecs = np.linalg.eigh(Covariance)
+    sqrt_Cov = eigvecs @ np.diag(np.sqrt(np.maximum(eigvals, 0))) @ eigvecs.T
+    A = sqrt_Cov - np.eye(N)
 
     # Compute the exact right-hand side vector (K,) without full matrix multiplications
     diag_WTAW = np.sum(frame * (A @ frame), axis=0)
@@ -49,8 +54,15 @@ def get_optimal_gains(stimuli, frame, label=''):
     c, lower = scipy.linalg.cho_factor(WTW_sq, lower=True)
     g_opt = scipy.linalg.cho_solve((c, lower), diag_WTAW)
     
-    # Enforce non-negativity 
+    # Enforce non-negativity
     g_opt = np.maximum(g_opt, 0.0)
+
+    # DIAGNOSTIC: sqrt(Covariance) vs its I + W@diag(g_opt)@W.T factorization
+    fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
+    vmin, vmax = sqrt_Cov.min(), sqrt_Cov.max()
+    ax_diag[0].imshow(sqrt_Cov, vmin=vmin, vmax=vmax); ax_diag[0].set_title("sqrt(Cov)")
+    ax_diag[1].imshow(np.eye(N) + frame @ np.diag(g_opt) @ frame.T, vmin=vmin, vmax=vmax); ax_diag[1].set_title("I + W g W.T")
+    plt.tight_layout(); plt.show()
 
     return g_opt
 
@@ -89,13 +101,13 @@ def get_response_perceptual(stimulus, mu, M, Beta=0.5):
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
 
-def get_response_fast_mod(stimulus, mu, M, Beta=0.5):
-    gain_feedback = M @ mu
-    z_prime = 2*(Beta * stimulus - gain_feedback)
-    y = stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2)) - gain_feedback
+def get_response_no_norm(stimulus, M, Beta=0.5):
+    raw_input_drive = Beta * stimulus
+    y = np.linalg.inv(np.eye(N) - M) @ raw_input_drive
 
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
+
 
 if __name__ == "__main__":
 
@@ -185,15 +197,15 @@ if __name__ == "__main__":
     fig_gf, ax_gf = plt.subplots(figsize=(6, 3))
     ax_gf.plot(gain_feedback_uni,  label='uniform')
     ax_gf.plot(gain_feedback_bias, label='biased')
-    ax_gf.set_xlabel("Neuron index"); ax_gf.set_ylabel("Gain feedback (M @ mu)")
+    ax_gf.set_xlabel("Neuron index"); ax_gf.set_ylabel("Gain feedback (- M @ mu)")
     ax_gf.legend(); plt.tight_layout(); plt.show()
 
     print("Computing steady-state responses...")
     for j, z in enumerate(tqdm(distinct_stimuli)):
-        responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
-        responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
-        #responses_uni[:, j]  = get_response_fast_mod(z, mu_uni,  M_uni)
-        #responses_bias[:, j] = get_response_fast_mod(z, mu_bias, M_bias)
+        #responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
+        #responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
+        responses_uni[:, j]  = get_response_no_norm(z,  M_uni)
+        responses_bias[:, j] = get_response_no_norm(z, M_bias)
 
     # (e) Tuning curves: each neuron's response across the 180° input range.
     probe_angles     = stim_gen.theta_inputs
