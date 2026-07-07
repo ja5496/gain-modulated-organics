@@ -18,6 +18,7 @@ from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from tqdm import tqdm
 import scipy
+from scipy.optimize import minimize, Bounds
 
 sigma = 0.1       # normalization constant (matches V1Dynamics default)
 N_matrix = None   # set in __main__ after V1Tunings is instantiated
@@ -29,9 +30,9 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False):
     stimuli = np.asarray(stimuli)
     Beta = 0.5
     raw_input_drive = stimuli * Beta
-    Z_sq = (raw_input_drive) ** 2
+    Z_sq = (stimuli) ** 2
     denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
-    covariance_array = raw_input_drive / denom
+    covariance_array = stimuli / denom
     
     if no_norm == True:
         Covariance = np.cov(raw_input_drive, rowvar=False)
@@ -66,6 +67,108 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False):
 
     return g_opt
 
+def get_optimal_gains_target(stimuli, frame, label='', no_norm=False):
+    N, K = frame.shape  # N = 169, K ~ 14000
+    
+    # Covariance generation 
+    stimuli = np.asarray(stimuli)
+    Beta = 0.5
+    raw_input_drive = stimuli * Beta
+    Z_sq = (raw_input_drive) ** 2
+    denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
+    covariance_array = raw_input_drive / denom
+    
+    if no_norm == True:
+        Covariance = np.cov(raw_input_drive, rowvar=False)
+    else:
+        Covariance = np.cov(covariance_array, rowvar=False)
+
+    # GET MODIFED WHITENING MATRIX THAT SCALES ONLY LARGE VARIANCES
+    eigenvalues, eigenvectors = np.linalg.eigh(Covariance)
+    safe_lambdas = np.maximum(eigenvalues, 1e-9)
+    target = np.mean(eigenvalues) # Set the mean variance as the upper bound ("target")
+    d = np.minimum(1.0, np.sqrt(target / safe_lambdas))
+    T = eigenvectors @ np.diag(d) @ eigenvectors.T
+
+    # NOW COMPUTE OPTIMAL GAINS WITH LYNDON'S EQUATION A.5 (modified)
+    T_inv = np.linalg.inv(T)
+    A = T_inv - np.eye(N)
+
+    diag_WTAW = np.sum(frame * (A @ frame), axis=0)
+    WTW = frame.T @ frame                               
+    WTW_sq = WTW ** 2                                  # Element-wise square
+    reg = 1e-6 * np.mean(np.diag(WTW_sq))
+    WTW_sq[np.arange(K), np.arange(K)] += reg
+    c, lower = scipy.linalg.cho_factor(WTW_sq, lower=True)
+    g_opt = scipy.linalg.cho_solve((c, lower), diag_WTAW)
+    
+    # Enforce non-negativity
+    #g_opt = np.maximum(g_opt, 0.0)
+
+    # DIAGNOSTIC: sqrt(Covariance) vs its I + W@diag(g_opt)@W.T factorization
+    fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
+    vmin, vmax = T_inv.min(), T_inv.max()
+    ax_diag[0].imshow(T_inv, vmin=vmin, vmax=vmax); ax_diag[0].set_title("T^-1")
+    ax_diag[1].imshow(np.eye(N) + frame @ np.diag(g_opt) @ frame.T, vmin=vmin, vmax=vmax); ax_diag[1].set_title("I + W g W.T")
+    plt.tight_layout(); plt.show()
+
+    return g_opt
+
+def get_optimal_gains_nonneg(stimuli, frame, label='', no_norm=False, max_iter=300):
+    N, K = frame.shape  # N = 169, K ~ 14000
+
+    # Covariance generation (identical to get_optimal_gains_target)
+    stimuli = np.asarray(stimuli)
+    Beta = 0.5
+    raw_input_drive = stimuli * Beta
+    Z_sq = (raw_input_drive) ** 2
+    denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
+    covariance_array = raw_input_drive / denom
+
+    if no_norm == True:
+        Covariance = np.cov(raw_input_drive, rowvar=False)
+    else:
+        Covariance = np.cov(covariance_array, rowvar=False)
+
+    # GET MODIFIED WHITENING MATRIX THAT SCALES ONLY LARGE VARIANCES (target)
+    eigenvalues, eigenvectors = np.linalg.eigh(Covariance)
+    safe_lambdas = np.maximum(eigenvalues, 1e-9)
+    target = np.mean(eigenvalues)  # Set the mean variance as the upper bound ("target")
+    d = np.minimum(1.0, np.sqrt(target / safe_lambdas))
+    T = eigenvectors @ np.diag(d) @ eigenvectors.T
+
+    T_inv = np.linalg.inv(T)
+    A = T_inv - np.eye(N)
+
+    # Solve min_{g>=0} ||A - W diag(g) W.T||_F^2 directly in gain space.
+    # This never forms a K x K matrix (K ~ 14000, so the Cholesky/NNLS route
+    # used to take O(K^3) and was impractically slow) -- every objective/
+    # gradient evaluation only touches N x N and N x K arrays, i.e. O(N^2 K).
+    def objective_and_grad(g):
+        R = A - (frame * g) @ frame.T                      # N x N residual
+        obj = np.sum(R * R)
+        grad = -2.0 * np.sum(frame * (R @ frame), axis=0)   # (K,)
+        return obj, grad
+
+    pbar = tqdm(total=max_iter, desc=f"  nonneg gains {label}".rstrip(), unit="it")
+    def callback(_):
+        pbar.update(1)
+
+    result = minimize(objective_and_grad, np.zeros(K), jac=True, method='L-BFGS-B',
+                       bounds=Bounds(0, np.inf), callback=callback,
+                       options={'maxiter': max_iter})
+    pbar.close()
+    g_opt = result.x
+
+    # DIAGNOSTIC: T^-1 vs its I + W@diag(g_opt)@W.T factorization
+    fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
+    vmin, vmax = T.min(), T.max()
+    ax_diag[0].imshow(T, vmin=vmin, vmax=vmax); ax_diag[0].set_title("T^-1")
+    ax_diag[1].imshow(np.eye(N) + frame @ np.diag(g_opt) @ frame.T, vmin=vmin, vmax=vmax); ax_diag[1].set_title("I + W g W.T (nonneg)")
+    plt.tight_layout(); plt.show()
+
+    return g_opt
+
 def get_mu(stimuli, frame, optimal_gains, alpha=0.1, Beta=0.5):
 
     # Self-consistency loop to calculate mu given the input dataset and optimal gains
@@ -87,6 +190,7 @@ def get_mu(stimuli, frame, optimal_gains, alpha=0.1, Beta=0.5):
         mu_old = mu.copy()
         diff = np.linalg.norm(mu_new - mu_old)
         mu += alpha * (mu_new - mu_old)
+        print(np.mean(mu))
         pbar.set_postfix(diff=f"{diff:.2e}")
         pbar.update(1)
     pbar.close()
@@ -101,9 +205,9 @@ def get_response_perceptual(stimulus, mu, M, Beta=0.5):
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
 
-def get_response_no_norm(stimulus, M, Beta=0.5):
-    raw_input_drive = Beta * stimulus
-    y = np.linalg.inv(np.eye(N) - M) @ raw_input_drive
+def get_response_fast_adapt(stimulus, M, Beta=0.5):
+    normalized_input_drive =  stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2).T)
+    y = np.linalg.inv(np.eye(N) - M) @ normalized_input_drive
 
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
@@ -158,9 +262,29 @@ if __name__ == "__main__":
 
     # (b) Optimal gains for each context
     print("Computing optimal gains (uniform)...")
-    g_opt_uni  = get_optimal_gains(stimuli_uni,  W, label='uniform')
+    g_opt_uni  = get_optimal_gains_target(stimuli_uni,  W, label='uniform')
     print("Computing optimal gains (biased)...")
-    g_opt_bias = get_optimal_gains(stimuli_bias, W, label='biased')
+    g_opt_bias = get_optimal_gains_target(stimuli_bias, W, label='biased')
+
+    # Gain histogram — small plot, dark green bins, bold axes, no gridlines
+    DARK_GREEN = '#006400'
+
+    fig3, ax3 = plt.subplots(figsize=(4, 3))
+    ax3.hist(g_opt_uni,  bins=20, color=DARK_GREEN, rwidth=0.9,
+             label='Uniform', alpha=0.85)
+    ax3.hist(g_opt_bias, bins=20, color='#228B22',  rwidth=0.9,
+             label='Biased',  alpha=0.70)
+    ax3.set_xlabel("Gain Value", fontsize=14, fontweight='bold')
+    ax3.set_ylabel("Count",      fontsize=14, fontweight='bold')
+    ax3.set_title("Gain Distribution", fontsize=13, fontweight='bold')
+    ax3.legend(fontsize=11)
+    ax3.grid(False)
+    for spine in ax3.spines.values():
+        spine.set_edgecolor('black')
+        spine.set_linewidth(2.5)
+    ax3.tick_params(axis='both', width=2.5, length=6, labelsize=11)
+    plt.tight_layout()
+    plt.show()
 
     # (c) Self-consistent mu for each context
     print("Computing mu (uniform)...")
@@ -202,10 +326,10 @@ if __name__ == "__main__":
 
     print("Computing steady-state responses...")
     for j, z in enumerate(tqdm(distinct_stimuli)):
-        #responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
-        #responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
-        responses_uni[:, j]  = get_response_no_norm(z,  M_uni)
-        responses_bias[:, j] = get_response_no_norm(z, M_bias)
+        responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
+        responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
+        #responses_uni[:, j]  = get_response_fast_adapt(z,  M_uni)
+        #responses_bias[:, j] = get_response_fast_adapt(z, M_bias)
 
     # (e) Tuning curves: each neuron's response across the 180° input range.
     probe_angles     = stim_gen.theta_inputs
@@ -332,25 +456,5 @@ if __name__ == "__main__":
     for spine in ax2.spines.values():
         spine.set_edgecolor('black')
         spine.set_linewidth(2.5)
-    plt.tight_layout()
-    plt.show()
-
-    # (h) Gain histogram — small plot, dark green bins, bold axes, no gridlines
-    DARK_GREEN = '#006400'
-
-    fig3, ax3 = plt.subplots(figsize=(4, 3))
-    ax3.hist(g_opt_uni,  bins=20, color=DARK_GREEN, rwidth=0.9,
-             label='Uniform', alpha=0.85)
-    ax3.hist(g_opt_bias, bins=20, color='#228B22',  rwidth=0.9,
-             label='Biased',  alpha=0.70)
-    ax3.set_xlabel("Gain Value", fontsize=14, fontweight='bold')
-    ax3.set_ylabel("Count",      fontsize=14, fontweight='bold')
-    ax3.set_title("Gain Distribution", fontsize=13, fontweight='bold')
-    ax3.legend(fontsize=11)
-    ax3.grid(False)
-    for spine in ax3.spines.values():
-        spine.set_edgecolor('black')
-        spine.set_linewidth(2.5)
-    ax3.tick_params(axis='both', width=2.5, length=6, labelsize=11)
     plt.tight_layout()
     plt.show()
