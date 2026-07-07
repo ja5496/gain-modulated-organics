@@ -205,9 +205,10 @@ def get_response_perceptual(stimulus, mu, M, Beta=0.5):
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
 
-def get_response_fast_adapt(stimulus, M, Beta=0.5):
-    normalized_input_drive =  stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2).T)
-    y = np.linalg.inv(np.eye(N) - M) @ normalized_input_drive
+def get_response_fast_adapt(stimulus, mu, M, Beta=0.5):
+    gain_feedback = M @ mu
+    z_prime = 2*(Beta * stimulus - gain_feedback)
+    y = z_prime 
 
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
@@ -262,9 +263,9 @@ if __name__ == "__main__":
 
     # (b) Optimal gains for each context
     print("Computing optimal gains (uniform)...")
-    g_opt_uni  = get_optimal_gains_target(stimuli_uni,  W, label='uniform')
+    g_opt_uni  = get_optimal_gains(stimuli_uni,  W, label='uniform')
     print("Computing optimal gains (biased)...")
-    g_opt_bias = get_optimal_gains_target(stimuli_bias, W, label='biased')
+    g_opt_bias = get_optimal_gains(stimuli_bias, W, label='biased')
 
     # Gain histogram — small plot, dark green bins, bold axes, no gridlines
     DARK_GREEN = '#006400'
@@ -328,8 +329,8 @@ if __name__ == "__main__":
     for j, z in enumerate(tqdm(distinct_stimuli)):
         responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
         responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
-        #responses_uni[:, j]  = get_response_fast_adapt(z,  M_uni)
-        #responses_bias[:, j] = get_response_fast_adapt(z, M_bias)
+        #responses_uni[:, j]  = get_response_fast_adapt(z, mu_uni, M_uni)
+        #responses_bias[:, j] = get_response_fast_adapt(z, mu_bias, M_bias)
 
     # (e) Tuning curves: each neuron's response across the 180° input range.
     probe_angles     = stim_gen.theta_inputs
