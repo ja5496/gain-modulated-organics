@@ -207,8 +207,8 @@ def get_response_perceptual(stimulus, mu, M, Beta=0.5):
 
 def get_response_fast_adapt(stimulus, mu, M, Beta=0.5):
     gain_feedback = M @ mu
-    z_prime = 2*(Beta * stimulus - gain_feedback)
-    y = z_prime 
+    z_normalized = 5 * stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2))
+    y = z_normalized - gain_feedback
 
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
@@ -327,10 +327,10 @@ if __name__ == "__main__":
 
     print("Computing steady-state responses...")
     for j, z in enumerate(tqdm(distinct_stimuli)):
-        responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
-        responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
-        #responses_uni[:, j]  = get_response_fast_adapt(z, mu_uni, M_uni)
-        #responses_bias[:, j] = get_response_fast_adapt(z, mu_bias, M_bias)
+        #responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
+        #responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
+        responses_uni[:, j]  = get_response_fast_adapt(z, mu_uni, M_uni)
+        responses_bias[:, j] = get_response_fast_adapt(z, mu_bias, M_bias)
 
     # (e) Tuning curves: each neuron's response across the 180° input range.
     probe_angles     = stim_gen.theta_inputs
