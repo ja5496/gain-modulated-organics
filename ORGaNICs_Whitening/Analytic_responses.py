@@ -56,7 +56,7 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False):
     g_opt = scipy.linalg.cho_solve((c, lower), diag_WTAW)
     
     # Enforce non-negativity
-    g_opt = np.maximum(g_opt, 0.0)
+    #g_opt = np.maximum(g_opt, 0.0)
 
     # DIAGNOSTIC: sqrt(Covariance) vs its I + W@diag(g_opt)@W.T factorization
     fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
@@ -205,13 +205,36 @@ def get_response_perceptual(stimulus, mu, M, Beta=0.5):
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
 
-def get_response_fast_adapt(stimulus, mu, M, Beta=0.5):
+def get_response_simple(stimulus, mu, M, Beta=0.5):
     gain_feedback = M @ mu
     z_normalized = 5 * stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2))
     y = z_normalized - gain_feedback
 
     rectified_y = y #(np.maximum(y,0))**2
     return rectified_y
+
+def get_response_fast_adapt(stimulus, M, Beta=0.5, alpha=0.1):
+        # Self-consistency loop to calculate fast-adapt response given the input dataset and optimal gains
+
+    u = 0 # initual guess for interneuron pool
+    diff = 1
+
+    pbar = tqdm(desc="  u / y convergence", unit="iter")
+    while diff > 1e-6:
+        y = np.linalg.inv(np.sqrt(np.abs(u)) * np.eye(N)  +  M) @ stimulus * Beta
+        u_new = sigma**2 / (4 * (1 - np.linalg.norm(y)**2))
+    
+        u_old = u
+        u += alpha * (u_new - u_old)
+        diff = u_new - u_old
+    
+        pbar.set_postfix(diff=f"{diff:.2e}")
+        pbar.update(1)
+    pbar.close()
+
+    response = np.linalg.inv(np.sqrt(np.abs(u)) * np.eye(N)  +  M) @ stimulus * Beta
+
+    return response
 
 
 if __name__ == "__main__":
@@ -261,6 +284,53 @@ if __name__ == "__main__":
     seq_bias = stim_gen.contrast * 15 * seq_bias / np.max(seq_bias)
     stimuli_bias = list(seq_bias.T)
 
+    # NEW DIAGNOSTIC:
+    # Run all three ways of computing optimal gains (standard, target, non-negative)
+    # for both the uniform and biased ensembles. For each method, form the feedback
+    # matrix M = W @ diag(g_opt) @ W.T and multiply it by a uniform probe vector
+    # (N entries, all equal) to see how each method's gains shape a flat input.
+    print("Computing optimal gains via all three methods (uniform vs. biased)...")
+    gain_methods = [
+        ("Standard", get_optimal_gains),
+        ("Target",   get_optimal_gains_target),
+        ("Non-neg",  get_optimal_gains_nonneg),
+    ]
+    uniform_probe = np.ones(N)
+
+    # Compute every method's results FIRST. Each gain_fn call pops up its own
+    # internal diagnostic figure via a bare plt.show(), which renders (and
+    # flushes) every currently-open figure -- if fig_methods were created
+    # before this loop, it would get shown/closed while still empty and the
+    # final plt.show() below would have nothing left to display.
+    probe_results = []
+    for method_name, gain_fn in gain_methods:
+        print(f"  [{method_name}] uniform ensemble...")
+        g_method_uni  = gain_fn(stimuli_uni,  W, label=f'{method_name} uniform')
+        print(f"  [{method_name}] biased ensemble...")
+        g_method_bias = gain_fn(stimuli_bias, W, label=f'{method_name} biased')
+
+        M_method_uni  = (W * g_method_uni)  @ W.T
+        M_method_bias = (W * g_method_bias) @ W.T
+        whiten_uni = np.linalg.inv(np.eye(169)+M_method_uni)
+        whiten_bias = np.linalg.inv(np.eye(169)+M_method_bias)
+
+        probe_results.append((
+            method_name,
+            whiten_uni  @ uniform_probe,
+            whiten_bias @ uniform_probe,
+        ))
+
+    fig_methods, axes_methods = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
+    for ax, (method_name, probe_result_uni, probe_result_bias) in zip(axes_methods, probe_results):
+        ax.plot(probe_result_uni,  label='Uniform ensemble')
+        ax.plot(probe_result_bias, label='Biased ensemble')
+        ax.set_title(method_name, fontsize=12, fontweight='bold')
+        ax.set_xlabel("Neuron index")
+    axes_methods[0].set_ylabel("M @ uniform vector")
+    axes_methods[0].legend()
+    plt.tight_layout()
+    plt.show()
+
     # (b) Optimal gains for each context
     print("Computing optimal gains (uniform)...")
     g_opt_uni  = get_optimal_gains(stimuli_uni,  W, label='uniform')
@@ -287,6 +357,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
+    '''
     # (c) Self-consistent mu for each context
     print("Computing mu (uniform)...")
     mu_uni  = get_mu(stimuli_uni,  W, g_opt_uni)
@@ -298,6 +369,7 @@ if __name__ == "__main__":
     ax_mu.plot(mu_bias, label='biased')
     ax_mu.set_xlabel("Neuron index"); ax_mu.set_ylabel("mu"); ax_mu.legend(); plt.tight_layout(); plt.show()
 
+    '''
     # (d) Distinct stimulus vectors — one per input orientation, same for both contexts.
     #     Built directly from theta_inputs so every orientation is guaranteed present.
     distinct_stimuli = []
@@ -316,6 +388,7 @@ if __name__ == "__main__":
     M_uni  = (W @ np.diag(g_opt_uni))  @ W.T
     M_bias = (W @ np.diag(g_opt_bias)) @ W.T
 
+    '''
     # DIAGNOSTIC: gain feedback (M @ mu, per get_response) for each ensemble
     gain_feedback_uni  = - M_uni  @ mu_uni
     gain_feedback_bias = - M_bias @ mu_bias
@@ -324,13 +397,15 @@ if __name__ == "__main__":
     ax_gf.plot(gain_feedback_bias, label='biased')
     ax_gf.set_xlabel("Neuron index"); ax_gf.set_ylabel("Gain feedback (- M @ mu)")
     ax_gf.legend(); plt.tight_layout(); plt.show()
+    '''
+
 
     print("Computing steady-state responses...")
     for j, z in enumerate(tqdm(distinct_stimuli)):
         #responses_uni[:, j]  = get_response_perceptual(z, mu_uni,  M_uni)
         #responses_bias[:, j] = get_response_perceptual(z, mu_bias, M_bias)
-        responses_uni[:, j]  = get_response_fast_adapt(z, mu_uni, M_uni)
-        responses_bias[:, j] = get_response_fast_adapt(z, mu_bias, M_bias)
+        responses_uni[:, j]  = get_response_fast_adapt(z, M_uni)
+        responses_bias[:, j] = get_response_fast_adapt(z, M_bias)
 
     # (e) Tuning curves: each neuron's response across the 180° input range.
     probe_angles     = stim_gen.theta_inputs
