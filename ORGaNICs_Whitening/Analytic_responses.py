@@ -23,7 +23,7 @@ from scipy.optimize import minimize, Bounds
 sigma = 0.1       # normalization constant (matches V1Dynamics default)
 N_matrix = None   # set in __main__ after V1Tunings is instantiated
 
-def get_optimal_gains(stimuli, frame, label='', no_norm=False):
+def get_optimal_gains(stimuli, frame, label='', no_norm=False, theta=None, adaptor_theta=None, tuning_width=None):
     N, K = frame.shape  # N = 169, K ~ 14000
     
     # Vectorize covariance generation (Removes the slow Python loop)
@@ -56,13 +56,50 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False):
     g_opt = scipy.linalg.cho_solve((c, lower), diag_WTAW)
     
     # Enforce non-negativity
-    #g_opt = np.maximum(g_opt, 0.0)
+    g_opt = np.maximum(g_opt, 0.0)
 
     # DIAGNOSTIC: sqrt(Covariance) vs its I + W@diag(g_opt)@W.T factorization
-    fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
+    fig_diag, ax_diag = plt.subplots(1, 4, figsize=(16, 4))
     vmin, vmax = sqrt_Cov.min(), sqrt_Cov.max()
     ax_diag[0].imshow(sqrt_Cov, vmin=vmin, vmax=vmax); ax_diag[0].set_title("sqrt(Cov)")
     ax_diag[1].imshow(np.eye(N) + frame @ np.diag(g_opt) @ frame.T, vmin=vmin, vmax=vmax); ax_diag[1].set_title("I + W g W.T")
+
+    # Probe the actual C_ss^{-1/2} and its (I + W diag(g) W.T)^-1 approximation with
+    # Gaussian bumps at the adaptor and its orthogonal orientation, rather than a flat
+    # vector -- the uniform vector is an exact null eigenvector of Covariance here
+    # (constant pooled energy per stimulus), so it can never show gain modulation.
+    # eigvals below 1e-6 are floating-point noise around that null direction (the real
+    # spectrum has a hard gap: smallest genuine eigenvalue ~1e-5, noise floor ~1e-12) --
+    # floor there so the pseudo-inverse doesn't blow up. The probes are also mean-centered
+    # to strip out the (physically undefined) component along that null direction.
+    inv_sqrt_eigvals = 1.0 / np.sqrt(np.maximum(eigvals, 1e-6))
+    C_inv_sqrt = eigvecs @ np.diag(inv_sqrt_eigvals) @ eigvecs.T
+    factorization_inv = np.linalg.inv(np.eye(N) + frame @ np.diag(g_opt) @ frame.T)
+
+    if theta is not None and adaptor_theta is not None:
+        width = tuning_width if tuning_width is not None else 0.1
+        def gaussian_probe(center):
+            d = theta - center
+            d = (d + np.pi / 2) % np.pi - np.pi / 2
+            probe = np.exp(-d**2 / (2 * width**2))
+            return probe - probe.mean()
+        probe_adaptor    = gaussian_probe(adaptor_theta)
+        probe_orthogonal = gaussian_probe(adaptor_theta + np.pi / 2)
+    else:
+        probe_adaptor = probe_orthogonal = np.ones(N)
+
+    for ax, probe, probe_label in (
+        (ax_diag[2], probe_adaptor,    "Gaussian @ adaptor"),
+        (ax_diag[3], probe_orthogonal, "Gaussian @ orthogonal"),
+    ):
+        ax.plot(C_inv_sqrt @ probe, label='C_ss^-1/2 @ probe')
+        ax.plot(factorization_inv @ probe, label='(I + W g W.T)^-1 @ probe')
+        ax.set_title(probe_label)
+        ax.set_xlabel("Neuron index")
+        ax.legend()
+
+    if label:
+        fig_diag.suptitle(label)
     plt.tight_layout(); plt.show()
 
     return g_opt
@@ -284,67 +321,76 @@ if __name__ == "__main__":
     seq_bias = stim_gen.contrast * 15 * seq_bias / np.max(seq_bias)
     stimuli_bias = list(seq_bias.T)
 
-    # NEW DIAGNOSTIC:
-    # Run all three ways of computing optimal gains (standard, target, non-negative)
-    # for both the uniform and biased ensembles. For each method, form the feedback
-    # matrix M = W @ diag(g_opt) @ W.T and multiply it by a uniform probe vector
-    # (N entries, all equal) to see how each method's gains shape a flat input.
-    print("Computing optimal gains via all three methods (uniform vs. biased)...")
-    gain_methods = [
-        ("Standard", get_optimal_gains),
-        ("Target",   get_optimal_gains_target),
-        ("Non-neg",  get_optimal_gains_nonneg),
-    ]
-    uniform_probe = np.ones(N)
+    def diagnostic1():
+        # NEW DIAGNOSTIC:
+        # Run all three ways of computing optimal gains (standard, target, non-negative)
+        # for both the uniform and biased ensembles. For each method, form the feedback
+        # matrix M = W @ diag(g_opt) @ W.T and multiply it by a uniform probe vector
+        # (N entries, all equal) to see how each method's gains shape a flat input.
+        print("Computing optimal gains via all three methods (uniform vs. biased)...")
+        gain_methods = [
+            ("Standard", get_optimal_gains),
+            ("Target",   get_optimal_gains_target),
+            ("Non-neg",  get_optimal_gains_nonneg),
+        ]
+        uniform_probe = np.ones(N)
 
-    # Compute every method's results FIRST. Each gain_fn call pops up its own
-    # internal diagnostic figure via a bare plt.show(), which renders (and
-    # flushes) every currently-open figure -- if fig_methods were created
-    # before this loop, it would get shown/closed while still empty and the
-    # final plt.show() below would have nothing left to display.
-    probe_results = []
-    for method_name, gain_fn in gain_methods:
-        print(f"  [{method_name}] uniform ensemble...")
-        g_method_uni  = gain_fn(stimuli_uni,  W, label=f'{method_name} uniform')
-        print(f"  [{method_name}] biased ensemble...")
-        g_method_bias = gain_fn(stimuli_bias, W, label=f'{method_name} biased')
+        # Compute every method's results FIRST. Each gain_fn call pops up its own
+        # internal diagnostic figure via a bare plt.show(), which renders (and
+        # flushes) every currently-open figure -- if fig_methods were created
+        # before this loop, it would get shown/closed while still empty and the
+        # final plt.show() below would have nothing left to display.
+        probe_results = []
+        for method_name, gain_fn in gain_methods:
+            print(f"  [{method_name}] uniform ensemble...")
+            g_method_uni  = gain_fn(stimuli_uni,  W, label=f'{method_name} uniform')
+            print(f"  [{method_name}] biased ensemble...")
+            g_method_bias = gain_fn(stimuli_bias, W, label=f'{method_name} biased')
 
-        M_method_uni  = (W * g_method_uni)  @ W.T
-        M_method_bias = (W * g_method_bias) @ W.T
-        whiten_uni = np.linalg.inv(np.eye(169)+M_method_uni)
-        whiten_bias = np.linalg.inv(np.eye(169)+M_method_bias)
+            M_method_uni  = (W * g_method_uni)  @ W.T
+            M_method_bias = (W * g_method_bias) @ W.T
+            whiten_uni = np.linalg.inv(np.eye(169)+M_method_uni)
+            whiten_bias = np.linalg.inv(np.eye(169)+M_method_bias)
 
-        probe_results.append((
-            method_name,
-            whiten_uni  @ uniform_probe,
-            whiten_bias @ uniform_probe,
-        ))
+            probe_results.append((
+                method_name,
+                whiten_uni  @ uniform_probe,
+                whiten_bias @ uniform_probe,
+            ))
 
-    fig_methods, axes_methods = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
-    for ax, (method_name, probe_result_uni, probe_result_bias) in zip(axes_methods, probe_results):
-        ax.plot(probe_result_uni,  label='Uniform ensemble')
-        ax.plot(probe_result_bias, label='Biased ensemble')
-        ax.set_title(method_name, fontsize=12, fontweight='bold')
-        ax.set_xlabel("Neuron index")
-    axes_methods[0].set_ylabel("M @ uniform vector")
-    axes_methods[0].legend()
-    plt.tight_layout()
-    plt.show()
+        fig_methods, axes_methods = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
+        for ax, (method_name, probe_result_uni, probe_result_bias) in zip(axes_methods, probe_results):
+            ax.plot(probe_result_uni,  label='Uniform ensemble')
+            ax.plot(probe_result_bias, label='Biased ensemble')
+            ax.set_title(method_name, fontsize=12, fontweight='bold')
+            ax.set_xlabel("Neuron index")
+        axes_methods[0].set_ylabel("M @ uniform vector")
+        axes_methods[0].legend()
+        plt.tight_layout()
+        plt.show()
+
+        return
+    
+    #diagnostic1()
 
     # (b) Optimal gains for each context
     print("Computing optimal gains (uniform)...")
-    g_opt_uni  = get_optimal_gains(stimuli_uni,  W, label='uniform')
+    g_opt_uni  = get_optimal_gains(stimuli_uni,  W, label='uniform',
+                                    theta=tunings.theta, adaptor_theta=adaptor_rad,
+                                    tuning_width=stim_gen.tuning_width)
     print("Computing optimal gains (biased)...")
-    g_opt_bias = get_optimal_gains(stimuli_bias, W, label='biased')
+    g_opt_bias = get_optimal_gains(stimuli_bias, W, label='biased',
+                                    theta=tunings.theta, adaptor_theta=adaptor_rad,
+                                    tuning_width=stim_gen.tuning_width)
 
     # Gain histogram — small plot, dark green bins, bold axes, no gridlines
     DARK_GREEN = '#006400'
 
     fig3, ax3 = plt.subplots(figsize=(4, 3))
     ax3.hist(g_opt_uni,  bins=20, color=DARK_GREEN, rwidth=0.9,
-             label='Uniform', alpha=0.85)
+                label='Uniform', alpha=0.85)
     ax3.hist(g_opt_bias, bins=20, color='#228B22',  rwidth=0.9,
-             label='Biased',  alpha=0.70)
+                label='Biased',  alpha=0.70)
     ax3.set_xlabel("Gain Value", fontsize=14, fontweight='bold')
     ax3.set_ylabel("Count",      fontsize=14, fontweight='bold')
     ax3.set_title("Gain Distribution", fontsize=13, fontweight='bold')
