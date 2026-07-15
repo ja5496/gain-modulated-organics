@@ -173,6 +173,6 @@ if __name__ == "__main__":
     choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
     while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
         choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
-    frame = Frame(dim=169, frame_type=choice)
-    np.savetxt(f"Frames/N169_{choice}_Frame.csv", frame.W, delimiter=",")
+    frame = Frame(dim=13, frame_type=choice)
+    np.savetxt(f"Frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
  
