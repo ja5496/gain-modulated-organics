@@ -18,13 +18,12 @@ from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from tqdm import tqdm
 import scipy
-from scipy.optimize import minimize, Bounds
+from scipy.optimize import minimize, Bounds, nnls
 
 sigma = 0.1       # normalization constant (matches V1Dynamics default)
 N_matrix = None   # set in __main__ after V1Tunings is instantiated
 
-def get_optimal_gains(stimuli, frame, label='', no_norm=False, poisson_noise=False, poisson_noise_seed=None,
-                       poisson_variance=False):
+def get_optimal_gains(stimuli, frame, label='', no_norm=False, poisson_variance=False):
     N, K = frame.shape  # N = 13, K = 91
 
     # Vectorize covariance generation (Removes the slow Python loop)
@@ -34,14 +33,6 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False, poisson_noise=Fal
     Z_sq = (stimuli) ** 2
     denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
     covariance_array = stimuli / denom
-
-    if poisson_noise:
-        # Add Poisson-like trial-to-trial noise (Var ~= Mean)
-        rng = np.random.default_rng(poisson_noise_seed)
-        if no_norm:
-            raw_input_drive = raw_input_drive + rng.normal(0.0, np.sqrt(np.maximum(raw_input_drive, 0.0)))
-        else:
-            covariance_array = covariance_array + rng.normal(0.0, np.sqrt(np.maximum(covariance_array, 0.0)))
 
     if no_norm == True:
         Covariance = np.cov(raw_input_drive, rowvar=False)
@@ -81,7 +72,7 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False, poisson_noise=Fal
     return g_opt
 
 def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_stimuli=None,
-                              poisson_noise=False, poisson_noise_seed=None, poisson_variance=False):
+                                poisson_variance=False):
     N, K = frame.shape  # N = 13, K = 91
 
     # Covariance generation
@@ -91,14 +82,6 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     Z_sq = (raw_input_drive) ** 2
     denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
     covariance_array = raw_input_drive / denom
-
-    if poisson_noise:
-        # Add Poisson-like trial-to-trial noise (Var ~= Mean)
-        rng = np.random.default_rng(poisson_noise_seed)
-        if no_norm:
-            raw_input_drive = raw_input_drive + rng.normal(0.0, np.sqrt(np.maximum(raw_input_drive, 0.0)))
-        else:
-            covariance_array = covariance_array + rng.normal(0.0, np.sqrt(np.maximum(covariance_array, 0.0)))
 
     if no_norm == True:
         Covariance = np.cov(raw_input_drive, rowvar=False)
@@ -136,15 +119,11 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     T_inv = np.linalg.inv(T)
     A = T_inv - np.eye(N) # Modified transformation for the optimal gains
     diag_WTAW = np.diag(frame.T @ A @ frame)
-
-    # Compute the exact left-hand side matrix (K, K)
     WTW = frame.T @ frame                              
     WTW_sq = WTW ** 2                                  # Element-wise square
     inv_WTW_sq = np.linalg.pinv(WTW_sq)
     g_opt = inv_WTW_sq @ diag_WTAW
-    
-    # Enforce non-negativity
-    #g_opt = np.maximum(g_opt, 0.0)
+
 
     # DIAGNOSTIC: sqrt(Covariance) vs its I + W@diag(g_opt)@W.T factorization
     fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
@@ -418,8 +397,10 @@ if __name__ == "__main__":
     axes[0, 1].set_title("Biased Ensemble", fontweight='bold', fontsize=18)
 
     for ax in axes[0]:
-        ax.set_xlim(0, 180)
+        ax.set_xlim(bins_hist[0], bins_hist[-1])
         ax.tick_params(labelbottom=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
 
     for i in range(N_BINS):
         axes[1, 0].plot(x_axis_sorted, binned_uni[i][sort_idx],
@@ -427,13 +408,17 @@ if __name__ == "__main__":
         axes[1, 1].plot(x_axis_sorted, binned_bias[i][sort_idx],
                         color=blue_colors[i], linewidth=2.0)
 
-    axes[1, 0].set_ylabel("Analytic Response", fontsize=18)
+    axes[1, 0].set_ylabel("Response", fontsize=18)
 
     for c in [0, 1]:
         ax = axes[1, c]
         ax.set_xlim(-90, 90)
+        ymin, ymax = ax.get_ylim()
+        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax)
         ax.grid(False)
         ax.set_xlabel("Stimulus Orientation (°)", fontsize=18)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
 
     plt.tight_layout()
     plt.show()
@@ -457,8 +442,12 @@ if __name__ == "__main__":
     avg_uni2  = np.mean(tuning_curves_uni[:,  probe_idx_for_stream], axis=1)
     avg_bias2 = np.mean(tuning_curves_bias[:, probe_idx_for_stream], axis=1)
 
-    norm_avg_uni2  = avg_uni2  / (np.mean(avg_uni2)  + 1e-9)
-    norm_avg_bias2 = avg_bias2 / (np.mean(avg_bias2) + 1e-9)
+    # Estimate avg firing rate from avg membrane potential
+    rec_avg_uni2 = half_wave_rectify(avg_uni2)
+    rec_avg_bias2 = half_wave_rectify(avg_bias2)
+
+    norm_avg_uni2  = rec_avg_uni2  / (np.mean(rec_avg_uni2)  + 1e-9)
+    norm_avg_bias2 = rec_avg_bias2 / (np.mean(rec_avg_bias2) + 1e-9)
 
     neuron_prefs_deg = tunings.theta * 180 / np.pi
     x_neuron         = (neuron_prefs_deg - adaptor_deg + 90) % 180 - 90
