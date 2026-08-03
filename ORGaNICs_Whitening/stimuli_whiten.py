@@ -93,8 +93,6 @@ class StimulusGenerator:
             return profiles, centers
         return profiles
 
-    import numpy as np
-
     def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=1.0,
                                  return_metadata=False, **kwargs):
         '''
