@@ -10,8 +10,12 @@ Three standalone diagnostics for exploring model behavior.
 3. Contrast response function – peak response vs. contrast (sigmoidal, σ = half-max contrast)
 
 Run from the ORGaNICs_Whitening/ directory:
-    python diagnostics_whiten.py
+    python analysis/diagnostics_whiten.py
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gc
 import numpy as np
@@ -40,7 +44,7 @@ np.random.seed(20)
 
 def _make_canonical_frame():
     """Load N169 frame and canonicalize so W @ W.T == (K/N)*I."""
-    frame = Frame(csv_path="Frames/N169_Frame.csv")
+    frame = Frame(csv_path="data/frames/N169_Frame.csv")
     S = frame.W @ frame.W.T
     eigvals, eigvecs = np.linalg.eigh(S)
     S_inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T

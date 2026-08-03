@@ -14,6 +14,11 @@ Compute network steady state response to varying contrasts in the following way:
 
 
 '''
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 from tunings_whiten import V1Tunings
@@ -25,7 +30,7 @@ N             = 169
 STREAM_LENGTH = 5460
 PROBE_STEPS   = 20
 N_CONTRASTS   = 15
-FRAME_PATH    = "Frames/N169_Frame.csv"
+FRAME_PATH    = "data/frames/N169_Frame.csv"
 
 
 # ----- STEP 1: Define input profile -----

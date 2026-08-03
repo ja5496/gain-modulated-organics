@@ -13,6 +13,10 @@ Pattern Adaptation..."
 
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 import gc
@@ -247,7 +251,7 @@ if __name__ == "__main__":
         print(' ----------- FIGURE 1 -----------')
         print("Initializing...")
         tunings = V1Tunings(N=N)
-        frame = Frame(csv_path="Frames/N169_Frame.csv")
+        frame = Frame(csv_path="data/frames/N169_Frame.csv")
         stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
         VM_0_stream = stim_gen.generate_input_ensembles(von_mises=True, von_mises_center=0)
         VM_90_stream = stim_gen.generate_input_ensembles(von_mises=True, von_mises_center=90)
@@ -367,7 +371,7 @@ if __name__ == "__main__":
         # 1. Initialize
         print("Initializing...")
         tunings = V1Tunings(N=N)
-        frame = Frame(csv_path="Frames/N169_Frame.csv")
+        frame = Frame(csv_path="data/frames/N169_Frame.csv")
         stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH)
         low_contrast_stream = stim_gen.generate_contrast_stream(peak_ln_contrast=-3)
         medium_contrast_stream, _, contrasts_med = stim_gen.generate_contrast_stream(

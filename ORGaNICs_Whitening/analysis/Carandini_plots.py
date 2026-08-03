@@ -10,6 +10,10 @@ Methodology:
 2. "Probe Phase": Freeze gains and measure responses to a clean sweep of test orientations.
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 import gc
@@ -154,7 +158,7 @@ if __name__ == "__main__":
     # 1. Initialize
     print("Initializing...")
     tunings = V1Tunings(N=N)
-    frame = Frame(csv_path="Frames/N169_Frame.csv")
+    frame = Frame(csv_path="data/frames/N169_Frame.csv")
     stim_gen = StimulusGenerator(N=N, num_angles=N, stream_length=STREAM_LENGTH, contrast=0.05)
     
     adaptor_idx = N // 2

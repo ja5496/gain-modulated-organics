@@ -11,6 +11,10 @@ Procedure:
 4. Print ranked table and plot average v² (± std) vs abs(sum(w)) (Figure 1)
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 from frame_whiten import Frame
@@ -50,7 +54,7 @@ sum_w = np.abs(W.sum(axis=0))   # (K,)
 sort_idx = np.argsort(avg_vsq)[::-1]
 
 # ── Build Gaussian frame and compute stats ────────────────────────────────────
-frame_g = Frame(dim=N, mercedes=False)
+frame_g = Frame(dim=N, frame_type='gaussian')
 W_g = frame_g.W
 avg_vsq_g, std_vsq_g = compute_vsq_stats(W_g, inputs)
 sort_idx_g = np.argsort(avg_vsq_g)[::-1]

@@ -21,6 +21,10 @@ Methodology:
    are computed in closed form from the probe, optimal gains, and mu.
 '''
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -28,7 +32,7 @@ from tqdm import tqdm
 from simulation_whiten import Frame
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
-import Analytic_responses as ar
+from analysis import Analytic_responses as ar
 
 # ----------------------------------------------------------------------------
 # Population structure
@@ -37,7 +41,7 @@ N_RF       = 13                    # primary neurons per receptive field
 N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL    = N_RF * N_SETS         # full primary-neuron population
 CRF_IDX    = 0                     # which of the 7 sets is the cRF (arbitrary; sets are symmetric)
-FRAME_PATH = "Frames/N13_mercedes_Frame.csv"
+FRAME_PATH = "data/frames/N13_mercedes_Frame.csv"
 
 sigma = 0.15
 Beta  = 0.5

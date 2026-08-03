@@ -11,6 +11,10 @@ Methodology:
     steady state responses.
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 from simulation_whiten import V1Dynamics, Frame
@@ -186,7 +190,7 @@ if __name__ == "__main__":
     # Initialize model components
     print("Initializing...")
     tunings   = V1Tunings(N=N)
-    frame_obj = Frame(csv_path="Frames/N13_mercedes_Frame.csv")
+    frame_obj = Frame(csv_path="data/frames/N13_mercedes_Frame.csv")
     W = frame_obj.W  # raw (N, K) numpy array used by the analytic functions
 
     # Set globals required by the analytic functions above
