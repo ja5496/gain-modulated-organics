@@ -131,11 +131,11 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
 
 
     # DIAGNOSTIC: sqrt(Covariance) vs its I + W@diag(g_opt)@W.T factorization
-    fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
+    '''fig_diag, ax_diag = plt.subplots(1, 2, figsize=(8, 4))
     vmin, vmax = T_inv.min(), T_inv.max()
     ax_diag[0].imshow(T_inv, vmin=vmin, vmax=vmax); ax_diag[0].set_title("T^-1")
     ax_diag[1].imshow(np.eye(N) + frame @ np.diag(g_opt) @ frame.T, vmin=vmin, vmax=vmax); ax_diag[1].set_title("I + W g W.T")
-    plt.tight_layout(); plt.show()
+    plt.tight_layout(); plt.show()'''
 
     return g_opt
 

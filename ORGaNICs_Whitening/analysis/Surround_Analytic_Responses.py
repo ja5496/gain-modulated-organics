@@ -42,7 +42,7 @@ N_TOTAL    = N_RF * N_SETS         # full primary-neuron population
 CRF_IDX    = 0                     # which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
-sigma = 15.0
+sigma = 14
 Beta  = 0.5
 
 
@@ -215,22 +215,8 @@ if __name__ == "__main__":
     g_opt = ar.get_optimal_gains_target(stimuli_bias, frame.W, label='biased',
                                         poisson_variance=True, uniform_stimuli=stimuli_uni)
 
-    # ==========================================================================
-    # CHECK 1 -- Plot M for each adaptation case
-    # ==========================================================================
     print("Building M for each condition...")
     M_by_condition = {cond: block_diag_M(frame.W, g_opt, cond) for cond in CONDITIONS}
-
-    fig_M, axes_M = plt.subplots(1, 4, figsize=(16, 4.2))
-    m_abs_max = max(np.abs(M).max() for M in M_by_condition.values())
-    for ax, cond in zip(axes_M, CONDITIONS):
-        M = M_by_condition[cond]
-        im = ax.imshow(M, cmap='RdBu_r', vmin=-m_abs_max, vmax=m_abs_max)
-        ax.set_title(f"{CONDITION_LABEL[cond]}\nshape={M.shape}", fontsize=11, fontweight='bold')
-        ax.set_xticks([]); ax.set_yticks([])
-    fig_M.colorbar(im, ax=axes_M, fraction=0.02, pad=0.02)
-    fig_M.suptitle("Block-diagonal feedback matrix M", fontweight='bold')
-    plt.show()
 
     # ==========================================================================
     # CHECK 2 -- Plot probe_input_drive, centered at the biased ensemble's adaptor
@@ -248,47 +234,11 @@ if __name__ == "__main__":
                         f"({adaptor_rad * 180 / np.pi:.1f} deg)", fontweight='bold')
     plt.tight_layout(); plt.show()
 
-    # ==========================================================================
-    # CHECK 3 -- mu for each full_spatial_stimuli case
-    # ==========================================================================
     mu_by_condition = {}
     for cond in CONDITIONS:
         print(f"Computing mu ({CONDITION_LABEL[cond]})...")
         full_stimuli = [full_spatial_stimuli(z, cond) for z in stimuli_bias]
         mu_by_condition[cond] = get_mu(full_stimuli, M_by_condition[cond])
-
-    fig_mu, ax_mu = plt.subplots(figsize=(9, 4))
-    for cond in CONDITIONS:
-        ax_mu.plot(mu_by_condition[cond], color=CONDITION_COLOR[cond],
-                   linewidth=2.5, label=CONDITION_LABEL[cond])
-    for s in range(1, N_SETS):
-        ax_mu.axvline(s * N_RF - 0.5, color='grey', linestyle='--', linewidth=1.0)
-    ax_mu.set_xlabel("Neuron index (7 sets x 13 neurons; set 0 = cRF)")
-    ax_mu.set_ylabel("mu")
-    ax_mu.set_title("Self-consistent mu per adaptation case", fontweight='bold')
-    ax_mu.legend()
-    plt.tight_layout(); plt.show()
-
-    # ==========================================================================
-    # CHECK 4 -- Response (get_response) to the adaptor-centered probe, per condition
-    # ==========================================================================
-    print("Computing responses to the probe...")
-    response_by_condition = {
-        cond: get_response(probe_drive, mu_by_condition[cond], M_by_condition[cond])
-        for cond in CONDITIONS
-    }
-
-    fig_resp, ax_resp = plt.subplots(figsize=(9, 4))
-    for cond in CONDITIONS:
-        ax_resp.plot(response_by_condition[cond], color=CONDITION_COLOR[cond],
-                     linewidth=2.5, label=CONDITION_LABEL[cond])
-    for s in range(1, N_SETS):
-        ax_resp.axvline(s * N_RF - 0.5, color='grey', linestyle='--', linewidth=1.0)
-    ax_resp.set_xlabel("Neuron index (7 sets x 13 neurons; set 0 = cRF)")
-    ax_resp.set_ylabel("Response")
-    ax_resp.set_title("Response to adaptor-centered probe, per adaptation case", fontweight='bold')
-    ax_resp.legend()
-    plt.tight_layout(); plt.show()
 
     # ==========================================================================
     # CHECK 5 -- Contrast response functions of the cRF neuron that prefers the adaptor
@@ -336,7 +286,7 @@ if __name__ == "__main__":
     ax_crf.grid(False)
     ax_crf.spines['top'].set_visible(False)
     ax_crf.spines['right'].set_visible(False)
-    ax_crf.spines['left'].set_linewidth(2.5)
+    ax_crf.spines['left'].set_visible(False)
     ax_crf.spines['bottom'].set_linewidth(2.5)
     ax_crf.tick_params(axis='x', width=2.5, length=6, labelsize=12)
     ax_crf.legend(fontsize=10, frameon=False)
@@ -424,7 +374,7 @@ if __name__ == "__main__":
     ax_flank.grid(False)
     ax_flank.spines['top'].set_visible(False)
     ax_flank.spines['right'].set_visible(False)
-    ax_flank.spines['left'].set_linewidth(2.5)
+    ax_flank.spines['left'].set_visible(False)
     ax_flank.spines['bottom'].set_linewidth(2.5)
     ax_flank.tick_params(axis='x', width=2.5, length=6, labelsize=12)
     ax_flank.legend(fontsize=10, frameon=False)
