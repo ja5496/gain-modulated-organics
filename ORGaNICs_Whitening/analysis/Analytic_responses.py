@@ -13,7 +13,8 @@ Methodology:
 
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -190,7 +191,7 @@ if __name__ == "__main__":
     # Initialize model components
     print("Initializing...")
     tunings   = V1Tunings(N=N)
-    frame_obj = Frame(csv_path="data/frames/N13_mercedes_Frame.csv")
+    frame_obj = Frame(csv_path=os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv"))
     W = frame_obj.W  # raw (N, K) numpy array used by the analytic functions
 
     # Set globals required by the analytic functions above
