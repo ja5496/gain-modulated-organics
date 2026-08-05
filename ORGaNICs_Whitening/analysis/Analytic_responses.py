@@ -110,9 +110,9 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
         uniform_raw_drive = uniform_stimuli * Beta
         uniform_Z_sq = uniform_raw_drive ** 2
         uniform_denom = np.sqrt(sigma**2 + (N_matrix @ uniform_Z_sq.T).T)
-        uniform_covariance_array = uniform_raw_drive / uniform_denom
+        uniform_covariance_matrix = uniform_raw_drive / uniform_denom
         uniform_Covariance = (np.cov(uniform_raw_drive, rowvar=False) if no_norm
-                              else np.cov(uniform_covariance_array, rowvar=False))
+                              else np.cov(uniform_covariance_matrix, rowvar=False))
         target = np.mean(np.diag(uniform_Covariance))
     else:
         target = np.mean(eigenvalues) # Set the mean variance as the upper bound ("target")

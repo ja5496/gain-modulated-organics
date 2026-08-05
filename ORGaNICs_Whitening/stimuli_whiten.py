@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from typing import Literal
 
 '''
 ---- stimuli_whiten.py ----
@@ -9,16 +10,23 @@ These responses are fed into our V1 dynamics as the input layer.
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, Ensemble=False, contrast=1.0):
+    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, Ensemble=False, contrast=1.0, N_RF = 13, N_SETS = 7):
         self.N = N # Number of primary neurons
         self.num_angles = num_angles # Number of distinct input orientations
         self.stream_length = stream_length # Total length of the input stream
         self.tuning_width = tuning_width # Width of raised cosine input
         self.contrast = contrast
+        self.N_RF = N_RF
+        self.N_SETS = N_SETS
 
         # Preferred orientations of the stimuli from 0 to pi
         self.theta_tunings = np.linspace(0, np.pi, N, endpoint=False)
         self.theta_inputs = np.linspace(0, np.pi, num_angles, endpoint=False)
+        # Preferred orientations of the N_RF receptive-field neurons. Kept separate from
+        # theta_inputs: num_angles sets the resolution of the discrete stimulus identities
+        # drawn at each timestep, while theta_RF is the (independent) set of tuning centers
+        # the RF neurons project that continuous stimulus angle onto to form their drive.
+        self.theta_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
 
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
@@ -92,6 +100,104 @@ class StimulusGenerator:
         if return_angles:
             return profiles, centers
         return profiles
+    
+    def generate_surround_ensembles(self, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
+                                 biased=False, return_angles=False,
+                                 duration=20, add_poisson_noise=False, poisson_fano=1.0):
+        '''
+        Generate uniform or biased ensemble of raised cosine input profiles
+        centered at random orientations, projected onto the N_RF receptive-field
+        neurons' tuning curves to form their drive.
+
+        Args:
+            poisson_fano (float): Fano factor (Var/mean) of the injected noise, only used
+                when add_poisson_noise=True. 1.0 (default) is true Poisson noise. Scale this
+                up/down to make neurons noisier/quieter relative to their firing rate.
+
+        Returns:
+            np.ndarray: Shape ( N_RF * N_SETS , stream_length )
+            If return_angles=True, returns (profiles, centers) where centers is
+            the per-timestep stimulus angle array of shape (stream_length,).
+        '''
+
+        # Generate the indices of all the distinct stimuli
+        base_indices = np.arange(self.num_angles)
+        
+        # Append it on itself until it reaches self.stream_length
+        num_inputs = int(self.stream_length / duration) # number of stimuli shown 
+        n_full  = num_inputs // self.num_angles
+        n_extra = num_inputs % self.num_angles
+        full_indices  = np.tile(base_indices, n_full)
+        extra_indices = np.random.choice(base_indices, size=n_extra, replace=False)
+        indices = np.concatenate([full_indices, extra_indices])
+
+        # Optionally overwrite roughly 33% of the indices with the adaptor index
+        if biased:
+            one_third_split = len(indices) // 3 # Calculate the index representing the first third
+            adaptor_idx = self.num_angles // 2 # Define the adaptor index
+            indices[:one_third_split] = adaptor_idx # Apply the mask to the first third of the array
+
+        # Randomly shuffle the indices array in-place
+        np.random.shuffle(indices) 
+
+        # Adding the duration of the inputs in so it doesn't flash a new one every time step. 
+        indices = np.repeat(indices, duration)
+
+        # Convert indices to actual orientation centers; shape: (stream_length,)
+        centers = self.theta_inputs[indices]
+
+        # Project the (num_angles-resolution) stimulus angle at each timestep onto the
+        # N_RF receptive-field neurons' own tuning curves - matrix of shape (N_RF, stream_length).
+        # num_angles only controls how finely the discrete stimulus identity is sampled above;
+        # it has no bearing on how many neurons receive the resulting drive.
+        delta_theta = self.theta_RF[:, np.newaxis] - centers[np.newaxis, :]
+        delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
+        #profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
+        profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
+
+        # 5. Normalize, scale, then mean-center each time step
+        scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+        profiles = self.contrast * scale * profiles / np.max(profiles)
+
+        if add_poisson_noise:
+            # Gaussian approximation to Poisson noise, applied independently at every
+            # (neuron, timestep) - including within a single held-constant presentation, so a
+            # "constant" stimulus still produces trial-by-trial variability in the drive.
+            # Mean is unchanged (E[profiles + noise] = profiles); Var = poisson_fano * profiles,
+            # i.e. variance proportional to the instantaneous drive, matching true Poisson
+            # statistics (Var = mean) at poisson_fano=1.0.
+            #
+            # This is deliberately NOT implemented as a rescaled discrete Poisson draw
+            # (k * Poisson(profiles/k)): that trick keeps Var = k*profiles correct on average,
+            # but raising k to make the noise louder also shrinks the underlying Poisson rate
+            # (profiles/k), which makes the process increasingly bursty/quantized (rare,
+            # huge-magnitude spikes) rather than smoothly louder. The Gaussian form here scales
+            # cleanly to any poisson_fano - turn it up as far as needed to make rate-proportional
+            # noise the dominant contributor to variance, with no burstiness ceiling.
+            noise_std = np.sqrt(poisson_fano * np.clip(profiles, 0, None))
+            profiles = profiles + np.random.normal(0, noise_std)
+
+        # Extend each individual profile (i.e. each column/timestep of the stream) from
+        # N_RF neurons to the full N_RF * N_SETS population, placing the driven profile
+        # in the CRF and/or surround slots and a flat baseline elsewhere. baseline is
+        # broadcast across the full stream length so this applies per-timestep.
+        baseline = np.full((self.N_RF, profiles.shape[1]), 0.1)
+        match adapt_location:
+            case 'adapt CRF only':
+                full_profiles = np.concatenate([profiles] + [baseline] * (self.N_SETS - 1), axis=0)
+                profiles = full_profiles
+            case 'adapt surround only':
+                full_profiles = np.concatenate([baseline] + [profiles] * (self.N_SETS - 1), axis=0)
+                profiles = full_profiles
+            case 'adapt CRF and surround':
+                full_profiles = np.concatenate([profiles] * (self.N_SETS), axis=0)
+                profiles = full_profiles
+
+        if return_angles:
+            return profiles, centers
+        
+        return profiles
+
 
     def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=1.0,
                                  return_metadata=False, **kwargs):
@@ -175,6 +281,48 @@ class StimulusGenerator:
         plt.tight_layout()
         plt.show()
 
+    def plot_surround_covariance_matrices(self, adapt_location='adapt CRF only', add_poisson_noise=True, poisson_fano=5.0):
+        '''Plot heatmaps of the covariance matrix restricted to the first N_RF rows
+        (the classical receptive field neurons) of the population generated by
+        generate_surround_ensembles, for both uniform and biased ensembles.
+
+        Defaults to add_poisson_noise=True, poisson_fano=30.0: at poisson_fano=1.0 (true
+        Poisson) the rate-proportional noise is dominated by the deterministic
+        condition-to-condition swings in the drive and the diagonal still shows a spurious
+        secondary peak at the neuron orthogonal to the adaptor; poisson_fano~30 is large
+        enough for the noise to dominate and reveal a clean, monotonic falloff in variance
+        with distance from the adaptor. Pass add_poisson_noise=False to see the raw,
+        noise-free covariance structure instead.
+        '''
+        uni  = self.generate_surround_ensembles(adapt_location, biased=False, add_poisson_noise=add_poisson_noise, poisson_fano=poisson_fano)
+        bias = self.generate_surround_ensembles(adapt_location, biased=True, add_poisson_noise=add_poisson_noise, poisson_fano=poisson_fano)
+
+        uni_rf  = uni[:self.N_RF]
+        bias_rf = bias[:self.N_RF]
+
+        cov_uni  = np.cov(uni_rf,  rowvar=True)
+        cov_bias = np.cov(bias_rf, rowvar=True)
+
+        ticks = np.linspace(0, self.N_RF - 1, min(5, self.N_RF)).astype(int)
+        tick_labels = [str(t) for t in ticks]
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        for ax, mat, title in zip(axes, [cov_uni, cov_bias],
+                                  ['Uniform Ensemble (CRF)', 'Biased Ensemble (CRF)']):
+            im = ax.imshow(mat, cmap='viridis', aspect='auto')
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            ax.set_title(title, fontsize=20, fontweight='bold', pad=12)
+            ax.set_xlabel('CRF neuron index', fontsize=18, fontweight='bold')
+            ax.set_ylabel('CRF neuron index', fontsize=18, fontweight='bold')
+            ax.set_xticks(ticks); ax.set_xticklabels(tick_labels, fontsize=14)
+            ax.set_yticks(ticks); ax.set_yticklabels(tick_labels, fontsize=14)
+            for spine in ax.spines.values():
+                spine.set_linewidth(2.5)
+            ax.tick_params(width=2.5, length=6)
+
+        plt.tight_layout()
+        plt.show()
+
     def plot_tuning_curves(self):
         '''Visualize the tuning curve for each stimulus orientation.'''
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -246,7 +394,6 @@ class StimulusGenerator:
         plt.tight_layout()
         plt.show()
 
-
     def plot_contrast_distributions(self, peak_ln_contrasts=(0, -1.5, -3),
                                      contrast_sigma=1.0,
                                      titles=('High Contrast', 'Medium Contrast', 'Low Contrast')):
@@ -305,6 +452,7 @@ if __name__ == "__main__":
     stim_gen = StimulusGenerator()
     #stim_gen.plot_covariance_matrices()
     #stim_gen.plot_tuning_curves()
-    stim_gen.plot_von_mises_distributions()
-    stim_gen.plot_contrast_distributions()
+    #stim_gen.plot_von_mises_distributions()
+    #stim_gen.plot_contrast_distributions()
+    stim_gen.plot_surround_covariance_matrices()
     

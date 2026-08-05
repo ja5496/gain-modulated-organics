@@ -4,6 +4,7 @@ Creates a fixed overcomplete frame of synaptic weights used during the whitening
 primary neurons onto interneuron axes (the axes of this frame). Frame is an N x K matrix where N is the number 
 of primary neurons and K >= N(N+1)/2 (I set this equal in this code). Taken from Ch.2 of Lyndon Duong's thesis.
 '''
+import os
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -168,6 +169,43 @@ class Frame:
         return W
 
 
+def compute_uniform_target_covariance(N_RF=13, sigma=0.1, Beta=0.5, stream_length=10920):
+    '''
+    Idealized covariance matrix of normalized responses to a uniform ensemble, for a
+    single receptive field (N_RF neurons, N_SETS=1 so generate_surround_ensembles returns
+    just the CRF block with no surround/baseline rows appended).
+
+    Normalization mirrors the "if uniform_stimuli is not None" branch of
+    get_optimal_gains_target (analysis/Analytic_responses.py:107-116): responses are scaled
+    by Beta, then divisively normalized by a pooled, semi-saturating denominator
+    (sqrt(sigma^2 + pooled squared drive)) before taking the covariance - N_matrix there is
+    an all-ones (N_RF, N_RF) pooling matrix (see V1Tunings.N_matrix), sigma=0.1 matches
+    V1Dynamics's default, and Beta=0.5 matches get_optimal_gains_target's Beta.
+    '''
+    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=1, stream_length=stream_length)
+    profiles = stim_gen.generate_surround_ensembles('adapt CRF only', biased=False)  # (N_RF, T)
+
+    uniform_stimuli = profiles.T  # (T, N_RF): rows = timesteps, columns = neurons, matching np.cov(rowvar=False)
+    N_matrix = np.ones((N_RF, N_RF))
+
+    raw_input_drive = uniform_stimuli * Beta
+    Z_sq = raw_input_drive ** 2
+    denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
+    covariance_array = raw_input_drive / denom
+
+    return np.cov(covariance_array, rowvar=False)
+
+
+def save_uniform_target_covariance(N_RF=13, out_dir="data/target_covs"):
+    '''Computes the uniform target covariance and saves it to <out_dir>/uniform_target_covariance.csv.'''
+    Covariance = compute_uniform_target_covariance(N_RF=N_RF)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "uniform_target_covariance.csv")
+    np.savetxt(out_path, Covariance, delimiter=",")
+    print(f"Saved uniform target covariance ({Covariance.shape}) to {out_path}")
+    return Covariance
+
+
 if __name__ == "__main__":
     np.random.seed(42)
     choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
@@ -175,4 +213,6 @@ if __name__ == "__main__":
         choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
     frame = Frame(dim=13, frame_type=choice)
     np.savetxt(f"Frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
- 
+
+    save_uniform_target_covariance(N_RF=frame.dim)
+
