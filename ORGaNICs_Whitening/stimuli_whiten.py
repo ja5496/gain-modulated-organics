@@ -181,7 +181,7 @@ class StimulusGenerator:
         # N_RF neurons to the full N_RF * N_SETS population, placing the driven profile
         # in the CRF and/or surround slots and a flat baseline elsewhere. baseline is
         # broadcast across the full stream length so this applies per-timestep.
-        baseline = np.full((self.N_RF, profiles.shape[1]), 0.1)
+        baseline = np.full((self.N_RF, profiles.shape[1]), 0.15)
         match adapt_location:
             case 'adapt CRF only':
                 full_profiles = np.concatenate([profiles] + [baseline] * (self.N_SETS - 1), axis=0)

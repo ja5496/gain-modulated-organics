@@ -203,7 +203,9 @@ class V1Dynamics_Surround:
         self.tau_avg = 10 
         self.tau_avg_z = 400
         
-        self.sigma = 15
+        self.sigma = 0.1  # matches V1Dynamics's default; sigma=15 made the constant
+                          # (sigma/2)**2 floor in du_dt overwhelm u from a zero initial
+                          # state, causing runaway positive feedback via pool_term's u_plus**2
         self.alpha = 0.0
         self.beta = 0.5
 
@@ -254,7 +256,7 @@ class V1Dynamics_Surround:
 
         sigma_term = (self.sigma / 2) ** 2
         pool_term = self.N_matrix @ (y_plus * (u_plus ** 2))
-        
+
         # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
         dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
