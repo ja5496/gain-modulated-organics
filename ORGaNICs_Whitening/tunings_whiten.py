@@ -38,6 +38,9 @@ class V1Tunings: # Artificial tuning curves of each neuron
 
         if Surround:
             W = block_diag(*[W] * self.N_SETS)
+            max_eig_full = np.max(np.linalg.eigvals(W))
+            W = W / max_eig_full
+            print(np.max(np.linalg.eigvals(W)))
 
         return W / max_eig
 
@@ -95,7 +98,7 @@ class V1Tunings: # Artificial tuning curves of each neuron
 
 
 if __name__ == "__main__":
-    tunings = V1Tunings(N=60, sigma_exc=0.15, sigma_inh=0.4, A_exc=1.0, A_inh=0.4)
+    tunings = V1Tunings(N=13, sigma_exc=0.15, sigma_inh=0.4, A_exc=1.0, A_inh=0.4)
     print(f"W_yy shape: {tunings.W_yy.shape}")
     print(f"W_yy min: {tunings.W_yy.min():.3f}, max: {tunings.W_yy.max():.3f}")
     #tunings.plot_recurrent_weights()

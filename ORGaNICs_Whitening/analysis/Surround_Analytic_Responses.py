@@ -50,7 +50,7 @@ ENSEMBLE_CONTRAST = 0.8      # contrast of the adaptation ensembles (baseline & 
 TUNING_WIDTH      = 0.75
 N_CONTRASTS   = 20
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 0.15   
+PROBE_CONTRAST = 0.05   
 N_PROBES       = 720
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
@@ -102,12 +102,12 @@ def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt 
 def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     match adapt_location:
         case 'adapt CRF only':
-            baseline = np.full(N_RF, 2.0)            
+            baseline = np.full(N_RF, 1.0)            
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([stimuli] + [baseline] * repeats)
             return full_stimuli
         case 'adapt surround only':
-            baseline = np.full(N_RF, 2.0)
+            baseline = np.full(N_RF, 1.0)
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([baseline] + [stimuli] * repeats)
             return full_stimuli
@@ -115,7 +115,7 @@ def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'ada
             full_stimuli = np.concatenate([stimuli] * N_SETS)
             return full_stimuli
         case 'no adaptation':
-            baseline = np.full(N_RF, 2.0)            
+            baseline = np.full(N_RF, 1.0)            
             full_stimuli = np.concatenate([baseline] * N_SETS)
             return full_stimuli
 
@@ -181,7 +181,8 @@ if __name__ == "__main__":
                                  tuning_width=TUNING_WIDTH, contrast=ENSEMBLE_CONTRAST)
 
     print("Generating local uniform and biased ensembles...")
-    seq_uni = stim_gen.generate_input_ensembles(biased=False, duration=1)
+    seq_uni, centers_uni = stim_gen.generate_input_ensembles(
+        biased=False, return_angles=True, duration=1)
     stimuli_uni = list(seq_uni.T)
 
     adaptor_idx = N_RF // 2
@@ -379,3 +380,112 @@ if __name__ == "__main__":
     ax_flank.tick_params(axis='x', width=2.5, length=6, labelsize=12)
     ax_flank.legend(fontsize=10, frameon=False)
     plt.tight_layout(); plt.show()
+
+    # ==========================================================================
+    # FIGURE 1 (surround) -- recreates Figure 1 from Analytic_responses.py with
+    # the exact same layout/style and the exact same input-ensemble histograms
+    # (top row: Uniform Ensemble / Biased Ensemble). The only thing that changes
+    # is the adaptation state driving the bottom-row tuning curves: instead of
+    # separate uniform/biased gain contexts (that script had no surround), the
+    # left column uses the 'no adaptation' state and the right column uses the
+    # 'adapt CRF only' state from this script's block-diagonal model. The probe
+    # still sweeps the full 0-180 deg range and always drives the whole cRF +
+    # surround population (probe_input_drive), matching the original's coverage.
+    # ==========================================================================
+    print("Recreating Figure 1 (cRF-only-adapted state)...")
+    N_BINS = N_RF
+
+    uni_angles_deg  = centers_uni  * 180 / np.pi
+    bias_angles_deg = centers_bias * 180 / np.pi
+
+    discrete_step_hist = 180 / N_RF
+    bins_hist    = np.linspace(0, 180, N_BINS + 1) - (discrete_step_hist / 2)
+    weights_uni  = np.ones_like(uni_angles_deg)  / len(uni_angles_deg)
+    weights_bias = np.ones_like(bias_angles_deg) / len(bias_angles_deg)
+
+    # Tuning curves for the cRF neurons only, under each adaptation state,
+    # probed across the full orientation range (probe_angles/N_PROBES already
+    # cover the whole 0-180 deg range and the whole cRF+surround population).
+    crf_slice = slice(CRF_IDX * N_RF, (CRF_IDX + 1) * N_RF)
+
+    def crf_tuning_curves(cond):
+        resp = np.zeros((N_RF, N_PROBES))
+        for i, ang in enumerate(probe_angles):
+            probe = probe_input_drive(ang, PROBE_CONTRAST)
+            y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])
+            resp[:, i] = y[crf_slice]
+        return resp
+
+    tc_none = crf_tuning_curves('no adaptation')
+    tc_crf  = crf_tuning_curves('adapt CRF and surround') #adapt CRF only
+
+    # Bin by neuron preference (same logic/dimensions as get_tuning_curves in
+    # Analytic_responses.py); get_response already half-wave rectifies, so no
+    # extra rectification step is needed here.
+    def bin_by_preference(response, neuron_preferences, n_bins=N_BINS):
+        discrete_step = np.pi / len(neuron_preferences)
+        bin_edges = np.linspace(0, np.pi, n_bins + 1) - (discrete_step / 2)
+        binned = np.zeros((n_bins, response.shape[1]))
+        bin_idx = np.digitize(neuron_preferences, bin_edges) - 1
+        bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+        for b in range(n_bins):
+            mask = bin_idx == b
+            if np.any(mask):
+                binned[b, :] = np.mean(response[mask, :], axis=0)
+        return binned
+
+    binned_none = bin_by_preference(tc_none, tunings.theta)
+    binned_crf  = bin_by_preference(tc_crf,  tunings.theta)
+
+    # Normalize both panels against the 'no adaptation' (reference/control)
+    # panel's per-bin min/max, exactly as process_pair normalizes bias against
+    # the uniform reference in Analytic_responses.py.
+    bin_max = np.max(binned_none, axis=1, keepdims=True)
+    bin_min = np.min(binned_none, axis=1, keepdims=True)
+    norm_none = (binned_none - bin_min) / (bin_max - bin_min + 1e-9)
+    norm_crf  = (binned_crf  - bin_min) / (bin_max - bin_min + 1e-9)
+
+    x_axis        = (probe_angles_deg - adaptor_deg + 90) % 180 - 90
+    sort_idx      = np.argsort(x_axis)
+    x_axis_sorted = x_axis[sort_idx]
+
+    blue_colors = plt.cm.Blues(np.linspace(0.2, 1.0, N_BINS))
+
+    fig1s, axes1s = plt.subplots(2, 2, figsize=(10, 6), sharey='row',
+                                 gridspec_kw={'height_ratios': [0.8, 1.0]})
+
+    axes1s[0, 0].hist(uni_angles_deg,  bins=bins_hist, weights=weights_uni,
+                      color='black', rwidth=0.9)
+    axes1s[0, 0].set_title("Uniform Ensemble",  fontweight='bold', fontsize=18)
+    axes1s[0, 0].set_ylabel("Probability", fontsize=18)
+
+    axes1s[0, 1].hist(bias_angles_deg, bins=bins_hist, weights=weights_bias,
+                      color='black', rwidth=0.9)
+    axes1s[0, 1].set_title("Biased Ensemble", fontweight='bold', fontsize=18)
+
+    for ax in axes1s[0]:
+        ax.set_xlim(bins_hist[0], bins_hist[-1])
+        ax.tick_params(labelbottom=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    for i in range(N_BINS):
+        axes1s[1, 0].plot(x_axis_sorted, norm_none[i][sort_idx],
+                          color=blue_colors[i], linewidth=2.0)
+        axes1s[1, 1].plot(x_axis_sorted, norm_crf[i][sort_idx],
+                          color=blue_colors[i], linewidth=2.0)
+
+    axes1s[1, 0].set_ylabel("Response", fontsize=18)
+
+    for c in [0, 1]:
+        ax = axes1s[1, c]
+        ax.set_xlim(-90, 90)
+        ymin, ymax = ax.get_ylim()
+        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax)
+        ax.grid(False)
+        ax.set_xlabel("Stimulus Orientation (°)", fontsize=18)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()

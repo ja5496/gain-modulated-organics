@@ -258,7 +258,7 @@ class V1Dynamics_Surround:
         pool_term = self.N_matrix @ (y_plus * (u_plus ** 2))
 
         # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
-        dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / self.tau_y
+        dy_dt = (-y + input_drive + recurrent_drive ) / self.tau_y # MISSING - full_gain_feedback
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
         
