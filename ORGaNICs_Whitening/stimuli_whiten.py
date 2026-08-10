@@ -149,15 +149,35 @@ class StimulusGenerator:
         # Project the (num_angles-resolution) stimulus angle at each timestep onto the
         # N_RF receptive-field neurons' own tuning curves - matrix of shape (N_RF, stream_length).
         # num_angles only controls how finely the discrete stimulus identity is sampled above;
-        # it has no bearing on how many neurons receive the resulting drive.
+        # it has no bearing on how many neurons receive the resulting drive. Left raw
+        # (unnormalized) here - normalization happens below, after extension to the full
+        # population, so it sees the true full-population input vector (see note below).
         delta_theta = self.theta_RF[:, np.newaxis] - centers[np.newaxis, :]
         delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
-        #profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
-        profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
+        #profile = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
+        profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
 
-        # 5. Normalize, scale, then mean-center each time step
-        scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
-        profiles = self.contrast * scale * profiles / np.max(profiles)
+        # Extend each individual (still-raw) profile (i.e. each column/timestep of the stream)
+        # from N_RF neurons to the full N_RF * N_SETS population, placing the driven profile
+        # in the CRF and/or surround slots and a flat baseline elsewhere. baseline is
+        # broadcast across the full stream length so this applies per-timestep. This happens
+        # BEFORE normalization (unlike before) so that the L2-normalize-to-unit-length step
+        # below acts on the true full-population input vector b*z, not just the driven
+        # N_RF-neuron sub-block - the ORGaNICs papers' fixed-point derivation assumes ||z|| is
+        # O(1) for the whole population, and normalizing only the driven sub-block left the
+        # full vector's length scaling with sqrt(N_SETS) once baseline was concatenated in.
+        baseline = np.full((self.N_RF, profile.shape[1]), 0.15)
+        match adapt_location:
+            case 'adapt CRF only':
+                full_profile = np.concatenate([profile] + [baseline] * (self.N_SETS - 1), axis=0)
+            case 'adapt surround only':
+                full_profile = np.concatenate([baseline] + [profile] * (self.N_SETS - 1), axis=0)
+            case 'adapt CRF and surround':
+                full_profile = np.concatenate([profile] * (self.N_SETS), axis=0)
+
+        # 5. Normalize the full population vector to unit length, then scale by contrast.
+        scale = 1 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+        profiles = self.contrast * scale * full_profile / np.linalg.norm(full_profile, keepdims=True, axis=0)
 
         if add_poisson_noise:
             # Gaussian approximation to Poisson noise, applied independently at every
@@ -177,25 +197,9 @@ class StimulusGenerator:
             noise_std = np.sqrt(poisson_fano * np.clip(profiles, 0, None))
             profiles = profiles + np.random.normal(0, noise_std)
 
-        # Extend each individual profile (i.e. each column/timestep of the stream) from
-        # N_RF neurons to the full N_RF * N_SETS population, placing the driven profile
-        # in the CRF and/or surround slots and a flat baseline elsewhere. baseline is
-        # broadcast across the full stream length so this applies per-timestep.
-        baseline = np.full((self.N_RF, profiles.shape[1]), 0.15)
-        match adapt_location:
-            case 'adapt CRF only':
-                full_profiles = np.concatenate([profiles] + [baseline] * (self.N_SETS - 1), axis=0)
-                profiles = full_profiles
-            case 'adapt surround only':
-                full_profiles = np.concatenate([baseline] + [profiles] * (self.N_SETS - 1), axis=0)
-                profiles = full_profiles
-            case 'adapt CRF and surround':
-                full_profiles = np.concatenate([profiles] * (self.N_SETS), axis=0)
-                profiles = full_profiles
-
         if return_angles:
             return profiles, centers
-        
+
         return profiles
 
 

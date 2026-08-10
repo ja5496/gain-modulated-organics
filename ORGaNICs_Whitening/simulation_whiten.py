@@ -206,11 +206,10 @@ class V1Dynamics_Surround:
         self.sigma = 0.1  # matches V1Dynamics's default; sigma=15 made the constant
                           # (sigma/2)**2 floor in du_dt overwhelm u from a zero initial
                           # state, causing runaway positive feedback via pool_term's u_plus**2
-        self.alpha = 0.0
         self.beta = 0.5
 
-    def half_wave_rectify(self, y):
-        return (np.maximum(y,0))**2
+    def half_wave_rectify(self, y, Beta=2.0):
+        return (np.maximum(y,0)) ** Beta
 
     def _derivatives(self, state, z_t):
         K = self.frame.K
@@ -229,10 +228,12 @@ class V1Dynamics_Surround:
         v_cRF = state[3*N_TOT+2*K:3*N_TOT+3*K]
         v_surround = state[3*N_TOT+3*K:3*N_TOT+4*K]
 
-        u_plus = self.half_wave_rectify(u)
-        y_plus = self.half_wave_rectify(y)
-        a_plus = self.half_wave_rectify(a)
+        u_plus = self.half_wave_rectify(u, 0.5)
+        y_plus = self.half_wave_rectify(y, 2.0)
+        y_minus = self.half_wave_rectify(-y, 2.0)
+        a_plus = self.half_wave_rectify(a, 1.0)
         sqrt_y_plus = np.sqrt(y_plus)
+        sqrt_y_minus = np.sqrt(y_minus)
 
         # Derive Targets (theta_t) from target covariance matrix: theta_t[i] = w_i @ uniform_target_covariance @ w_i.T,
         # where w_i is the i-th frame vector (column i of self.frame.W) - one target per interneuron.
@@ -248,8 +249,8 @@ class V1Dynamics_Surround:
         dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
         surround_gain_feedback = self.frame.W @ (g_surround * v_surround)
 
-        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ sqrt_y_plus)
-        input_drive = (self.beta * z_t) / 2
+        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ ( sqrt_y_plus - sqrt_y_minus )) # Equation with complementary receptive fields
+        input_drive = (self.beta * z_t)
 
         # Local gain feedback matrix that can be applied to the full y dynamics
         full_gain_feedback = np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
@@ -258,9 +259,9 @@ class V1Dynamics_Surround:
         pool_term = self.N_matrix @ (y_plus * (u_plus ** 2))
 
         # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
-        dy_dt = (-y + input_drive + recurrent_drive ) / self.tau_y # MISSING - full_gain_feedback
+        dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
-        da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
+        da_dt = (-a + (1 + a_plus) * u_plus) / self.tau_a
         
         return np.concatenate([dy_dt, du_dt, da_dt, dg_cRF_dt, dg_surround_dt, dv_cRF_dt, dv_surround_dt])
         

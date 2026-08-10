@@ -24,8 +24,9 @@ class V1Tunings: # Artificial tuning curves of each neuron
         (wide Gaussian).
         '''
 
-        W = np.zeros((self.N, self.N))
-        for i in range(self.N):
+        #W = np.zeros((self.N, self.N))
+        W = np.eye(self.N) # MAXIMALLY STABLE RECURRENT WEIGHTS FOR TESTING
+        '''for i in range(self.N):
             d = np.abs(self.theta - self.theta[i])
             d = np.minimum(d, np.pi - d)  # wrap for circular stimulus space
             exc = A_exc * np.exp(-d**2 / (2 * sigma_exc**2))
@@ -34,7 +35,7 @@ class V1Tunings: # Artificial tuning curves of each neuron
 
                     # Normalize so maximum eigenvalue is 1
         max_eig = np.max(np.real(np.linalg.eigvals(W)))
-        W = W / max_eig
+        W = W / max_eig'''
 
         if Surround:
             W = block_diag(*[W] * self.N_SETS)
@@ -42,7 +43,7 @@ class V1Tunings: # Artificial tuning curves of each neuron
             W = W / max_eig_full
             print(np.max(np.linalg.eigvals(W)))
 
-        return W / max_eig
+        return W #/ max_eig
 
 
     

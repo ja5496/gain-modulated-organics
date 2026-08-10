@@ -70,7 +70,7 @@ def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     delta = theta_grid - input_theta  # Distance between neuron preference from stimulus orientation
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2
     profile = np.exp(-delta**2 / (2 * tuning_width**2))
-    RF_gaussian_drive = contrast * 15 * profile  # Gaussian input response profile scaled by contrast
+    RF_gaussian_drive = contrast * 1 * profile / np.linalg.norm(profile)  # Gaussian input response profile scaled by contrast
 
     full_drive = np.concatenate([RF_gaussian_drive] * N_SETS)
     return full_drive
@@ -114,7 +114,7 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     until the gains settle. Returns the frozen (g_cRF, g_surround, v_cRF, v_surround).
     '''
     stream = stim_gen.generate_surround_ensembles(
-        ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=ADAPT_DURATION)
+        ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=ADAPT_DURATION, add_poisson_noise=False)
     dyn.run_simulation(stream)
 
     K = dyn.frame.K
@@ -136,20 +136,22 @@ def frozen_derivatives(state, z_t, dyn, full_gain_feedback):
     u = state[N_TOT:2*N_TOT]
     a = state[2*N_TOT:3*N_TOT]
 
-    u_plus = dyn.half_wave_rectify(u)
-    y_plus = dyn.half_wave_rectify(y)
-    a_plus = dyn.half_wave_rectify(a)
+    u_plus = dyn.half_wave_rectify(u, 0.5)
+    y_plus = dyn.half_wave_rectify(y, 2.0)
+    y_minus = dyn.half_wave_rectify(-y, 2.0)
+    a_plus = dyn.half_wave_rectify(a, 1.0)
     sqrt_y_plus = np.sqrt(y_plus)
+    sqrt_y_minus = np.sqrt(y_minus)
 
-    recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ sqrt_y_plus)
-    input_drive = (dyn.beta * z_t) / 2
+    recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ (sqrt_y_plus - sqrt_y_minus))
+    input_drive = dyn.beta * z_t
 
     sigma_term = (dyn.sigma / 2) ** 2
     pool_term = dyn.N_matrix @ (y_plus * (u_plus ** 2))
 
     dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / dyn.tau_y
     du_dt = (-u + sigma_term + pool_term) / dyn.tau_u
-    da_dt = (-a + u_plus + a * u_plus + dyn.alpha * du_dt) / dyn.tau_a
+    da_dt = (-a + (1+ a_plus) * u_plus) / dyn.tau_a
 
     return np.concatenate([dy_dt, du_dt, da_dt])
 
