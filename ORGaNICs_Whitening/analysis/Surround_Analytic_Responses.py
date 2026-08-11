@@ -303,7 +303,7 @@ if __name__ == "__main__":
 
     fig_gf, ax_gf = plt.subplots(figsize=(9, 4))
     for cond in CONDITIONS:
-        ax_gf.plot(gain_feedback_by_condition[cond], color=CONDITION_COLOR[cond],
+        ax_gf.plot(- gain_feedback_by_condition[cond], color=CONDITION_COLOR[cond],
                    linewidth=2.5, label=CONDITION_LABEL[cond])
     for s in range(1, N_SETS):
         ax_gf.axvline(s * N_RF - 0.5, color='grey', linestyle='--', linewidth=1.0)

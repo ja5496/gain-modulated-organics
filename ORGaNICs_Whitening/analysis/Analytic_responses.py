@@ -77,7 +77,15 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False, poisson_variance=
     return g_opt
 
 def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_stimuli=None,
-                                poisson_variance=False):
+                                poisson_variance=False, target_covariance=None):
+    '''
+    target_covariance (optional): an (N, N) covariance matrix to use directly as the target,
+    instead of estimating one from a fresh uniform_stimuli sample - e.g. the same
+    uniform_target_covariance.csv the simulation uses to derive theta_t (see
+    simulation_whiten.py's V1Dynamics_Surround), so the analytic gains are computed against
+    the exact target the live network is actually being pulled toward. Takes precedence over
+    uniform_stimuli if both are given.
+    '''
     N, K = frame.shape  # N = 13, K = 91
 
     # Covariance generation
@@ -104,7 +112,11 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     eigenvalues, eigenvectors = np.linalg.eigh(Covariance)
     safe_lambdas = np.maximum(eigenvalues, 1e-9)
 
-    if uniform_stimuli is not None:
+    if target_covariance is not None:
+        # Directly-provided target covariance (e.g. uniform_target_covariance.csv) - use its
+        # mean diagonal variance as-is rather than re-estimating a target from a fresh sample.
+        target = np.mean(np.diag(target_covariance))
+    elif uniform_stimuli is not None:
         # Target variance from the uniform ensemble
         uniform_stimuli = np.asarray(uniform_stimuli)
         uniform_raw_drive = uniform_stimuli * Beta
@@ -117,7 +129,7 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     else:
         target = np.mean(eigenvalues) # Set the mean variance as the upper bound ("target")
 
-    d = np.minimum(1.0, np.sqrt(target / safe_lambdas))
+    d = np.sqrt(target / safe_lambdas) #np.minimum(1.0, np.sqrt(target / safe_lambdas))
     T = eigenvectors @ np.diag(d) @ eigenvectors.T
 
     # NOW COMPUTE OPTIMAL GAINS WITH LYNDON'S EQUATION A.5 
@@ -256,7 +268,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    
+
     # (c) Self-consistent mu for each context
     print("Computing mu (uniform)...")
     mu_uni  = get_mu(stimuli_uni,  W, g_opt_uni)

@@ -112,7 +112,11 @@ class StimulusGenerator:
         Args:
             poisson_fano (float): Fano factor (Var/mean) of the injected noise, only used
                 when add_poisson_noise=True. 1.0 (default) is true Poisson noise. Scale this
-                up/down to make neurons noisier/quieter relative to their firing rate.
+                up/down to make neurons noisier/quieter relative to their firing rate. Note that
+                the noise is hard-capped afterward (see below) - any column pushed past length 1
+                is rescaled back down to exactly 1, so large poisson_fano narrows the noise
+                distribution's effective spread rather than letting it blow past the model's
+                ||z|| <= 1 assumption.
 
         Returns:
             np.ndarray: Shape ( N_RF * N_SETS , stream_length )
@@ -166,7 +170,7 @@ class StimulusGenerator:
         # N_RF-neuron sub-block - the ORGaNICs papers' fixed-point derivation assumes ||z|| is
         # O(1) for the whole population, and normalizing only the driven sub-block left the
         # full vector's length scaling with sqrt(N_SETS) once baseline was concatenated in.
-        baseline = np.full((self.N_RF, profile.shape[1]), 0.15)
+        baseline = np.full((self.N_RF, profile.shape[1]), 0.10)
         match adapt_location:
             case 'adapt CRF only':
                 full_profile = np.concatenate([profile] + [baseline] * (self.N_SETS - 1), axis=0)
@@ -196,6 +200,22 @@ class StimulusGenerator:
             # noise the dominant contributor to variance, with no burstiness ceiling.
             noise_std = np.sqrt(poisson_fano * np.clip(profiles, 0, None))
             profiles = profiles + np.random.normal(0, noise_std)
+
+            # Hard cap: noise can push a column's norm well past the length-1 ceiling the
+            # normalization step above was trying to enforce (confirmed in stimuli_whiten.py's
+            # __main__ diagnostic - poisson_fano=5.0 alone reached column norms of ~8.8), which is
+            # almost certainly what tips V1Dynamics_Surround's RK4 integration into runaway - the
+            # whole model is tuned/tested around ||z|| <= 1. Only rescale columns that actually
+            # exceed 1 (at realistic poisson_fano this ends up being ~every column, not a rare
+            # correction - verified this doesn't distort the covariance structure though: the
+            # per-column norm barely varies with which orientation is shown, since it's dominated
+            # by the 6 orientation-blind surround blocks, so the divisor is nearly constant across
+            # columns anyway). Chosen over a single global rescale (divide every column by the
+            # stream's largest norm) because that alternative is dominated by one rare outlier draw
+            # - it would crush the *typical* column well below length 1, and gets worse the longer
+            # the stream runs (more chances to draw a bigger outlier).
+            norms = np.linalg.norm(profiles, axis=0, keepdims=True)
+            profiles = profiles * np.minimum(1.0, 1.0 / norms)
 
         if return_angles:
             return profiles, centers
@@ -458,5 +478,76 @@ if __name__ == "__main__":
     #stim_gen.plot_tuning_curves()
     #stim_gen.plot_von_mises_distributions()
     #stim_gen.plot_contrast_distributions()
-    stim_gen.plot_surround_covariance_matrices()
+    #stim_gen.plot_surround_covariance_matrices()
+
+    # ==========================================================================
+    # Poisson-noise divergence diagnostic: generate_surround_ensembles normalizes
+    # each column to ||z||=contrast BEFORE add_poisson_noise perturbs it, so the
+    # noisy stream can end up with columns longer than 1 - which is almost
+    # certainly what's tipping V1Dynamics_Surround's RK4 integration into runaway
+    # (the whole model is tuned/tested around ||z|| <= 1). Testing two fixes here
+    # without touching the functions yet:
+    #   1. Hard cap - only rescale columns whose norm exceeds 1, down to exactly 1;
+    #      columns already <= 1 are left untouched.
+    #   2. Global rescale - divide the ENTIRE stream by its single largest column
+    #      norm, so every column ends up <= 1 but relative scaling between
+    #      columns/timesteps (i.e. the actual noise structure) is preserved.
+    # ==========================================================================
+    ADAPT_LOCATION = 'adapt CRF only'
+    POISSON_FANO   = 5.0
+
+    def hard_cap(stream, max_len=1.0):
+        '''Rescale only the columns whose norm exceeds max_len, down to exactly max_len.'''
+        norms = np.linalg.norm(stream, axis=0, keepdims=True)
+        scale = np.minimum(1.0, max_len / norms)
+        return stream * scale
+
+    def global_rescale(stream, max_len=1.0):
+        '''Divide every column by the single largest column norm in the whole stream.'''
+        max_norm = np.linalg.norm(stream, axis=0).max()
+        return stream * (max_len / max_norm)
+
+    uni_raw  = stim_gen.generate_surround_ensembles(ADAPT_LOCATION, biased=False, add_poisson_noise=True, poisson_fano=POISSON_FANO)
+    bias_raw = stim_gen.generate_surround_ensembles(ADAPT_LOCATION, biased=True,  add_poisson_noise=True, poisson_fano=POISSON_FANO)
+
+    print(f"Raw (noisy) max column norm - uniform: {np.linalg.norm(uni_raw, axis=0).max():.3f}, "
+          f"biased: {np.linalg.norm(bias_raw, axis=0).max():.3f}  (fixed-point derivation assumes <= 1)")
+
+    fixes = {
+        'Hard cap (clip norm > 1)':     hard_cap,
+        'Global rescale (/ max norm)':  global_rescale,
+    }
+
+    for fix_name, fix_fn in fixes.items():
+        uni  = fix_fn(uni_raw)
+        bias = fix_fn(bias_raw)
+        print(f"  {fix_name} - max column norm after fix: uniform={np.linalg.norm(uni, axis=0).max():.3f}, "
+              f"biased={np.linalg.norm(bias, axis=0).max():.3f}")
+
+        uni_rf  = uni[:stim_gen.N_RF]
+        bias_rf = bias[:stim_gen.N_RF]
+
+        cov_uni  = np.cov(uni_rf,  rowvar=True)
+        cov_bias = np.cov(bias_rf, rowvar=True)
+
+        ticks = np.linspace(0, stim_gen.N_RF - 1, min(5, stim_gen.N_RF)).astype(int)
+        tick_labels = [str(t) for t in ticks]
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        for ax, mat, title in zip(axes, [cov_uni, cov_bias],
+                                  [f'Uniform Ensemble (CRF)\n{fix_name}', f'Biased Ensemble (CRF)\n{fix_name}']):
+            im = ax.imshow(mat, cmap='viridis', aspect='auto')
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            ax.set_title(title, fontsize=16, fontweight='bold', pad=12)
+            ax.set_xlabel('CRF neuron index', fontsize=14, fontweight='bold')
+            ax.set_ylabel('CRF neuron index', fontsize=14, fontweight='bold')
+            ax.set_xticks(ticks); ax.set_xticklabels(tick_labels, fontsize=12)
+            ax.set_yticks(ticks); ax.set_yticklabels(tick_labels, fontsize=12)
+            for spine in ax.spines.values():
+                spine.set_linewidth(2.5)
+            ax.tick_params(width=2.5, length=6)
+
+        plt.tight_layout()
+
+    plt.show()
     

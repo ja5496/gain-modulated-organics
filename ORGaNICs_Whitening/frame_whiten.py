@@ -169,7 +169,7 @@ class Frame:
         return W
 
 
-def compute_uniform_target_covariance(N_RF=13, sigma=0.1, Beta=0.5, stream_length=10920):
+def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_length=10920):
     '''
     Idealized covariance matrix of normalized responses to a uniform ensemble, for a
     single receptive field (N_RF neurons, N_SETS=1 so generate_surround_ensembles returns
@@ -179,8 +179,11 @@ def compute_uniform_target_covariance(N_RF=13, sigma=0.1, Beta=0.5, stream_lengt
     get_optimal_gains_target (analysis/Analytic_responses.py:107-116): responses are scaled
     by Beta, then divisively normalized by a pooled, semi-saturating denominator
     (sqrt(sigma^2 + pooled squared drive)) before taking the covariance - N_matrix there is
-    an all-ones (N_RF, N_RF) pooling matrix (see V1Tunings.N_matrix), sigma=0.1 matches
-    V1Dynamics's default, and Beta=0.5 matches get_optimal_gains_target's Beta.
+    an all-ones (N_RF, N_RF) pooling matrix (see V1Tunings.N_matrix). sigma=0.25 matches
+    V1Dynamics_Surround's current default (simulation_whiten.py) - keep these in sync, since
+    a stale sigma here makes theta_t (simulation_whiten.py:241) mismatch the live model's
+    actual steady-state variance under a uniform ensemble, biasing g/v adaptation even with
+    no real adaptation happening. Beta=0.5 matches get_optimal_gains_target's Beta.
     '''
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=1, stream_length=stream_length)
     profiles = stim_gen.generate_surround_ensembles('adapt CRF only', biased=False)  # (N_RF, T)

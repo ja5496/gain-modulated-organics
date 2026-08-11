@@ -51,7 +51,7 @@ class V1Dynamics:
         self.tau_avg = 10 
         self.tau_avg_z = 400
         
-        self.sigma = 0.1
+        self.sigma = 0.4
         self.alpha = 0.0
 
         if input_adaptive:
@@ -196,16 +196,14 @@ class V1Dynamics_Surround:
         )
 
         self.tau_y = 0.2
-        self.tau_a = 1.0  
-        self.tau_u = 0.4 
-        self.tau_g = 100.0 
-        self.tau_v = 100.0 
+        self.tau_a = 0.1  
+        self.tau_u = 15.0 
+        self.tau_g = 25000.0 
+        self.tau_v = 25000.0 
         self.tau_avg = 10 
         self.tau_avg_z = 400
         
-        self.sigma = 0.1  # matches V1Dynamics's default; sigma=15 made the constant
-                          # (sigma/2)**2 floor in du_dt overwhelm u from a zero initial
-                          # state, causing runaway positive feedback via pool_term's u_plus**2
+        self.sigma = 0.25  
         self.beta = 0.5
 
     def half_wave_rectify(self, y, Beta=2.0):
@@ -249,8 +247,8 @@ class V1Dynamics_Surround:
         dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
         surround_gain_feedback = self.frame.W @ (g_surround * v_surround)
 
-        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ ( sqrt_y_plus - sqrt_y_minus )) # Equation with complementary receptive fields
-        input_drive = (self.beta * z_t)
+        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ sqrt_y_plus) # matches Norm_Dynamics_1 (norm_diagnostic.py) - no complementary -sqrt_y_minus term
+        input_drive = self.beta * z_t
 
         # Local gain feedback matrix that can be applied to the full y dynamics
         full_gain_feedback = np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))

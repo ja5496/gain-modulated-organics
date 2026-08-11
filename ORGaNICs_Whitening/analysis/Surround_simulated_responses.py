@@ -17,7 +17,8 @@ self-consistency loop):
    builds a long stimulus stream with the biased/adaptor ensemble routed to whichever region(s)
    the condition adapts, and V1Dynamics_Surround.run_simulation integrates the full state
    (y, u, a, g_cRF, g_surround, v_cRF, v_surround) forward until adaptation settles. "no adaptation"
-   is just adaptation to the uniform (unbiased) ensemble shown to both cRF and surround.
+   is a special case that skips this entirely and forces gain feedback to exactly zero, isolating
+   pure normalization (y/u/a only, no whitening-based gain-feedback term) as the control condition.
 2. The adapted g_cRF, g_surround, v_cRF, v_surround are frozen (read off the final state) - these
    fully determine a fixed gain-feedback vector, matching the role of M @ mu in the analytic script.
 3. get_response settles the fast (y, u, a) dynamics to steady state for a given probe stimulus,
@@ -38,6 +39,7 @@ from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from typing import Literal
+import Analytic_responses as AR
 
 N_RF       = 13                    # primary neurons per receptive field
 N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
@@ -48,8 +50,8 @@ TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covar
 
 ENSEMBLE_CONTRAST = 0.8      # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH      = 0.75
-ADAPT_STREAM_LENGTH = 10920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
-ADAPT_DURATION      = 20      # timesteps each individual adaptation stimulus is held for
+ADAPT_STREAM_LENGTH = 100000 # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
+ADAPT_DURATION      = 100      # timesteps each individual adaptation stimulus is held for
 N_SETTLE_STEPS      = 300     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
 N_CONTRASTS   = 20
@@ -65,18 +67,23 @@ COLOR_BOTH   = 'darkorange'
 
 
 def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
-    '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation state.'''
+    '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation state.
+    Normalizes the full N_TOTAL-dim population vector to unit length before scaling by contrast (matches
+    norm_diagnostic.py's probe_input_drive and generate_surround_ensembles in stimuli_whiten.py) - normalizing
+    the N_RF-dim profile before tiling across N_SETS would leave ||full_drive|| = contrast*sqrt(N_SETS)
+    instead of contrast.'''
     theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False)  # Evenly spaced orientation preferences for neurons
     delta = theta_grid - input_theta  # Distance between neuron preference from stimulus orientation
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2
     profile = np.exp(-delta**2 / (2 * tuning_width**2))
-    RF_gaussian_drive = contrast * 1 * profile / np.linalg.norm(profile)  # Gaussian input response profile scaled by contrast
 
-    full_drive = np.concatenate([RF_gaussian_drive] * N_SETS)
+    full_profile = np.concatenate([profile] * N_SETS)
+    full_drive = contrast * full_profile / np.linalg.norm(full_profile)  # normalize the full population vector, then scale by contrast
     return full_drive
 
 
 CONDITIONS = ['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt CRF and surround']
+ACTIVE_CONDITIONS = CONDITIONS
 CONDITION_LABEL = {
     'no adaptation':          'No adaptation',
     'adapt CRF only':         'Classical RF adapted',
@@ -89,10 +96,10 @@ CONDITION_COLOR = {
     'adapt surround only':    COLOR_NONCRF,
     'adapt CRF and surround': COLOR_BOTH,
 }
-# "no adaptation" is adaptation to the uniform ensemble, shown to both cRF and surround (routed via
-# 'adapt CRF and surround' with biased=False) - every other condition shows the biased/adaptor
-# ensemble only to the region(s) it names, with the rest of the population held at baseline
-# (see generate_surround_ensembles in stimuli_whiten.py).
+# "no adaptation"'s entries below are unused - run_adaptation_phase short-circuits that condition
+# to zero gain feedback directly, without generating a stream. Every other condition shows the
+# biased/adaptor ensemble only to the region(s) it names, with the rest of the population held at
+# baseline (see generate_surround_ensembles in stimuli_whiten.py).
 ADAPT_LOCATION_FOR_COND = {
     'no adaptation':          'adapt CRF and surround',
     'adapt CRF only':         'adapt CRF only',
@@ -112,7 +119,24 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     Simulates the adaptation state for one condition: builds the appropriate stimulus stream
     via generate_surround_ensembles and integrates V1Dynamics_Surround's full dynamics forward
     until the gains settle. Returns the frozen (g_cRF, g_surround, v_cRF, v_surround).
+
+    "no adaptation" is forced to exactly zero gain feedback instead - it's the pure-normalization
+    control condition, not adaptation to a uniform ensemble, so it skips the simulation entirely
+    (this also sidesteps any theta_t/uniform_target_covariance mismatch, since gain feedback is
+    frame.W @ (g*v) and g=0 zeroes it regardless of v).
+
+    For the other three conditions, whichever region generate_surround_ensembles does NOT route
+    the biased/adaptor ensemble to only sees the flat, orientation-less baseline (0.15 everywhere -
+    not a real uniform ensemble), so its gain feedback is forced to zero too rather than left to
+    adapt to that non-stimulus: dg/dt = (v^2 - theta_t)/tau_g has no leak term, so responding to a
+    constant baseline for the full adaptation stream would otherwise just accumulate an arbitrary,
+    unbounded drift in g (theta_t is derived from the true random-orientation uniform ensemble, not
+    this flat baseline, so v^2 never matches it under baseline exposure).
     '''
+    if cond == 'no adaptation':
+        zeros = np.zeros(dyn.frame.K)
+        return zeros, zeros, zeros, zeros
+
     stream = stim_gen.generate_surround_ensembles(
         ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=ADAPT_DURATION, add_poisson_noise=False)
     dyn.run_simulation(stream)
@@ -124,6 +148,16 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     g_surround = state[3*N_TOT+K:3*N_TOT+2*K]
     v_cRF = state[3*N_TOT+2*K:3*N_TOT+3*K]
     v_surround = state[3*N_TOT+3*K:3*N_TOT+4*K]
+
+    if cond == 'adapt CRF only':
+        g_surround = np.zeros(K)
+        v_surround = np.zeros(K)
+    elif cond == 'adapt surround only':
+        g_cRF = np.zeros(K)
+        v_cRF = np.zeros(K)
+    # 'adapt CRF and surround' shows the biased ensemble to both regions, so both keep their
+    # adapted gains.
+
     return g_cRF, g_surround, v_cRF, v_surround
 
 
@@ -143,7 +177,7 @@ def frozen_derivatives(state, z_t, dyn, full_gain_feedback):
     sqrt_y_plus = np.sqrt(y_plus)
     sqrt_y_minus = np.sqrt(y_minus)
 
-    recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ (sqrt_y_plus - sqrt_y_minus))
+    recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ sqrt_y_plus)  # matches Norm_Dynamics_1 (norm_diagnostic.py) - no complementary -sqrt_y_minus term
     input_drive = dyn.beta * z_t
 
     sigma_term = (dyn.sigma / 2) ** 2
@@ -198,9 +232,165 @@ if __name__ == "__main__":
 
     print("Running adaptation phase for each condition...")
     frozen_gains = {}
-    for cond in CONDITIONS:
+    for cond in ACTIVE_CONDITIONS:
         print(f"  Adapting: {CONDITION_LABEL[cond]}")
         frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond)
+
+    # ==========================================================================
+    # Diagnostic: frozen gain feedback per condition (the term get_response holds
+    # fixed while probing - if the CRFs look wrong, check here first: this is
+    # what's actually being subtracted from dy_dt via full_gain_feedback).
+    # ==========================================================================
+    print("Plotting frozen gain feedback per condition...")
+    theta_RF_deg = np.degrees(stim_gen.theta_RF)
+
+    fig_gain, axes_gain = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    for cond in ACTIVE_CONDITIONS:
+        g_cRF, g_surround, v_cRF, v_surround = frozen_gains[cond]
+        cRF_gain_feedback = - dyn.frame.W @ (g_cRF * v_cRF)
+        surround_gain_feedback = - dyn.frame.W @ (g_surround * v_surround)
+
+        axes_gain[0].plot(theta_RF_deg, cRF_gain_feedback, color=CONDITION_COLOR[cond],
+                           linewidth=3, marker='o', markersize=4, label=CONDITION_LABEL[cond])
+        axes_gain[1].plot(theta_RF_deg, surround_gain_feedback, color=CONDITION_COLOR[cond],
+                           linewidth=3, marker='o', markersize=4, label=CONDITION_LABEL[cond])
+
+    for ax, title in zip(axes_gain, ["cRF gain feedback", "Surround gain feedback"]):
+        ax.axvline(np.degrees(adaptor_rad), color='gray', linestyle=':', linewidth=1.5)
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.set_xlabel("Preferred orientation (deg)", fontsize=12, fontweight='bold')
+        ax.grid(False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    axes_gain[0].set_ylabel("Gain feedback  =  frame.W @ (g * v)", fontsize=12, fontweight='bold')
+    axes_gain[0].legend(fontsize=9, frameon=False)
+
+    fig_gain.suptitle("Frozen gain feedback by adaptation condition", fontsize=15, fontweight='bold')
+    plt.tight_layout()
+
+    # ==========================================================================
+    # Diagnostic: average cRF response vector alongside the average cRF stimulus
+    # <z_t>, both averaged over the ENTIRE adaptation stream (not just the tail) -
+    # checking whether y_avg's jaggedness over a short window is just an artifact
+    # of too few stimulus presentations to average over, or something structural.
+    # ==========================================================================
+    print("Running traced adaptation phases (all conditions) to compare average cRF responses...")
+    TRACE_COND = 'adapt CRF only'   # which condition's stimulus stream the right panel shows
+
+    y_avg_by_cond = {}
+    trace_cond_stream = None
+    for cond in ACTIVE_CONDITIONS:
+        trace_stream = stim_gen.generate_surround_ensembles(
+            ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond],
+            duration=ADAPT_DURATION, add_poisson_noise=False)
+        y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist = dyn.run_simulation(trace_stream)
+        y_avg_by_cond[cond] = y_hist[:N_RF, :].mean(axis=1)   # average cRF response vector, entire simulation
+        if cond == TRACE_COND:
+            trace_cond_stream = trace_stream
+
+    N_AVG_WINDOW = trace_cond_stream.shape[1]   # entire simulation, not just the last few thousand steps
+    z_avg = trace_cond_stream[:N_RF, :].mean(axis=1)   # average cRF stimulus <z_t>, same window, TRACE_COND only
+
+    fig_trace, (ax_y, ax_z) = plt.subplots(1, 2, figsize=(13, 5))
+
+    for cond in ACTIVE_CONDITIONS:
+        ax_y.plot(theta_RF_deg, y_avg_by_cond[cond], color=CONDITION_COLOR[cond],
+                  linewidth=3, marker='o', markersize=5, label=CONDITION_LABEL[cond])
+    ax_y.set_title(f"Average cRF response by condition\n(entire simulation, {N_AVG_WINDOW} steps)",
+                    fontsize=13, fontweight='bold')
+    ax_y.set_xlabel("Preferred orientation (deg)", fontsize=12, fontweight='bold')
+    ax_y.set_ylabel(r"$\bar{y}_{cRF}$", fontsize=13, fontweight='bold')
+    ax_y.grid(False)
+    ax_y.spines['top'].set_visible(False)
+    ax_y.spines['right'].set_visible(False)
+    ax_y.legend(fontsize=9, frameon=False)
+
+    ax_z.plot(theta_RF_deg, z_avg, color='black', linewidth=3, marker='o', markersize=5)
+    ax_z.set_title(f"Average cRF stimulus\n(entire simulation, {N_AVG_WINDOW} steps, {CONDITION_LABEL[TRACE_COND]})",
+                    fontsize=13, fontweight='bold')
+    ax_z.set_xlabel("Preferred orientation (deg)", fontsize=12, fontweight='bold')
+    ax_z.set_ylabel(r"$\langle z_t \rangle$", fontsize=13, fontweight='bold')
+    ax_z.grid(False)
+    ax_z.spines['top'].set_visible(False)
+    ax_z.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+
+    # ==========================================================================
+    # Diagnostic: theoretical optimal g_cRF (Analytic_responses.get_optimal_gains_target),
+    # computed from the EXACT SAME stimulus stream the network is about to see and the SAME
+    # target covariance the simulation uses for theta_t, vs. the network's actual frozen
+    # g_cRF from running that identical stream through the real RK4 dynamics - checking
+    # whether the simulated gain feedback matches what theory says it should be.
+    # ==========================================================================
+    print("Computing theoretical optimal gains for comparison against the simulated network...")
+    AR.N_matrix = tunings.N_matrix   # single-RF (N_RF, N_RF) pooling matrix - matches get_optimal_gains_target's expected shape
+    AR.sigma = dyn.sigma             # match the live model's sigma, not Analytic_responses.py's own default
+
+    GAIN_CHECK_COND = 'adapt CRF only'
+    gain_check_stream = stim_gen.generate_surround_ensembles(
+        ADAPT_LOCATION_FOR_COND[GAIN_CHECK_COND], biased=BIASED_FOR_COND[GAIN_CHECK_COND],
+        duration=ADAPT_DURATION, add_poisson_noise=False)
+
+    stimuli_for_theory = gain_check_stream[:N_RF, :].T   # (T, N_RF) - cRF block only, matches frame.W's shape
+    g_optimal_cRF = AR.get_optimal_gains_target(
+        stimuli_for_theory, dyn.frame.W, target_covariance=dyn.uniform_target_covariance)
+
+    # Run the real network on this EXACT SAME stream and read off its frozen g_cRF
+    dyn.run_simulation(gain_check_stream)
+    K = dyn.frame.K
+    N_TOT = dyn.N_RF * dyn.N_SETS
+    frozen_g_cRF = dyn.last_state[3*N_TOT:3*N_TOT+K]
+
+    fig_gopt, ax_gopt = plt.subplots(figsize=(9, 5))
+    gain_idx = np.arange(K)
+    ax_gopt.plot(gain_idx, g_optimal_cRF, color='black', linewidth=2.5, label='theoretical optimal gains')
+    ax_gopt.plot(gain_idx, frozen_g_cRF, color=COLOR_CRF, linewidth=2.5, linestyle='--', label='simulated frozen g_cRF')
+    corr = np.corrcoef(g_optimal_cRF, frozen_g_cRF)[0, 1]
+    rel_rms_err = np.linalg.norm(g_optimal_cRF - frozen_g_cRF) / np.linalg.norm(g_optimal_cRF)
+    ax_gopt.set_title(f"Simulated vs. theoretical optimal g_cRF ({CONDITION_LABEL[GAIN_CHECK_COND]})\n"
+                       f"corr = {corr:.3f}, rel. RMS err = {rel_rms_err:.3f}",
+                       fontsize=13, fontweight='bold')
+    ax_gopt.set_xlabel("Gain index", fontsize=12, fontweight='bold')
+    ax_gopt.set_ylabel("Gain value", fontsize=12, fontweight='bold')
+    ax_gopt.grid(False)
+    ax_gopt.spines['top'].set_visible(False)
+    ax_gopt.spines['right'].set_visible(False)
+    ax_gopt.legend(fontsize=10, frameon=False)
+    plt.tight_layout()
+
+    # ==========================================================================
+    # Diagnostic: covariance of the actual input stimuli vs. the factorization each
+    # gain vector implies. (I + W @ diag(g) @ W.T) is the matrix that maps steady-state
+    # input -> the linearized recurrent-plus-gain-feedback response (y* = M^-1 @ z, so
+    # M^-1 is what actually gets applied to z) - if g were truly optimal for this
+    # stimulus covariance, (I + W @ diag(g) @ W.T)^-1 should resemble it.
+    # ==========================================================================
+    print("Plotting stimulus covariance vs. gain-implied factorizations...")
+    stimulus_covariance = np.cov(stimuli_for_theory, rowvar=False)   # (N_RF, N_RF)
+
+    I_N = np.eye(N_RF)
+    M_opt_inv = np.linalg.inv(I_N + dyn.frame.W @ np.diag(g_optimal_cRF) @ dyn.frame.W.T)
+    M_frozen_inv = np.linalg.inv(I_N + dyn.frame.W @ np.diag(frozen_g_cRF) @ dyn.frame.W.T)
+
+    vmin, vmax = stimulus_covariance.min(), stimulus_covariance.max()
+    fig_fact, axes_fact = plt.subplots(1, 3, figsize=(15, 5))
+    for ax, mat, title in zip(axes_fact,
+                               [stimulus_covariance, M_opt_inv, M_frozen_inv],
+                               ["Cov(input stimuli)",
+                                r"$(I + W\,\mathrm{diag}(g_{opt,target})\,W^T)^{-1}$",
+                                r"$(I + W\,\mathrm{diag}(g_{frozen})\,W^T)^{-1}$"]):
+        im = ax.imshow(mat, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xlabel("cRF neuron index", fontsize=11, fontweight='bold')
+        ax.set_ylabel("cRF neuron index", fontsize=11, fontweight='bold')
+        for spine in ax.spines.values():
+            spine.set_edgecolor('black')
+            spine.set_linewidth(2.0)
+    fig_fact.suptitle(f"Stimulus covariance vs. gain-implied factorizations ({CONDITION_LABEL[GAIN_CHECK_COND]})",
+                       fontsize=14, fontweight='bold')
+    plt.tight_layout()
 
     # ==========================================================================
     # Contrast response functions of the cRF neuron that prefers the adaptor
@@ -216,10 +406,10 @@ if __name__ == "__main__":
             resp[i] = y[crf_target_idx]
         return resp
 
-    curves_by_condition = {cond: crf_curve(cond) for cond in CONDITIONS}
+    curves_by_condition = {cond: crf_curve(cond) for cond in ACTIVE_CONDITIONS}
 
     fig_crf, ax_crf = plt.subplots(figsize=(7, 5.5))
-    for cond in CONDITIONS:
+    for cond in ACTIVE_CONDITIONS:
         ax_crf.plot(CRF_CONTRASTS, curves_by_condition[cond], color=CONDITION_COLOR[cond],
                     linewidth=3.5, label=CONDITION_LABEL[cond])
 
