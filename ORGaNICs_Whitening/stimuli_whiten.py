@@ -30,9 +30,10 @@ class StimulusGenerator:
 
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
-                                 von_mises_kappa=4.0, return_angles=False, duration=20):
+                                 von_mises_kappa=4.0, return_angles=False, duration=20,
+                                 add_poisson_noise=False, poisson_fano=1.0):
         '''
-        Generate uniform or biased ensemble of raised cosine input profiles
+        Generate uniform or biased ensemble of input profiles
         centered at random orientations.
 
         Returns:
@@ -53,7 +54,7 @@ class StimulusGenerator:
             scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
             profiles = self.contrast * scale * profiles / np.max(profiles)
             if mean_center:
-                profiles -= profiles.mean(axis=0, keepdims=True)
+                profiles -= profiles.mean(axis=1, keepdims=True)
             if return_angles:
                 return profiles, centers
             return profiles
@@ -90,12 +91,18 @@ class StimulusGenerator:
         #profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
         profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
         
-        # 5. Normalize, scale, then mean-center each time step
-        scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
-        profiles = self.contrast * scale * profiles / np.max(profiles)
+        # 5. Normalize, scale, then (optionally) mean-center across the ensemble
+        scale = 1 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+        profiles = self.contrast * scale * profiles / np.linalg.norm(profiles, keepdims=True, axis=0)
         
+        if add_poisson_noise:
+            noise_std = np.sqrt(poisson_fano * np.clip(profiles, 0, None))
+            profiles = profiles + np.random.normal(0, noise_std)
+            norms = np.linalg.norm(profiles, axis=0, keepdims=True)
+            profiles = profiles / np.max(norms) # Scale so maximum length of input is 1
+
         if mean_center:
-            profiles -= profiles.mean(axis=0, keepdims=True)
+            profiles -= profiles.mean(axis=1, keepdims=True)
 
         if return_angles:
             return profiles, centers

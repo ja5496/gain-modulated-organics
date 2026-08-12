@@ -200,8 +200,6 @@ class V1Dynamics_Surround:
         self.tau_u = 15.0 
         self.tau_g = 25000.0 
         self.tau_v = 25000.0 
-        self.tau_avg = 10 
-        self.tau_avg_z = 400
         
         self.sigma = 0.25  
         self.beta = 0.5

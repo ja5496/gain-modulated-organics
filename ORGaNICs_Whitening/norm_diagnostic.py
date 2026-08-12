@@ -85,68 +85,6 @@ class Norm_Dynamics_1:
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         self.last_state = state.copy()
         return y_hist, u_hist, a_hist
-    
-class Norm_Dynamics_2:
-    def __init__(self, v1_model, dt=0.1):
-        self.v1 = v1_model
-        self.dt = dt 
-
-        self.tau_y = 0.2 
-        self.tau_a = 1.0  
-        
-        self.sigma = 0.18
-
-    def half_wave_rectify(self, y, Beta=2.0):
-        return (np.maximum(y,0)) ** Beta
-
-    def _derivatives(self, state, z_t):
-        N = self.v1.N
-        
-        y = state[0:N]
-        a = state[N:2*N]
-           
-        y_plus = self.half_wave_rectify(y, 2.0)
-        a_plus = self.half_wave_rectify(a, 0.5)
-        sqrt_y_plus = np.sqrt(y_plus)
-
-        # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
-        dy_dt = (-y + z_t + (1.0 - a_plus) * (self.v1.W_yy @ (sqrt_y_plus))) / self.tau_y
-        da_dt = (-a + (self.sigma)**2 + self.v1.N_matrix @ (y_plus) * a) / self.tau_a
-        
-        return np.concatenate([dy_dt, da_dt])
-        
-    def run_simulation(self, stimulus_stream, initial_state=None):
-        N, n_steps = stimulus_stream.shape
-
-        if initial_state is not None:
-            state = initial_state.copy()
-        else:
-            state = np.zeros(2*N)
-
-        # Tracking histories for later analysis + figures
-        y_hist = np.zeros((N, n_steps))
-        a_hist = np.zeros((N, n_steps))
-        
-        print(f"Running Simulation ({n_steps} steps)...") 
-        t0 = time.time()
-        
-        for t in tqdm(range(n_steps)):
-            z_t = stimulus_stream[:, t] 
-            # RK4 Simulation
-            k1 = self._derivatives(state, z_t)
-            k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t)
-            k3 = self._derivatives(state + 0.5 * self.dt * k2, z_t)
-            k4 = self._derivatives(state + self.dt * k3, z_t)
-            
-            state += (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-            
-            
-            y_hist[:, t] = np.maximum(state[0:N], 0)
-            a_hist[:, t] = state[N:2*N]
-
-        print(f"Simulation complete in {time.time() - t0:.2f}s.")
-        self.last_state = state.copy()
-        return y_hist, a_hist
 
 
 # ==========================================================================
