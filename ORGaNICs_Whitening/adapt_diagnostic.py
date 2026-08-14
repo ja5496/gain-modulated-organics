@@ -30,7 +30,7 @@ class Frame:
         else:
             self.centers = None
 
-class V1Dynamics:
+class Adapt_Dynamics:
     def __init__(self, v1_model, frame, dt=0.1, N_RF=13, target_covariance_path="data/target_covs/uniform_target_covariance.csv"):
         self.v1 = v1_model
         self.frame = frame
@@ -51,7 +51,7 @@ class V1Dynamics:
         # are fixed for the lifetime of this object (frame and target covariance never change),
         # so cache them here instead of rebuilding the (K, K) W.T @ Cov @ W product on every
         # single _derivatives call (4x per RK4 step - adds up fast over 100,000+ step runs).
-        self.theta_t = 0.8*np.diag(self.frame.W.T @ self.uniform_target_covariance @ self.frame.W)
+        self.theta_t = np.diag(self.frame.W.T @ self.uniform_target_covariance @ self.frame.W)
 
     def half_wave_rectify(self, y, Beta=2.0):
         return (np.maximum(y,0)) ** Beta
@@ -107,7 +107,7 @@ class V1Dynamics:
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         self.last_state = state.copy()
         return y_hist, gains_hist, v_hist
-    
+
 
 
 if __name__ == "__main__":
@@ -129,7 +129,7 @@ if __name__ == "__main__":
     tunings = V1Tunings(N=N_RF)
     frame   = Frame(FRAME_PATH)          # K = 91 for the N13 mercedes frame
     K       = frame.K
-    dyn     = V1Dynamics(tunings, frame, N_RF=N_RF, target_covariance_path=TARGET_COV_PATH)
+    dyn     = Adapt_Dynamics(tunings, frame, N_RF=N_RF, target_covariance_path=TARGET_COV_PATH)
 
 
     def get_optimal_gains_target(stimuli, frame, label='', uniform_stimuli=None,
@@ -158,25 +158,25 @@ if __name__ == "__main__":
         if target_covariance is not None:
             # Directly-provided target covariance (e.g. uniform_target_covariance.csv) - use its
             # mean diagonal variance as-is rather than re-estimating a target from a fresh sample.
-            target = np.mean(np.diag(target_covariance))
+            target = np.diag(target_covariance)
         elif uniform_stimuli is not None:
             # Target variance from the uniform ensemble
             uniform_stimuli = np.asarray(uniform_stimuli)
             uniform_drive = uniform_stimuli * Beta
-            uniform_covariance_matrix = uniform_drive 
+            uniform_covariance_matrix = uniform_drive
             uniform_Covariance = np.cov(uniform_drive, rowvar=False)
-            target = np.mean(np.diag(uniform_Covariance))
+            target = np.diag(uniform_Covariance)
         else:
             target = np.mean(eigenvalues) # Set the mean variance as the upper bound ("target")
 
         d = np.sqrt(target / safe_lambdas) #np.minimum(1.0, np.sqrt(target / safe_lambdas))
         T = eigenvectors @ np.diag(d) @ eigenvectors.T
 
-        # NOW COMPUTE OPTIMAL GAINS WITH LYNDON'S EQUATION A.5 
+        # NOW COMPUTE OPTIMAL GAINS WITH LYNDON'S EQUATION A.5
         T_inv = np.linalg.inv(T)
         A = T_inv - np.eye(N) # Modified transformation for the optimal gains
         diag_WTAW = np.diag(frame.T @ A @ frame)
-        WTW = frame.T @ frame                              
+        WTW = frame.T @ frame
         WTW_sq = WTW ** 2                                  # Element-wise square
         inv_WTW_sq = np.linalg.pinv(WTW_sq)
         g_opt = inv_WTW_sq @ diag_WTAW
@@ -214,29 +214,52 @@ if __name__ == "__main__":
     # Analytic optimal gains for this environment. V1Dynamics here has no
     # divisive-normalization stage (input_drive is just beta*z_t), and the local
     # get_optimal_gains_target above never applies normalization either - it always
-    # uses the raw covariance of the beta-scaled stimuli (Covariance = cov(Beta * stimuli),
-    # target = mean(eig(Covariance)) with no external target/uniform_stimuli).
+    # uses the raw covariance of the beta-scaled stimuli (Covariance = cov(Beta * stimuli)).
+    #
+    # target_covariance is explicitly set to dyn.uniform_target_covariance - the exact same
+    # array Adapt_Dynamics uses to build theta_t (self.theta_t = diag(W.T @
+    # uniform_target_covariance @ W)) - for BOTH the uniform and biased calls, rather than
+    # letting each derive its own target from a fresh sample (uniform_stimuli=... / the
+    # eigenvalue-mean fallback). Those were two different targets: theta_t (what the online
+    # gains are actually pulled toward) vs. whatever get_optimal_gains_target separately
+    # estimated from a live stimulus sample - so even starting the online run exactly at
+    # g_opt/v_opt, the two would immediately diverge because they were chasing different
+    # targets. Now both the analytic gains and the online adaptation target the identical
+    # covariance matrix.
     # ------------------------------------------------------------------
 
     print("Computing analytic optimal gains from the uniform ensemble...")
-    g_opt = get_optimal_gains_target(uniform_stream.T, frame.W, label='uniform')
+    g_opt = get_optimal_gains_target(uniform_stream.T, frame.W, label='uniform',
+                                      target_covariance=dyn.uniform_target_covariance)
 
-    # Optimal gains for the biased environment: covariance structure comes from the biased
-    # stream, but the target stays the uniform ensemble's variance level (uniform_stimuli=...)
-    # - same target the online dynamics' theta_t is pulled toward (both derived from the
-    # uniform ensemble), so this is the directly comparable "optimal" for the biased run.
     print("Computing analytic optimal gains from the biased ensemble...")
     g_opt_bias = get_optimal_gains_target(biased_stream.T, frame.W, label='biased',
-                                           uniform_stimuli=uniform_stream.T)
+                                           target_covariance=dyn.uniform_target_covariance)
 
     # ------------------------------------------------------------------
-    # Run both simulations (independent, zero-initial-state runs)
+    # Run both simulations. y starts at 0, but g and v are seeded at their
+    # optimal/fixed-point values instead of the default all-zero start: g at
+    # that ensemble's analytic optimum (g_opt / g_opt_bias), and v at the
+    # steady-state value consistent with g already being optimal - dg_dt=0
+    # requires v^2 = theta_t, so v0 = sqrt(theta_t). theta_t is shared across
+    # ensembles (derived once from the uniform target covariance), so the same
+    # v0 seeds both runs.
     # ------------------------------------------------------------------
+    v0 = np.sqrt(dyn.theta_t)
+
+    init_state_uni = np.zeros(N_RF + 2 * K)
+    init_state_uni[N_RF:N_RF + K]         = g_opt
+    init_state_uni[N_RF + K:N_RF + 2 * K] = v0
+
+    init_state_bias = np.zeros(N_RF + 2 * K)
+    init_state_bias[N_RF:N_RF + K]         = g_opt_bias
+    init_state_bias[N_RF + K:N_RF + 2 * K] = v0
+
     print("\n--- Uniform ensemble ---")
-    y_uni, g_uni, v_uni = dyn.run_simulation(uniform_stream)
+    y_uni, g_uni, v_uni = dyn.run_simulation(uniform_stream, initial_state=init_state_uni)
 
     print("\n--- Biased ensemble ---")
-    y_bias, g_bias, v_bias = dyn.run_simulation(biased_stream)
+    y_bias, g_bias, v_bias = dyn.run_simulation(biased_stream, initial_state=init_state_bias)
 
     # ==================================================================
     # Plot 1: subset of optimal gains (dotted) vs. online gains (solid)
@@ -247,10 +270,11 @@ if __name__ == "__main__":
     time_axis  = np.arange(N_STEPS) * dyn.dt
 
     fig1, axes1 = plt.subplots(1, 2, figsize=(14, 5))
-    for ax, g_hist, title in zip(axes1, [g_uni, g_bias], ['Uniform Ensemble', 'Biased Ensemble']):
+    for ax, g_hist, g_opt_arr, title in zip(
+            axes1, [g_uni, g_bias], [g_opt, g_opt_bias], ['Uniform Ensemble', 'Biased Ensemble']):
         for c, idx in zip(colors, subset_idx):
             ax.plot(time_axis, g_hist[idx], color=c, linewidth=2.0, label=f"g[{idx}]")
-            ax.axhline(g_opt[idx], color=c, linestyle=':', linewidth=2.0)
+            ax.axhline(g_opt_arr[idx], color=c, linestyle=':', linewidth=2.0)
         ax.set_title(title, fontsize=16, fontweight='bold')
         ax.set_xlabel("Time", fontsize=14, fontweight='bold')
         ax.set_ylabel("Gain", fontsize=14, fontweight='bold')
@@ -364,60 +388,6 @@ if __name__ == "__main__":
         ax.legend(fontsize=10)
     fig4.suptitle("Steady-state gain feedback per neuron: optimal vs. online gains",
                   fontsize=15, fontweight='bold')
-    plt.tight_layout()
-
-    # ==================================================================
-    # Plot 5 & 6: steady-state tuning curves (frozen, optimal gains) using
-    # get_response. Probe stimuli are evenly spaced stimulus centers across
-    # 180 degrees, each normalized to the same magnitude (||probe|| = CONTRAST,
-    # matching the actual stimulus streams). Plot 5 = uniform ensemble (g_opt).
-    # Plot 6 = biased ensemble (g_opt_bias), each neuron's curve normalized by
-    # that same neuron's max response in Plot 5 (its uniform-ensemble peak).
-    # ==================================================================
-    N_PROBES         = 180
-    probe_angles     = np.linspace(0, np.pi, N_PROBES, endpoint=False)
-    probe_angles_deg = probe_angles * 180 / np.pi
-
-    delta         = stim_gen.theta_inputs[:, None] - probe_angles[None, :]
-    delta         = (delta + np.pi / 2) % np.pi - np.pi / 2
-    probe_profile = np.exp(-delta**2 / (2 * TUNING_WIDTH**2))
-    # Every probe column normalized to the same magnitude (CONTRAST), only the
-    # stimulus center changes from column to column.
-    probes = CONTRAST * probe_profile / np.linalg.norm(probe_profile, axis=0, keepdims=True)
-
-    responses_uni  = np.stack([get_response(probes[:, j], g_opt)      for j in range(N_PROBES)], axis=1)
-    responses_bias = np.stack([get_response(probes[:, j], g_opt_bias) for j in range(N_PROBES)], axis=1)
-
-    uni_max             = responses_uni.max(axis=1, keepdims=True)  # (N_RF, 1) - each neuron's uniform-ensemble peak
-    responses_bias_norm = responses_bias / uni_max
-
-    colors_neuron = plt.cm.viridis(np.linspace(0.1, 0.9, N_RF))
-
-    fig5, ax5 = plt.subplots(figsize=(8, 5.5))
-    for n in range(N_RF):
-        ax5.plot(probe_angles_deg, responses_uni[n], color=colors_neuron[n], linewidth=2.0)
-    ax5.set_title("Steady-state tuning curves - Uniform Ensemble (optimal gains)",
-                  fontsize=14, fontweight='bold')
-    ax5.set_xlabel("Stimulus Center (deg)", fontsize=13, fontweight='bold')
-    ax5.set_ylabel("Steady-state Response", fontsize=13, fontweight='bold')
-    ax5.set_xlim(0, 180)
-    ax5.spines['top'].set_visible(False)
-    ax5.spines['right'].set_visible(False)
-    ax5.tick_params(width=2.0, length=6, labelsize=11)
-    plt.tight_layout()
-
-    fig6, ax6 = plt.subplots(figsize=(8, 5.5))
-    for n in range(N_RF):
-        ax6.plot(probe_angles_deg, responses_bias_norm[n], color=colors_neuron[n], linewidth=2.0)
-    ax6.set_title("Steady-state tuning curves - Biased Ensemble (optimal gains)\n"
-                  "normalized by each neuron's Uniform-Ensemble max",
-                  fontsize=14, fontweight='bold')
-    ax6.set_xlabel("Stimulus Center (deg)", fontsize=13, fontweight='bold')
-    ax6.set_ylabel("Normalized Response", fontsize=13, fontweight='bold')
-    ax6.set_xlim(0, 180)
-    ax6.spines['top'].set_visible(False)
-    ax6.spines['right'].set_visible(False)
-    ax6.tick_params(width=2.0, length=6, labelsize=11)
     plt.tight_layout()
 
     plt.show()

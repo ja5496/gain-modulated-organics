@@ -169,7 +169,7 @@ class Frame:
         return W
 
 
-def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_length=10920):
+def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_length=10920, plot=True):
     '''
     Idealized covariance matrix of normalized responses to a uniform ensemble, for a
     single receptive field (N_RF neurons, N_SETS=1 so generate_surround_ensembles returns
@@ -184,9 +184,11 @@ def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_leng
     a stale sigma here makes theta_t (simulation_whiten.py:241) mismatch the live model's
     actual steady-state variance under a uniform ensemble, biasing g/v adaptation even with
     no real adaptation happening. Beta=0.5 matches get_optimal_gains_target's Beta.
+
+    plot (bool): if True (default), shows a heatmap of the resulting covariance matrix.
     '''
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=1, stream_length=stream_length)
-    profiles = stim_gen.generate_surround_ensembles('adapt CRF only', biased=False)  # (N_RF, T)
+    profiles = stim_gen.generate_surround_ensembles('adapt CRF only', biased=False, add_poisson_noise=True)  # (N_RF, T)
 
     uniform_stimuli = profiles.T  # (T, N_RF): rows = timesteps, columns = neurons, matching np.cov(rowvar=False)
     N_matrix = np.ones((N_RF, N_RF))
@@ -196,7 +198,22 @@ def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_leng
     denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
     covariance_array = raw_input_drive / denom
 
-    return np.cov(covariance_array, rowvar=False)
+    Covariance = np.cov(covariance_array, rowvar=False)
+
+    if plot:
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(Covariance, cmap='viridis', aspect='auto')
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title('Uniform Target Covariance', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Neuron index', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Neuron index', fontsize=12, fontweight='bold')
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.0)
+        ax.tick_params(width=2.0, length=5)
+        plt.tight_layout()
+        plt.show()
+
+    return Covariance
 
 
 def save_uniform_target_covariance(N_RF=13, out_dir="data/target_covs"):
@@ -210,12 +227,12 @@ def save_uniform_target_covariance(N_RF=13, out_dir="data/target_covs"):
 
 
 if __name__ == "__main__":
-    np.random.seed(42)
-    choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
-    while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
-        choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
-    frame = Frame(dim=13, frame_type=choice)
-    np.savetxt(f"Frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
+    #np.random.seed(42)
+    #choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
+    #while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
+    #    choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
+    #frame = Frame(dim=13, frame_type=choice)
+    #np.savetxt(f"Frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
 
-    save_uniform_target_covariance(N_RF=frame.dim)
+    save_uniform_target_covariance(N_RF=13)
 
