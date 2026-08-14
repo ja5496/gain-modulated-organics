@@ -44,11 +44,11 @@ class V1Dynamics:
         self.input_adaptive = input_adaptive
 
         self.tau_y = 0.2 
-        self.tau_a = 1.0  
-        self.tau_u = 0.4 
-        self.tau_g = 100.0 
-        self.tau_v = 100.0 # from 50
-        self.tau_avg = 10 
+        self.tau_a = 0.2  
+        self.tau_u = 12.0 
+        self.tau_g = 500.0 
+        self.tau_v = 5.0 # from 50
+        self.tau_avg = 12.0 
         self.tau_avg_z = 400
         
         self.sigma = 0.4
@@ -245,7 +245,7 @@ class V1Dynamics_Surround:
         dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
         surround_gain_feedback = self.frame.W @ (g_surround * v_surround)
 
-        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ sqrt_y_plus) # matches Norm_Dynamics_1 (norm_diagnostic.py) - no complementary -sqrt_y_minus term
+        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ (sqrt_y_plus - sqrt_y_minus)) # matches Norm_Dynamics_1 (norm_diagnostic.py) - no complementary -sqrt_y_minus term
         input_drive = self.beta * z_t
 
         # Local gain feedback matrix that can be applied to the full y dynamics

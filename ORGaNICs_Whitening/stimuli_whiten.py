@@ -109,7 +109,7 @@ class StimulusGenerator:
         return profiles
     
     def generate_surround_ensembles(self, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
-                                 biased=False, return_angles=False,
+                                 biased=False, return_angles=False, mean_center=False,
                                  duration=20, add_poisson_noise=False, poisson_fano=1.0):
         '''
         Generate uniform or biased ensemble of raised cosine input profiles
@@ -224,8 +224,12 @@ class StimulusGenerator:
             norms = np.linalg.norm(profiles, axis=0, keepdims=True)
             profiles = profiles * np.minimum(1.0, 1.0 / norms)
 
+        if mean_center:
+            profiles -= profiles.mean(axis=1, keepdims=True)
+
         if return_angles:
             return profiles, centers
+        
 
         return profiles
 
