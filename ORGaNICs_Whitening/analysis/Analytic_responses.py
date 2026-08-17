@@ -76,8 +76,36 @@ def get_optimal_gains(stimuli, frame, label='', no_norm=False, poisson_variance=
 
     return g_opt
 
+def _pooled_denom(raw_input_drive, pool_stimuli, Beta):
+    '''
+    Divisive-normalization denominator for raw_input_drive (T, N_local) -- the numerator, drawn
+    from the local frame's own neurons.
+
+    If pool_stimuli (T, N_pool) is None, the denominator is the local drive's own pooled energy
+    (the original single-RF behavior: N_local == N_pool and the local ensemble IS the pool), using
+    the module-level N_matrix sized to N_local.
+
+    If pool_stimuli is given, it supplies a normalization pool that extends beyond the local
+    frame's own neurons (e.g. a cRF RF whose surround is co-active) -- the numerator stays local,
+    but the pooled squared drive summed over ALL of pool_stimuli's neurons determines how much
+    divisive suppression that local drive experiences. This assumes uniform, non-distance-weighted
+    pooling (N_matrix == np.ones(...) everywhere in this codebase, i.e. every pool neuron
+    contributes equally and every local neuron sees the same scalar pooled denom for a given
+    sample) rather than reusing the module-level N_matrix, which is sized for N_local, not
+    N_pool, and would raise a shape mismatch here.
+    '''
+    if pool_stimuli is None:
+        Z_sq = raw_input_drive ** 2
+        return np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
+
+    pool_stimuli = np.asarray(pool_stimuli)
+    pool_Z_sq = (pool_stimuli * Beta) ** 2
+    pooled_energy = pool_Z_sq.sum(axis=1, keepdims=True)   # (T, 1); equals N_matrix @ pool_Z_sq.T for all-ones N_matrix
+    return np.sqrt(sigma**2 + pooled_energy)
+
 def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_stimuli=None,
-                                poisson_variance=False, target_covariance=None):
+                                poisson_variance=False, target_covariance=None,
+                                pool_stimuli=None, pool_uniform_stimuli=None):
     '''
     target_covariance (optional): an (N, N) covariance matrix to use directly as the target,
     instead of estimating one from a fresh uniform_stimuli sample - e.g. the same
@@ -85,6 +113,14 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     simulation_whiten.py's V1Dynamics_Surround), so the analytic gains are computed against
     the exact target the live network is actually being pulled toward. Takes precedence over
     uniform_stimuli if both are given.
+
+    pool_stimuli / pool_uniform_stimuli (optional): full normalization-pool stimulus arrays
+    (T, N_pool), e.g. the whole cRF+surround population's drive under a given adaptation
+    condition, used to compute the divisive denominator instead of stimuli/uniform_stimuli's
+    own local sum. Use this whenever the local `frame`'s neurons are only part of a wider shared
+    normalization pool -- stimuli/uniform_stimuli remain the numerator (this RF's own drive,
+    which sets the target whitening structure), while the pool arrays set how strongly that drive
+    is divisively suppressed (summed uniformly over all N_pool pool neurons; see _pooled_denom).
     '''
     N, K = frame.shape  # N = 13, K = 91
 
@@ -92,8 +128,7 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     stimuli = np.asarray(stimuli)
     Beta = 0.5
     raw_input_drive = stimuli * Beta
-    Z_sq = (raw_input_drive) ** 2
-    denom = np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
+    denom = _pooled_denom(raw_input_drive, pool_stimuli, Beta)
     covariance_array = raw_input_drive / denom
 
     if no_norm == True:
@@ -120,8 +155,7 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
         # Target variance from the uniform ensemble
         uniform_stimuli = np.asarray(uniform_stimuli)
         uniform_raw_drive = uniform_stimuli * Beta
-        uniform_Z_sq = uniform_raw_drive ** 2
-        uniform_denom = np.sqrt(sigma**2 + (N_matrix @ uniform_Z_sq.T).T)
+        uniform_denom = _pooled_denom(uniform_raw_drive, pool_uniform_stimuli, Beta)
         uniform_covariance_matrix = uniform_raw_drive / uniform_denom
         uniform_Covariance = (np.cov(uniform_raw_drive, rowvar=False) if no_norm
                               else np.cov(uniform_covariance_matrix, rowvar=False))

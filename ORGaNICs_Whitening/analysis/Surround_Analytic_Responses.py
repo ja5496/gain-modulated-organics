@@ -11,12 +11,16 @@ same per-RF frame, so the 6 surround sets are treated as fully interchangeable (
 weighting) -- only cRF vs. non-cRF membership matters.
 
 Methodology:
-1. Optimal gains for a single 13-neuron RF pool are computed once per ensemble type (baseline
-   uniform, or adaptor-biased) and shared across every set that sees that ensemble.
+1. Optimal gains for a single 13-neuron RF pool are computed once PER ADAPTATION CONDITION
+   (cRF-only / surround-only / cRF+surround), not once overall -- the divisive normalization
+   pool is global (all 91 neurons), so how much of the population is co-active during that
+   condition changes how strongly a driven RF's output is suppressed, and therefore what gains
+   are needed to whiten it to the shared target. Each condition's gains are fit against a
+   covariance computed with that condition's actual full-population pool composition.
 2. For each of the 4 adaptation conditions (none / cRF-only / non-cRF-only / both), a block-diagonal
-   feedback matrix M (91x91) is assembled from those per-RF gains, and mu = <y> is found via a joint
-   self-consistency loop over the full 91-neuron population (normalization pools across all 91;
-   gain feedback stays within each 13-neuron block).
+   feedback matrix M (91x91) is assembled from that condition's own per-RF gains, and mu = <y> is
+   found via a joint self-consistency loop over the full 91-neuron population (normalization pools
+   across all 91; gain feedback stays within each 13-neuron block).
 3. Steady-state responses to probe stimuli (shown to the full population)
    are computed in closed form from the probe, optimal gains, and mu.
 '''
@@ -42,15 +46,15 @@ N_TOTAL    = N_RF * N_SETS         # full primary-neuron population
 CRF_IDX    = 0                     # which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
-sigma = 14
+sigma = 0.4
 Beta  = 0.5
 
 
-ENSEMBLE_CONTRAST = 0.8      # contrast of the adaptation ensembles (baseline & adaptor)
+ENSEMBLE_CONTRAST = 0.6      # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH      = 0.75
 N_CONTRASTS   = 20
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 0.05   
+PROBE_CONTRAST = 0.2   
 N_PROBES       = 720
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
@@ -63,16 +67,17 @@ COLOR_BOTH   = 'darkorange'
 def half_wave_rectify(y):
     return np.maximum(y, 0.0) ** 2
 
-def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
-    '''Always probing with a stimulus that cover both CRF and surround, no matter the adaptation state'''
+def probe_local_profile(input_theta, contrast, tuning_width=TUNING_WIDTH):
+    '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding.'''
     theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False) # Evenly spaced orientation preferences for neurons
     delta = theta_grid - input_theta # Distance between neuron preference from stimulus orientation
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2
-    profile = np.exp(-delta**2 / (2 * tuning_width**2))  
-    RF_gaussian_drive = contrast * 15 * profile #/ np.max(profile) # Gaussian input response profile scaled by contrast
+    profile = np.exp(-delta**2 / (2 * tuning_width**2))
+    return contrast * 1 * profile / np.linalg.norm(profile) # Gaussian input response profile scaled by contrast
 
-    full_drive =  np.concatenate([RF_gaussian_drive]  * (N_SETS))
-    return full_drive
+def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
+    '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation state.'''
+    return np.concatenate([probe_local_profile(input_theta, contrast, tuning_width)] * N_SETS)
 
 def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     match adapt_location:
@@ -102,12 +107,12 @@ def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt 
 def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     match adapt_location:
         case 'adapt CRF only':
-            baseline = np.full(N_RF, 1.0)            
+            baseline = np.full(N_RF, 0.0)            
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([stimuli] + [baseline] * repeats)
             return full_stimuli
         case 'adapt surround only':
-            baseline = np.full(N_RF, 1.0)
+            baseline = np.full(N_RF, 0.0)
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([baseline] + [stimuli] * repeats)
             return full_stimuli
@@ -115,7 +120,7 @@ def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'ada
             full_stimuli = np.concatenate([stimuli] * N_SETS)
             return full_stimuli
         case 'no adaptation':
-            baseline = np.full(N_RF, 1.0)            
+            baseline = np.full(N_RF, 0.0)            
             full_stimuli = np.concatenate([baseline] * N_SETS)
             return full_stimuli
 
@@ -171,8 +176,11 @@ if __name__ == "__main__":
     tunings = V1Tunings(N=N_RF)
     frame   = Frame(csv_path=FRAME_PATH)
 
-    # Optimal gains are derived from a single 13-neuron RF pool, so the covariance/
-    # normalization pool used to derive them is local (13x13), not the full 91x91 pool.
+    # Gains are still solved for a single 13-neuron RF's frame (the numerator), but the
+    # denominator now comes from the true full-population pool via pool_stimuli passed
+    # explicitly below (summed uniformly over all N_pool neurons -- see _pooled_denom).
+    # ar.N_matrix is only the fallback used if pool_stimuli is omitted, so keep it at the
+    # local (13x13) shape for that fallback case.
     ar.sigma    = sigma
     ar.N_matrix = np.ones((N_RF, N_RF))
 
@@ -188,11 +196,7 @@ if __name__ == "__main__":
     adaptor_idx = N_RF // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
 
-    # Build the biased stream manually for equal non-adaptor representation --
-    # generate_input_ensembles(biased=True) overwrites the first third of its
-    # (pre-shuffle) index array with the adaptor index, so when stream_length
-    # == num_angles (one un-shuffled cycle) that wipes out the first floor(N/3)
-    # orientations entirely instead of just up-weighting the adaptor.
+    # Build the biased stream manually for equal non-adaptor representation 
     n_non_adaptor  = N_RF - 1
     n_adaptor_reps = n_non_adaptor // 2
 
@@ -209,18 +213,37 @@ if __name__ == "__main__":
     delta = stim_gen.theta_inputs[:, None] - centers_bias[None, :]
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2
     seq_bias = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
-    seq_bias = stim_gen.contrast * 15 * seq_bias / np.max(seq_bias)
+    seq_bias = stim_gen.contrast * 1 * seq_bias / np.linalg.norm(seq_bias)
     stimuli_bias = list(seq_bias.T)
 
-    print("Computing optimal gains (biased)...")
-    g_opt = ar.get_optimal_gains_target(stimuli_bias, frame.W, label='biased',
-                                        poisson_variance=True, uniform_stimuli=stimuli_uni)
+    # ---- Optimal gains, one set per stimulus condition ----
+    # The whitening TARGET (the variance level gains are fit to reach) is anchored to a single
+    # common reference across all three conditions: the uniform ensemble under the "large"
+    # (cRF + surround) stimulus, i.e. the full 91-neuron pool driven by the uniform ensemble.
+    # Only the BIASED ensemble's pool composition (the numerator/suppression side of the fit)
+    # varies per condition -- so cRF-only, surround-only, and cRF+surround gains all whiten
+    # toward the same reference variance, differing only in how strongly their own condition's
+    # pool suppresses the biased drive.
+    GAIN_CONDITIONS = ['adapt CRF only', 'adapt surround only', 'adapt CRF and surround']
+    pool_uni = np.array([full_spatial_stimuli(z, 'adapt CRF and surround') for z in stimuli_uni])
+    print("Computing optimal gains...")
+    g_opt_by_condition = {}
+    for cond in GAIN_CONDITIONS:
+        pool_bias = np.array([full_spatial_stimuli(z, cond) for z in stimuli_bias])
+        g_opt_by_condition[cond] = ar.get_optimal_gains_target(
+            stimuli_bias, frame.W, label=f'biased ({cond})',
+            poisson_variance=True, uniform_stimuli=stimuli_uni,
+            pool_stimuli=pool_bias, pool_uniform_stimuli=pool_uni)
 
     print("Building M for each condition...")
-    M_by_condition = {cond: block_diag_M(frame.W, g_opt, cond) for cond in CONDITIONS}
+    M_by_condition = {
+        cond: block_diag_M(frame.W, g_opt_by_condition[cond], cond) if cond in g_opt_by_condition
+              else block_diag_M(frame.W, None, cond)
+        for cond in CONDITIONS
+    }
 
     # ==========================================================================
-    # CHECK 2 -- Plot probe_input_drive, centered at the biased ensemble's adaptor
+    # CHECK 1 -- Plot probe_input_drive, centered at the biased ensemble's adaptor
     # ==========================================================================
     print("Plotting probe_input_drive...")
     probe_drive = probe_input_drive(adaptor_rad, PROBE_CONTRAST)
@@ -242,7 +265,23 @@ if __name__ == "__main__":
         mu_by_condition[cond] = get_mu(full_stimuli, M_by_condition[cond])
 
     # ==========================================================================
-    # CHECK 5 -- Contrast response functions of the cRF neuron that prefers the adaptor
+    # DIAGNOSTIC -- mu (expected steady-state response, <y>) per adaptation condition
+    # ==========================================================================
+    print("Plotting mu per condition...")
+    fig_mu, ax_mu = plt.subplots(figsize=(9, 4))
+    for cond in CONDITIONS:
+        ax_mu.plot(mu_by_condition[cond], color=CONDITION_COLOR[cond],
+                   linewidth=2.5, label=CONDITION_LABEL[cond])
+    for s in range(1, N_SETS):
+        ax_mu.axvline(s * N_RF - 0.5, color='grey', linestyle='--', linewidth=1.0)
+    ax_mu.set_xlabel("Neuron index (7 sets x 13 neurons; set 0 = cRF)")
+    ax_mu.set_ylabel(r"$\mu = \langle y \rangle$")
+    ax_mu.set_title("Expected response mu per adaptation condition", fontweight='bold')
+    ax_mu.legend()
+    plt.tight_layout(); plt.show()
+
+    # ==========================================================================
+    # CHECK 2 -- Contrast response functions of the cRF neuron that prefers the adaptor
     # ==========================================================================
     print("Computing contrast response functions...")
     crf_target_idx = CRF_IDX * N_RF + adaptor_idx
@@ -294,7 +333,7 @@ if __name__ == "__main__":
     plt.tight_layout(); plt.show()
 
     # ==========================================================================
-    # CHECK 6 -- Gain feedback (M @ mu) for each adaptation case
+    # CHECK 3 -- Gain feedback (M @ mu) for each adaptation case
     # ==========================================================================
     print("Computing gain feedback...")
     gain_feedback_by_condition = {

@@ -370,7 +370,7 @@ class StimulusGenerator:
             delta_theta = theta_fine - self.theta_inputs[i]
             delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
             profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3
-            scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+            scale = 1 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
             profile = scale * profile / np.max(profile)
             ax.plot(theta_fine_deg, profile, color=colors[i], alpha=0.7, linewidth=1.2)
 
