@@ -99,7 +99,7 @@ def _pooled_denom(raw_input_drive, pool_stimuli, Beta):
         return np.sqrt(sigma**2 + (N_matrix @ Z_sq.T).T)
 
     pool_stimuli = np.asarray(pool_stimuli)
-    pool_Z_sq = (pool_stimuli * Beta) ** 2
+    pool_Z_sq = (pool_stimuli) ** 2
     pooled_energy = pool_Z_sq.sum(axis=1, keepdims=True)   # (T, 1); equals N_matrix @ pool_Z_sq.T for all-ones N_matrix
     return np.sqrt(sigma**2 + pooled_energy)
 
@@ -163,7 +163,7 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     else:
         target = np.mean(eigenvalues) # Set the mean variance as the upper bound ("target")
 
-    d = np.sqrt(target / safe_lambdas) #np.minimum(1.0, np.sqrt(target / safe_lambdas))
+    d = np.minimum(1.0, np.sqrt(target / safe_lambdas))
     T = eigenvectors @ np.diag(d) @ eigenvectors.T
 
     # NOW COMPUTE OPTIMAL GAINS WITH LYNDON'S EQUATION A.5 

@@ -103,7 +103,30 @@ def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt 
             repeats = N_SETS  # number of times the zero feedback must be copied to cover CRF and surround
             M = block_diag(*[M_zeros_local] * repeats)
             return M
-        
+
+def block_diag_W(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
+    '''
+    Block-diagonal embedding of the shared per-RF frame across all N_SETS sets, together with the
+    matching full-length gain vector for `adapt_location` -- mirrors block_diag_M's per-condition
+    dispatch exactly, but keeps W and g separate instead of fusing them into M = W@diag(g)@W.T, so
+    the interneuron/variance-proxy activity v = W_full.T @ y_centered stays inspectable on its own
+    (needed by get_response_fast_v). Returns (W_full, g_full): W_full is (N_TOTAL, N_SETS*K),
+    g_full is (N_SETS*K,).
+    '''
+    K = frame.shape[1]
+    zeros_local = np.zeros(K)
+    W_full = block_diag(*[frame] * N_SETS)
+    match adapt_location:
+        case 'adapt CRF only':
+            g_full = np.concatenate([g_opt] + [zeros_local] * (N_SETS - 1))
+        case 'adapt surround only':
+            g_full = np.concatenate([zeros_local] + [g_opt] * (N_SETS - 1))
+        case 'adapt CRF and surround':
+            g_full = np.concatenate([g_opt] * N_SETS)
+        case 'no adaptation':
+            g_full = np.concatenate([zeros_local] * N_SETS)
+    return W_full, g_full
+
 def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     match adapt_location:
         case 'adapt CRF only':
@@ -147,6 +170,47 @@ def get_mu(stimuli, M, alpha=0.1, Beta=0.5):
     pbar.close()
     return mu
     
+def get_mu_norm(stimuli):
+    '''
+    Ensemble mean of the (adaptation-free) NORMALIZED response, i.e. <y_norm> = <z / sqrt(sigma^2 +
+    N_matrix @ z^2)> averaged over the ensemble. This is NOT the same as normalizing the mean
+    stimulus (sqrt(...) is nonlinear, so normalize-the-mean != mean-of-normalized, a Jensen's-gap
+    difference) -- must match how y_norm is computed per-sample in get_response_fast_v.
+    '''
+    stimuli = np.asarray(stimuli)                                       # (T, N_TOTAL)
+    denom = np.sqrt(sigma**2 + (N_matrix @ (stimuli**2).T).T)            # (T, N_TOTAL)
+    y_norm_samples = stimuli / denom                                    # (T, N_TOTAL)
+    return y_norm_samples.mean(axis=0)                                  # (N_TOTAL,)
+
+def get_response_fast_v(stimulus, mu_norm, W_full, g_full, Beta=0.5):
+    '''
+    y and v settle together at the SAME (fast) timescale, per stimulus -- matching Duong's
+    adaptive-gain-modulation-with-a-fixed-frame algorithm: the response and its variance estimate
+    are computed jointly for each input, while only the gains g are slow (already fixed here via
+    the batch optimal-gains solve; no update happens in this function). v is therefore re-derived
+    from THIS `stimulus` every call, mean-centered against mu_norm (the ensemble's own typical
+    feedback-free response), NOT frozen from the ensemble alone.
+    W_full/g_full come from block_diag_W(frame.W, g_opt, adapt_location) -- NOT the raw local
+    frame.W/g_opt, since y_norm/y_centered/stimulus are population-wide (N_TOTAL,) and the shared
+    per-RF frame must be block-embedded across all N_SETS sets to match that width.
+    '''
+    # (1) Fast: normalized response to the stimulus with NO adaptive/gain feedback at all
+    y_norm = stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2))
+
+    # (2) Interneuron/variance-proxy activity: mean-centered projection onto the shared frame,
+    # settling at the same timescale as y_norm (both driven by this same stimulus)
+    y_centered = y_norm - mu_norm
+    v_steady = W_full.T @ y_centered
+
+    # (3) Gain-modulated feedback subtracted from the raw feedforward drive
+    z_prime = (1 / Beta) * (Beta * stimulus - W_full @ (g_full * v_steady))
+
+    # (4) Re-normalize the corrected drive
+    y_steady = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
+    rectified_y = half_wave_rectify(y_steady)
+
+    return rectified_y
+
 def get_response(stimulus, mu, M, Beta=0.5):
     gain_feedback = M @ mu
     z_prime = 2 * (Beta * stimulus - gain_feedback)
@@ -235,10 +299,26 @@ if __name__ == "__main__":
             poisson_variance=True, uniform_stimuli=stimuli_uni,
             pool_stimuli=pool_bias, pool_uniform_stimuli=pool_uni)
 
+    # CALCULATE mu_norm BY CONDITION RIGHT 
+    mu_norm_by_condition = {}
+    for cond in CONDITIONS:
+        print(f"Computing mu ({CONDITION_LABEL[cond]})...")
+        full_stimuli = [full_spatial_stimuli(z, cond) for z in stimuli_bias]
+        mu_norm_by_condition[cond] = get_mu_norm(full_stimuli)
+
     print("Building M for each condition...")
     M_by_condition = {
         cond: block_diag_M(frame.W, g_opt_by_condition[cond], cond) if cond in g_opt_by_condition
               else block_diag_M(frame.W, None, cond)
+        for cond in CONDITIONS
+    }
+
+    # Block-diagonal (W_full, g_full) per condition for get_response_fast_v -- built once here
+    # (like M_by_condition) rather than per-probe, and using frame.W (the local per-RF frame
+    # array) + block_diag_W's own population-wide embedding, not the raw Frame object.
+    Wg_full_by_condition = {
+        cond: block_diag_W(frame.W, g_opt_by_condition[cond], cond) if cond in g_opt_by_condition
+              else block_diag_W(frame.W, None, cond)
         for cond in CONDITIONS
     }
 
@@ -264,21 +344,6 @@ if __name__ == "__main__":
         full_stimuli = [full_spatial_stimuli(z, cond) for z in stimuli_bias]
         mu_by_condition[cond] = get_mu(full_stimuli, M_by_condition[cond])
 
-    # ==========================================================================
-    # DIAGNOSTIC -- mu (expected steady-state response, <y>) per adaptation condition
-    # ==========================================================================
-    print("Plotting mu per condition...")
-    fig_mu, ax_mu = plt.subplots(figsize=(9, 4))
-    for cond in CONDITIONS:
-        ax_mu.plot(mu_by_condition[cond], color=CONDITION_COLOR[cond],
-                   linewidth=2.5, label=CONDITION_LABEL[cond])
-    for s in range(1, N_SETS):
-        ax_mu.axvline(s * N_RF - 0.5, color='grey', linestyle='--', linewidth=1.0)
-    ax_mu.set_xlabel("Neuron index (7 sets x 13 neurons; set 0 = cRF)")
-    ax_mu.set_ylabel(r"$\mu = \langle y \rangle$")
-    ax_mu.set_title("Expected response mu per adaptation condition", fontweight='bold')
-    ax_mu.legend()
-    plt.tight_layout(); plt.show()
 
     # ==========================================================================
     # CHECK 2 -- Contrast response functions of the cRF neuron that prefers the adaptor
@@ -288,9 +353,11 @@ if __name__ == "__main__":
 
     def crf_curve(cond):
         resp = np.zeros(N_CONTRASTS)
+        W_full, g_full = Wg_full_by_condition[cond]
         for i, c in enumerate(CRF_CONTRASTS):
             probe = probe_input_drive(adaptor_rad, c)
-            y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])
+            y = get_response(probe, mu_by_condition[cond], M_by_condition[cond]) # USE IF SLOW "v"
+            #y = get_response_fast_v(probe, mu_norm_by_condition[cond], W_full, g_full) # USE IF FAST "v"
             resp[i] = y[crf_target_idx]
         return resp
 
