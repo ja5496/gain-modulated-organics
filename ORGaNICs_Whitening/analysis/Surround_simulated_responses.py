@@ -16,13 +16,21 @@ self-consistency loop):
 1. Adaptation phase: for each of the 4 conditions, generate_surround_ensembles (stimuli_whiten.py)
    builds a long stimulus stream with the biased/adaptor ensemble routed to whichever region(s)
    the condition adapts, and V1Dynamics_Surround.run_simulation integrates the full state
-   (y, u, a, g_cRF, g_surround, v_cRF, v_surround) forward until adaptation settles. "no adaptation"
-   is a special case that skips this entirely and forces gain feedback to exactly zero, isolating
-   pure normalization (y/u/a only, no whitening-based gain-feedback term) as the control condition.
-2. The adapted g_cRF, g_surround, v_cRF, v_surround are frozen (read off the final state) - these
-   fully determine a fixed gain-feedback vector, matching the role of M @ mu in the analytic script.
+   (y, u, a, g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround) forward until adaptation
+   settles. mu_cRF/mu_surround are slow (tau_mu ~ tau_g) trackers of E[y] used inside the live gain
+   dynamics to mean-center v before comparing it to theta_t (see V1Dynamics_Surround._derivatives) -
+   without this, v's own mean drive (not just its fluctuation around that mean) gets counted toward
+   the variance target. "no adaptation" is a special case that skips this entirely and forces gain
+   feedback to exactly zero, isolating pure normalization (y/u/a only, no whitening-based
+   gain-feedback term) as the control condition.
+2. g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround are all frozen (read off the final
+   adaptation-phase state).
 3. get_response settles the fast (y, u, a) dynamics to steady state for a given probe stimulus,
-   holding that gain feedback fixed (i.e. no further adaptation during the probe).
+   holding g_cRF/g_surround fixed (no further gain adaptation), but letting v_cRF/v_surround evolve
+   dynamically - initialized to W.T @ mu (the frame-projected mean, i.e. "no fluctuation yet") and
+   integrated for N_SETTLE_STEPS, so gain feedback can partially re-equilibrate to the probe's own
+   drive rather than staying at whatever v happened to be at the end of the (very different) long
+   adaptation stream.
 4. The contrast response function is the settled response of the cRF neuron whose tuning
    preference is the adaptor orientation, probed with stimuli centered at that same orientation.
 '''
@@ -118,7 +126,11 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     '''
     Simulates the adaptation state for one condition: builds the appropriate stimulus stream
     via generate_surround_ensembles and integrates V1Dynamics_Surround's full dynamics forward
-    until the gains settle. Returns the frozen (g_cRF, g_surround, v_cRF, v_surround).
+    until the gains settle. Returns the frozen (g_cRF, g_surround, v_cRF, v_surround, mu_cRF,
+    mu_surround) - mu_cRF/mu_surround are read off this SAME adaptation-phase run (not recomputed
+    offline), matching V1Dynamics_Surround's online mu state. get_response uses mu (not the frozen
+    v_cRF/v_surround returned here) as v's initial condition when probing - see get_response's
+    docstring; v_cRF/v_surround are still returned for diagnostic completeness.
 
     "no adaptation" is forced to exactly zero gain feedback instead - it's the pure-normalization
     control condition, not adaptation to a uniform ensemble, so it skips the simulation entirely
@@ -128,47 +140,69 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     For the other three conditions, whichever region generate_surround_ensembles does NOT route
     the biased/adaptor ensemble to only sees the flat, orientation-less baseline (0.15 everywhere -
     not a real uniform ensemble), so its gain feedback is forced to zero too rather than left to
-    adapt to that non-stimulus: dg/dt = (v^2 - theta_t)/tau_g has no leak term, so responding to a
-    constant baseline for the full adaptation stream would otherwise just accumulate an arbitrary,
-    unbounded drift in g (theta_t is derived from the true random-orientation uniform ensemble, not
-    this flat baseline, so v^2 never matches it under baseline exposure).
+    adapt to that non-stimulus: dg/dt = ((v - W.T@mu)^2 - theta_t)/tau_g has no leak term, so
+    responding to a constant baseline for the full adaptation stream would otherwise just accumulate
+    an arbitrary, unbounded drift in g (theta_t is derived from the true random-orientation uniform
+    ensemble, not this flat baseline, so (v - W.T@mu)^2 never matches it under baseline exposure).
+    mu for that same region is zeroed alongside g/v for consistency - it was only ever tracking the
+    flat baseline's mean, not a meaningful adapted quantity.
     '''
+    K = dyn.frame.K
+    N_RF = dyn.N_RF
+
     if cond == 'no adaptation':
-        zeros = np.zeros(dyn.frame.K)
-        return zeros, zeros, zeros, zeros
+        zeros_K = np.zeros(K)
+        zeros_N = np.zeros(N_RF)
+        return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N
 
     stream = stim_gen.generate_surround_ensembles(
         ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=ADAPT_DURATION, add_poisson_noise=False)
     dyn.run_simulation(stream)
 
-    K = dyn.frame.K
     N_TOT = dyn.N_RF * dyn.N_SETS
     state = dyn.last_state
     g_cRF = state[3*N_TOT:3*N_TOT+K]
     g_surround = state[3*N_TOT+K:3*N_TOT+2*K]
     v_cRF = state[3*N_TOT+2*K:3*N_TOT+3*K]
     v_surround = state[3*N_TOT+3*K:3*N_TOT+4*K]
+    mu_cRF = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
+    mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
 
     if cond == 'adapt CRF only':
         g_surround = np.zeros(K)
         v_surround = np.zeros(K)
+        mu_surround = np.zeros(N_RF)
     elif cond == 'adapt surround only':
         g_cRF = np.zeros(K)
         v_cRF = np.zeros(K)
+        mu_cRF = np.zeros(N_RF)
     # 'adapt CRF and surround' shows the biased ensemble to both regions, so both keep their
     # adapted gains.
 
-    return g_cRF, g_surround, v_cRF, v_surround
+    return g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround
 
 
-def frozen_derivatives(state, z_t, dyn, full_gain_feedback):
-    '''y/u/a dynamics only, matching V1Dynamics_Surround._derivatives, but with the gain-feedback
-    term fixed rather than derived from evolving g/v state - used to settle the fast dynamics to
-    steady state under frozen (post-adaptation) gains.'''
+def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
+    '''y/u/a/v_cRF/v_surround dynamics, matching V1Dynamics_Surround._derivatives, but with
+    g_cRF/g_surround held fixed (no gain adaptation - dg/dt is omitted) while v_cRF/v_surround
+    remain genuinely dynamic. Gain feedback is therefore recomputed from the CURRENT v at every
+    call, not passed in as a frozen constant, so it can partially re-equilibrate to whatever probe
+    stimulus is shown - see get_response.
+
+    NOTE: unlike the true _derivatives, this omits the "- sqrt_y_minus" term from recurrent_drive.
+    That discrepancy predates this change (not introduced here) - flagging it because it means
+    probe-phase and adaptation-phase recurrent drive aren't identical; left as-is, out of scope for
+    the current request.
+    '''
     N_TOT = dyn.N_RF * dyn.N_SETS
+    N_RF = dyn.N_RF
+    K = dyn.frame.K
+
     y = state[0:N_TOT]
     u = state[N_TOT:2*N_TOT]
     a = state[2*N_TOT:3*N_TOT]
+    v_cRF = state[3*N_TOT:3*N_TOT+K]
+    v_surround = state[3*N_TOT+K:3*N_TOT+2*K]
 
     u_plus = dyn.half_wave_rectify(u, 0.5)
     y_plus = dyn.half_wave_rectify(y, 2.0)
@@ -176,6 +210,13 @@ def frozen_derivatives(state, z_t, dyn, full_gain_feedback):
     a_plus = dyn.half_wave_rectify(a, 1.0)
     sqrt_y_plus = np.sqrt(y_plus)
     sqrt_y_minus = np.sqrt(y_minus)
+
+    dv_cRF_dt = (-v_cRF + dyn.frame.W.T @ y[:N_RF]) / dyn.tau_v
+    dv_surround_dt = (-v_surround + dyn.frame.W.T @ y[N_RF:2*N_RF]) / dyn.tau_v
+
+    cRF_gain_feedback = dyn.frame.W @ (g_cRF * v_cRF)
+    surround_gain_feedback = dyn.frame.W @ (g_surround * v_surround)
+    full_gain_feedback = np.concatenate([cRF_gain_feedback] + [surround_gain_feedback] * (dyn.N_SETS - 1))
 
     recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ sqrt_y_plus)  # matches Norm_Dynamics_1 (norm_diagnostic.py) - no complementary -sqrt_y_minus term
     input_drive = dyn.beta * z_t
@@ -187,31 +228,46 @@ def frozen_derivatives(state, z_t, dyn, full_gain_feedback):
     du_dt = (-u + sigma_term + pool_term) / dyn.tau_u
     da_dt = (-a + (1+ a_plus) * u_plus) / dyn.tau_a
 
-    return np.concatenate([dy_dt, du_dt, da_dt])
+    return np.concatenate([dy_dt, du_dt, da_dt, dv_cRF_dt, dv_surround_dt])
 
 
-def get_response(dyn, stimulus, g_cRF, g_surround, v_cRF, v_surround, n_steps=N_SETTLE_STEPS):
+def get_response(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=N_SETTLE_STEPS):
     '''
-    Settles the system (y, u, a) to steady state given a fixed probe stimulus and frozen adapted
-    gains (g_cRF, g_surround, v_cRF, v_surround) - no further gain adaptation happens here. Starts
-    from a zero initial state every call, so probes are independent of sweep order/history.
+    Settles the system (y, u, a) to steady state given a fixed probe stimulus, with g_cRF/g_surround
+    frozen (no gain adaptation) but v_cRF/v_surround now genuinely dynamic. v is initialized to the
+    PROJECTION of this condition's slow mean tracker through the frame, W.T @ mu_{cRF,surround} - the
+    value v would sit at if y were exactly at its mean with no fluctuation yet (dv/dt=0 at v=W.T@mu
+    when y=mu) - i.e. "before this probe, assume the fluctuating component sat at its expected
+    value" - then integrated for n_steps via the same dv/dt as the full dynamics, so gain feedback
+    can partially re-equilibrate to the probe's own drive. tau_v (1000) >> n_steps*dt (30 at the
+    default N_SETTLE_STEPS=300), so v generally will NOT reach the probe-specific steady state in
+    one settle window - by design (see conversation).
+
+    Starts y/u/a from a zero initial state every call, so probes are independent of sweep
+    order/history. Returns (y_final, v_cRF_final, v_surround_final).
     '''
     N_TOT = dyn.N_RF * dyn.N_SETS
+    K = dyn.frame.K
     dt = dyn.dt
 
-    cRF_gain_feedback = dyn.frame.W @ (g_cRF * v_cRF)
-    surround_gain_feedback = dyn.frame.W @ (g_surround * v_surround)
-    full_gain_feedback = np.concatenate([cRF_gain_feedback] + [surround_gain_feedback] * (dyn.N_SETS - 1))
+    v_cRF_init = dyn.frame.W.T @ mu_cRF
+    v_surround_init = dyn.frame.W.T @ mu_surround
 
-    state = np.zeros(3 * N_TOT)
+    state = np.zeros(3 * N_TOT + 2 * K)
+    state[3*N_TOT:3*N_TOT+K] = v_cRF_init
+    state[3*N_TOT+K:3*N_TOT+2*K] = v_surround_init
+
     for _ in range(n_steps):
-        k1 = frozen_derivatives(state, stimulus, dyn, full_gain_feedback)
-        k2 = frozen_derivatives(state + 0.5 * dt * k1, stimulus, dyn, full_gain_feedback)
-        k3 = frozen_derivatives(state + 0.5 * dt * k2, stimulus, dyn, full_gain_feedback)
-        k4 = frozen_derivatives(state + dt * k3, stimulus, dyn, full_gain_feedback)
+        k1 = frozen_derivatives(state, stimulus, dyn, g_cRF, g_surround)
+        k2 = frozen_derivatives(state + 0.5 * dt * k1, stimulus, dyn, g_cRF, g_surround)
+        k3 = frozen_derivatives(state + 0.5 * dt * k2, stimulus, dyn, g_cRF, g_surround)
+        k4 = frozen_derivatives(state + dt * k3, stimulus, dyn, g_cRF, g_surround)
         state += (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
-    return np.maximum(state[0:N_TOT], 0)
+    y_final = np.maximum(state[0:N_TOT], 0)
+    v_cRF_final = state[3*N_TOT:3*N_TOT+K]
+    v_surround_final = state[3*N_TOT+K:3*N_TOT+2*K]
+    return y_final, v_cRF_final, v_surround_final
 
 
 if __name__ == "__main__":
@@ -237,36 +293,72 @@ if __name__ == "__main__":
         frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond)
 
     # ==========================================================================
-    # Diagnostic: frozen gain feedback per condition (the term get_response holds
-    # fixed while probing - if the CRFs look wrong, check here first: this is
-    # what's actually being subtracted from dy_dt via full_gain_feedback).
+    # Diagnostic: gain feedback is no longer a single frozen vector - since v now
+    # partially re-equilibrates to whatever probe is shown (see get_response), the
+    # feedback on neuron j depends on BOTH j and the probe orientation. Plot this as
+    # a (probe orientation) x (neuron index) matrix per condition/region instead of
+    # a curve. Uses N_RF=13 evenly spaced probe orientations (matching neuron count,
+    # so the matrix is square) rather than the finer N_PROBES grid, since each entry
+    # requires a full N_SETTLE_STEPS RK4 settle. theta_RF is already sorted by
+    # preference by construction (linspace over [0, pi)), so neuron index (columns)
+    # needs no re-sorting.
     # ==========================================================================
-    print("Plotting frozen gain feedback per condition...")
+    print("Computing gain-feedback matrices (probe orientation x neuron index)...")
     theta_RF_deg = np.degrees(stim_gen.theta_RF)
 
-    fig_gain, axes_gain = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
-    for cond in ACTIVE_CONDITIONS:
-        g_cRF, g_surround, v_cRF, v_surround = frozen_gains[cond]
-        cRF_gain_feedback = - dyn.frame.W @ (g_cRF * v_cRF)
-        surround_gain_feedback = - dyn.frame.W @ (g_surround * v_surround)
+    N_GAIN_PROBES = N_RF   # 13 evenly spaced probes -> 13x13 matrix, per request
+    gain_probe_thetas = np.linspace(0, np.pi, N_GAIN_PROBES, endpoint=False)
+    gain_probe_deg = np.degrees(gain_probe_thetas)
 
-        axes_gain[0].plot(theta_RF_deg, cRF_gain_feedback, color=CONDITION_COLOR[cond],
-                           linewidth=3, marker='o', markersize=4, label=CONDITION_LABEL[cond])
-        axes_gain[1].plot(theta_RF_deg, surround_gain_feedback, color=CONDITION_COLOR[cond],
-                           linewidth=3, marker='o', markersize=4, label=CONDITION_LABEL[cond])
+    def gain_feedback_matrix(cond):
+        '''Row i = settled gain feedback on every neuron (columns) when probed with a stimulus
+        centered at gain_probe_thetas[i], holding this condition's frozen g fixed and letting v
+        evolve from W.T@mu (see get_response). Sign convention matches the old plot: negated, so
+        a positive entry means suppressive.'''
+        g_cRF, g_surround, _, _, mu_cRF, mu_surround = frozen_gains[cond]
+        cRF_matrix = np.zeros((N_GAIN_PROBES, N_RF))
+        surround_matrix = np.zeros((N_GAIN_PROBES, N_RF))
+        for i, theta in enumerate(tqdm(gain_probe_thetas, desc=f"    {cond}", leave=False)):
+            probe = probe_input_drive(theta, PROBE_CONTRAST)
+            _, v_cRF_settled, v_surround_settled = get_response(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
+            cRF_matrix[i, :] = - dyn.frame.W @ (g_cRF * v_cRF_settled)
+            surround_matrix[i, :] = - dyn.frame.W @ (g_surround * v_surround_settled)
+        return cRF_matrix, surround_matrix
 
-    for ax, title in zip(axes_gain, ["cRF gain feedback", "Surround gain feedback"]):
-        ax.axvline(np.degrees(adaptor_rad), color='gray', linestyle=':', linewidth=1.5)
-        ax.set_title(title, fontsize=14, fontweight='bold')
-        ax.set_xlabel("Preferred orientation (deg)", fontsize=12, fontweight='bold')
-        ax.grid(False)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-    axes_gain[0].set_ylabel("Gain feedback  =  frame.W @ (g * v)", fontsize=12, fontweight='bold')
-    axes_gain[0].legend(fontsize=9, frameon=False)
+    gain_matrices = {cond: gain_feedback_matrix(cond) for cond in ACTIVE_CONDITIONS}
 
-    fig_gain.suptitle("Frozen gain feedback by adaptation condition", fontsize=15, fontweight='bold')
-    plt.tight_layout()
+    # Shared, zero-centered color scale across every panel so magnitudes/signs are comparable
+    # condition-to-condition and region-to-region.
+    all_gain_vals = np.concatenate([m.ravel() for pair in gain_matrices.values() for m in pair])
+    gain_vmax = np.max(np.abs(all_gain_vals)) if all_gain_vals.size else 1.0
+    gain_vmin = -gain_vmax
+
+    fig_gain, axes_gain = plt.subplots(2, len(ACTIVE_CONDITIONS),
+                                        figsize=(3.6 * len(ACTIVE_CONDITIONS), 7.5),
+                                        sharex=True, sharey=True)
+    im = None
+    for col, cond in enumerate(ACTIVE_CONDITIONS):
+        cRF_matrix, surround_matrix = gain_matrices[cond]
+        for row, (matrix, region_label) in enumerate(zip([cRF_matrix, surround_matrix], ["cRF", "Surround"])):
+            ax = axes_gain[row, col]
+            im = ax.imshow(matrix, cmap='RdBu_r', vmin=gain_vmin, vmax=gain_vmax,
+                            aspect='auto', origin='lower',
+                            extent=[0, 180, 0, 180])
+            ax.axhline(np.degrees(adaptor_rad), color='gray', linestyle=':', linewidth=1.2)
+            ax.axvline(np.degrees(adaptor_rad), color='gray', linestyle=':', linewidth=1.2)
+            if row == 0:
+                ax.set_title(CONDITION_LABEL[cond], fontsize=11, fontweight='bold')
+            if col == 0:
+                ax.set_ylabel(f"{region_label}\nProbe orientation (deg)", fontsize=10, fontweight='bold')
+            if row == 1:
+                ax.set_xlabel("Neuron preference (deg)", fontsize=10, fontweight='bold')
+            for spine in ax.spines.values():
+                spine.set_edgecolor('black')
+                spine.set_linewidth(1.5)
+
+    fig_gain.colorbar(im, ax=axes_gain.ravel().tolist(), fraction=0.02, pad=0.02,
+                       label="Gain feedback (+ = suppressive)")
+    fig_gain.suptitle("Gain-feedback matrix: probe orientation x neuron preference", fontsize=15, fontweight='bold')
 
     # ==========================================================================
     # Diagnostic: average cRF response vector alongside the average cRF stimulus
@@ -283,7 +375,8 @@ if __name__ == "__main__":
         trace_stream = stim_gen.generate_surround_ensembles(
             ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond],
             duration=ADAPT_DURATION, add_poisson_noise=False)
-        y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist = dyn.run_simulation(trace_stream)
+        (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+         mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(trace_stream)
         y_avg_by_cond[cond] = y_hist[:N_RF, :].mean(axis=1)   # average cRF response vector, entire simulation
         if cond == TRACE_COND:
             trace_cond_stream = trace_stream
@@ -398,11 +491,11 @@ if __name__ == "__main__":
     print("Computing contrast response functions...")
 
     def crf_curve(cond):
-        g_cRF, g_surround, v_cRF, v_surround = frozen_gains[cond]
+        g_cRF, g_surround, _, _, mu_cRF, mu_surround = frozen_gains[cond]
         resp = np.zeros(N_CONTRASTS)
         for i, c in enumerate(tqdm(CRF_CONTRASTS, desc=f"    {cond}", leave=False)):
             probe = probe_input_drive(adaptor_rad, c)
-            y = get_response(dyn, probe, g_cRF, g_surround, v_cRF, v_surround)
+            y, _, _ = get_response(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
             resp[i] = y[crf_target_idx]
         return resp
 

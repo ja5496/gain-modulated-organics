@@ -196,12 +196,16 @@ class V1Dynamics_Surround:
         )
 
         self.tau_y = 0.2
-        self.tau_a = 0.1  
-        self.tau_u = 15.0 
-        self.tau_g = 25000.0 
-        self.tau_v = 25000.0 
-        
-        self.sigma = 0.25  
+        self.tau_a = 0.1
+        self.tau_u = 15.0
+        self.tau_g = 25000.0
+        self.tau_v = 1000.0
+        self.tau_mu = 25000.0  # slow mean tracker mu = E[y]; same order as tau_g by design - mu
+                                # should represent the ensemble-level mean the way theta_t represents
+                                # the ensemble-level variance target, so v - W.T@mu isolates a genuine
+                                # sub-ensemble fluctuation instead of re-including the mean drive.
+
+        self.sigma = 0.25
         self.beta = 0.5
 
     def half_wave_rectify(self, y, Beta=2.0):
@@ -223,6 +227,13 @@ class V1Dynamics_Surround:
         g_surround = state[3*N_TOT+K:3*N_TOT+2*K]
         v_cRF = state[3*N_TOT+2*K:3*N_TOT+3*K]
         v_surround = state[3*N_TOT+3*K:3*N_TOT+4*K]
+        # Slow mean trackers mu = E[y], one per RF region (cRF / representative surround RF). Used
+        # below to mean-center v before it's compared to theta_t. Duong et al. assume a pre-centered
+        # (zero-mean) input, so a raw projection v_k = w_k @ y is itself a valid zero-mean fluctuation
+        # estimator there; our y carries a real, condition-dependent DC component, so v_k on its own
+        # conflates mean drive with fluctuation unless explicitly corrected by mu.
+        mu_cRF = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
+        mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
 
         u_plus = self.half_wave_rectify(u, 0.5)
         y_plus = self.half_wave_rectify(y, 2.0)
@@ -235,15 +246,20 @@ class V1Dynamics_Surround:
         # where w_i is the i-th frame vector (column i of self.frame.W) - one target per interneuron.
         theta_t = np.diag(self.frame.W.T @ self.uniform_target_covariance @ self.frame.W)
 
+        # Slow mean dynamics - raw y (not y_plus), matching v_*_dt's raw-y convention below, so that
+        # v - W.T@mu is a self-consistent mean/fluctuation decomposition of the same signal.
+        dmu_cRF_dt = (-mu_cRF + y[:N_RF]) / self.tau_mu
+        dmu_surround_dt = (-mu_surround + y[N_RF:2*N_RF]) / self.tau_mu
+
         # Classical Receptive Field Adaptation Dynamics
-        dg_cRF_dt = (v_cRF * v_cRF - theta_t) / self.tau_g # target set to theta_t (see above)
+        dg_cRF_dt = ((v_cRF - self.frame.W.T @ mu_cRF) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
         dv_cRF_dt = (-v_cRF + self.frame.W.T @ y[:N_RF]) / self.tau_v # Estimation of variance of cRF neurons
-        cRF_gain_feedback = self.frame.W @ (g_cRF * v_cRF)
+        cRF_gain_feedback = self.frame.W @ (g_cRF * v_cRF) # unchanged: suppression still scales with raw v_cRF, not the mean-corrected version
 
         # Surround Adaptation Dynamics
-        dg_surround_dt = (v_surround * v_surround - theta_t) / self.tau_g # target set to theta_t (see above)
+        dg_surround_dt = ((v_surround - self.frame.W.T @ mu_surround) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
         dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
-        surround_gain_feedback = self.frame.W @ (g_surround * v_surround)
+        surround_gain_feedback = self.frame.W @ (g_surround * v_surround) # unchanged: suppression still scales with raw v_surround
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ (sqrt_y_plus - sqrt_y_minus)) # matches Norm_Dynamics_1 (norm_diagnostic.py) - no complementary -sqrt_y_minus term
         input_drive = self.beta * z_t
@@ -258,13 +274,14 @@ class V1Dynamics_Surround:
         dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
         da_dt = (-a + (1 + a_plus) * u_plus) / self.tau_a
-        
-        return np.concatenate([dy_dt, du_dt, da_dt, dg_cRF_dt, dg_surround_dt, dv_cRF_dt, dv_surround_dt])
-        
+
+        return np.concatenate([dy_dt, du_dt, da_dt, dg_cRF_dt, dg_surround_dt, dv_cRF_dt, dv_surround_dt, dmu_cRF_dt, dmu_surround_dt])
+
     def run_simulation(self, stimulus_stream, initial_state=None):
         N, n_steps = stimulus_stream.shape
         N_TOT = self.N_RF * self.N_SETS
         K = self.frame.K
+        N_RF = self.N_RF
 
         assert N == N_TOT, (
             f"stimulus_stream has {N} rows but N_RF*N_SETS={N_TOT} - "
@@ -274,7 +291,7 @@ class V1Dynamics_Surround:
         if initial_state is not None:
             state = initial_state.copy()
         else:
-            state = np.zeros(3*N_TOT + 4*K)
+            state = np.zeros(3*N_TOT + 4*K + 2*N_RF)
 
         # Tracking histories for later analysis + figures
         y_hist = np.zeros((N_TOT, n_steps))
@@ -284,6 +301,8 @@ class V1Dynamics_Surround:
         a_hist = np.zeros((N_TOT, n_steps))
         v_cRF_hist = np.zeros((K, n_steps))
         v_surround_hist = np.zeros((K, n_steps))
+        mu_cRF_hist = np.zeros((N_RF, n_steps))
+        mu_surround_hist = np.zeros((N_RF, n_steps))
 
         mode_str = "Adaptive"
         print(f"Running {mode_str} Simulation ({n_steps} steps)...")
@@ -306,9 +325,12 @@ class V1Dynamics_Surround:
             g_surround_hist[:, t] = state[3*N_TOT+K:3*N_TOT+2*K]
             v_cRF_hist[:, t] = state[3*N_TOT+2*K:3*N_TOT+3*K]
             v_surround_hist[:, t] = state[3*N_TOT+3*K:3*N_TOT+4*K]
+            mu_cRF_hist[:, t] = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
+            mu_surround_hist[:, t] = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
 
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         self.last_state = state.copy()
-        return y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist
+        return (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+                mu_cRF_hist, mu_surround_hist)
 

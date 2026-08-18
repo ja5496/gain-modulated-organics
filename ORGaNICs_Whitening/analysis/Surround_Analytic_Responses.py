@@ -46,7 +46,7 @@ N_TOTAL    = N_RF * N_SETS         # full primary-neuron population
 CRF_IDX    = 0                     # which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
-sigma = 0.4
+sigma = 0.7
 Beta  = 0.5
 
 
@@ -182,57 +182,7 @@ def get_mu_norm(stimuli):
     y_norm_samples = stimuli / denom                                    # (T, N_TOTAL)
     return y_norm_samples.mean(axis=0)                                  # (N_TOTAL,)
 
-def get_response_fast_v(stimulus, mu_norm, W_full, g_full, Beta=0.5):
-    '''
-    y and v settle together at the SAME (fast) timescale, per stimulus -- matching Duong's
-    adaptive-gain-modulation-with-a-fixed-frame algorithm: the response and its variance estimate
-    are computed jointly for each input, while only the gains g are slow (already fixed here via
-    the batch optimal-gains solve; no update happens in this function). v is therefore re-derived
-    from THIS `stimulus` every call, mean-centered against mu_norm (the ensemble's own typical
-    feedback-free response), NOT frozen from the ensemble alone.
-    W_full/g_full come from block_diag_W(frame.W, g_opt, adapt_location) -- NOT the raw local
-    frame.W/g_opt, since y_norm/y_centered/stimulus are population-wide (N_TOTAL,) and the shared
-    per-RF frame must be block-embedded across all N_SETS sets to match that width.
-    '''
-    # (1) Fast: normalized response to the stimulus with NO adaptive/gain feedback at all
-    y_norm = stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2))
-
-    # (2) Interneuron/variance-proxy activity: mean-centered projection onto the shared frame,
-    # settling at the same timescale as y_norm (both driven by this same stimulus)
-    y_centered = y_norm - mu_norm
-    v_steady = W_full.T @ y_centered
-
-    # (3) Gain-modulated feedback subtracted from the raw feedforward drive
-    z_prime = (1 / Beta) * (Beta * stimulus - W_full @ (g_full * v_steady))
-
-    # (4) Re-normalize the corrected drive
-    y_steady = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
-    rectified_y = half_wave_rectify(y_steady)
-
-    return rectified_y
-
-def get_response_moments(stimulus, mu_norm, W_full, g_full, target, Beta=0.5):
-    ''' 
-    Analytical steady-state calculation of modulation of the first and second moments. Big assumption here is in the calculation of 
-    z_1, which does not include any variance feedback. In reality, variance neuron will likely have to recover from its previous value, 
-    which will impact the trajectory.
-    '''
-
-    # Before gain modulation is applied, responses will normalize
-    z_1 = (1/Beta) * (Beta * stimulus - np.maximum((mu_norm-target), 0.0)) # Approximate input drive with constant mean subtractive term
-    y_bfg = z_1 / np.sqrt(sigma**2 + N_matrix @ (z_1 ** 2)) # response before gain modulation - variances will settle according to this approximately
-
-    # Some short time later, variance estimate interneurons will settle at their approximate values
-    v = W_full.T @ (y_bfg - mu_norm)
-    z_2 = (1/Beta) * (Beta * z_1 - W_full @ (g_full * v))
-    y_steady = z_2 / np.sqrt(sigma**2 + N_matrix @ (z_2 ** 2))
-
-    # Estimate firing rate from steady state membrane potential
-    y = half_wave_rectify(y_steady)
-    
-    return y
-
-def get_response_moments2(stimulus, mu, M, Beta=0.5):
+def get_response_moments(stimulus, mu, M, Beta=0.5):
     # Normalized response after the average (mean-centering) gain feedback
     gain_feedback = M @ mu
     z_prime = 2 * (Beta * stimulus - gain_feedback)
@@ -240,7 +190,10 @@ def get_response_moments2(stimulus, mu, M, Beta=0.5):
 
     # Now apply the covariance transformation on the response:
     T = np.linalg.inv(np.eye(N_TOTAL) + M) # T = [I + WgW.T]^-1
-    y = T @ y_prime
+    y_2 = T @ y_prime
+
+    # Now normalize again to get steady state
+    y = y_2 / np.sqrt(sigma**2 + N_matrix @ (y_2**2))
 
     rectified_y = half_wave_rectify(y)
     return rectified_y
@@ -347,9 +300,7 @@ if __name__ == "__main__":
         for cond in CONDITIONS
     }
 
-    # Block-diagonal (W_full, g_full) per condition for get_response_fast_v -- built once here
-    # (like M_by_condition) rather than per-probe, and using frame.W (the local per-RF frame
-    # array) + block_diag_W's own population-wide embedding, not the raw Frame object.
+    # Block-diagonal (W_full, g_full) per condition 
     Wg_full_by_condition = {
         cond: block_diag_W(frame.W, g_opt_by_condition[cond], cond) if cond in g_opt_by_condition
               else block_diag_W(frame.W, None, cond)
@@ -390,9 +341,8 @@ if __name__ == "__main__":
         W_full, g_full = Wg_full_by_condition[cond]
         for i, c in enumerate(CRF_CONTRASTS):
             probe = probe_input_drive(adaptor_rad, c)
-            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond]) # USE IF SLOW "v"
-            y = get_response_moments2(probe, mu_by_condition[cond], M_by_condition[cond]) # USE IF SLOW "v"
-            #y = get_response_fast_v(probe, mu_norm_by_condition[cond], W_full, g_full) # USE IF FAST "v"
+            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond]) 
+            y = get_response_moments(probe, mu_by_condition[cond], M_by_condition[cond]) 
             resp[i] = y[crf_target_idx]
         return resp
 
