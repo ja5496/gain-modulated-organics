@@ -51,7 +51,7 @@ class StimulusGenerator:
             delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
             delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
             profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3
-            scale = 15 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
+            scale = 1 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
             profiles = self.contrast * scale * profiles / np.max(profiles)
             if mean_center:
                 profiles -= profiles.mean(axis=1, keepdims=True)

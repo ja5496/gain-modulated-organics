@@ -211,6 +211,40 @@ def get_response_fast_v(stimulus, mu_norm, W_full, g_full, Beta=0.5):
 
     return rectified_y
 
+def get_response_moments(stimulus, mu_norm, W_full, g_full, target, Beta=0.5):
+    ''' 
+    Analytical steady-state calculation of modulation of the first and second moments. Big assumption here is in the calculation of 
+    z_1, which does not include any variance feedback. In reality, variance neuron will likely have to recover from its previous value, 
+    which will impact the trajectory.
+    '''
+
+    # Before gain modulation is applied, responses will normalize
+    z_1 = (1/Beta) * (Beta * stimulus - np.maximum((mu_norm-target), 0.0)) # Approximate input drive with constant mean subtractive term
+    y_bfg = z_1 / np.sqrt(sigma**2 + N_matrix @ (z_1 ** 2)) # response before gain modulation - variances will settle according to this approximately
+
+    # Some short time later, variance estimate interneurons will settle at their approximate values
+    v = W_full.T @ (y_bfg - mu_norm)
+    z_2 = (1/Beta) * (Beta * z_1 - W_full @ (g_full * v))
+    y_steady = z_2 / np.sqrt(sigma**2 + N_matrix @ (z_2 ** 2))
+
+    # Estimate firing rate from steady state membrane potential
+    y = half_wave_rectify(y_steady)
+    
+    return y
+
+def get_response_moments2(stimulus, mu, M, Beta=0.5):
+    # Normalized response after the average (mean-centering) gain feedback
+    gain_feedback = M @ mu
+    z_prime = 2 * (Beta * stimulus - gain_feedback)
+    y_prime = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
+
+    # Now apply the covariance transformation on the response:
+    T = np.linalg.inv(np.eye(N_TOTAL) + M) # T = [I + WgW.T]^-1
+    y = T @ y_prime
+
+    rectified_y = half_wave_rectify(y)
+    return rectified_y
+
 def get_response(stimulus, mu, M, Beta=0.5):
     gain_feedback = M @ mu
     z_prime = 2 * (Beta * stimulus - gain_feedback)
@@ -356,7 +390,8 @@ if __name__ == "__main__":
         W_full, g_full = Wg_full_by_condition[cond]
         for i, c in enumerate(CRF_CONTRASTS):
             probe = probe_input_drive(adaptor_rad, c)
-            y = get_response(probe, mu_by_condition[cond], M_by_condition[cond]) # USE IF SLOW "v"
+            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond]) # USE IF SLOW "v"
+            y = get_response_moments2(probe, mu_by_condition[cond], M_by_condition[cond]) # USE IF SLOW "v"
             #y = get_response_fast_v(probe, mu_norm_by_condition[cond], W_full, g_full) # USE IF FAST "v"
             resp[i] = y[crf_target_idx]
         return resp

@@ -31,16 +31,15 @@ class Frame:
             self.centers = None
 
 class Adapt_Dynamics:
-    def __init__(self, v1_model, frame, dt=0.1, N_RF=13, target_covariance_path="data/target_covs/uniform_target_covariance.csv"):
+    def __init__(self, v1_model, frame, dt=0.1, N_RF=13, target_covariance_path="data/target_covs/uniform_stream_direct_covariance.csv"):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt
         self.N_RF = N_RF
 
         self.tau_y = 0.2
-        self.tau_g = 20.0
-        self.tau_v = 1.0
-        self.beta = 0.5
+        self.tau_g = 50.0
+        self.tau_v = 0.5
 
         self.uniform_target_covariance = np.loadtxt(target_covariance_path, delimiter=",")
         assert self.uniform_target_covariance.shape == (N_RF, N_RF), (
@@ -56,24 +55,23 @@ class Adapt_Dynamics:
     def half_wave_rectify(self, y, Beta=2.0):
         return (np.maximum(y,0)) ** Beta
 
-    def _derivatives(self, state, z_t):
+    def _derivatives(self, state, z_t, mu):
         N, K = self.v1.N, self.frame.K
 
         y = state[0:N]
         g = state[N:N+K]
         v = state[N+K:N+2*K]
 
-        dg_dt = (v * v - self.theta_t) / self.tau_g # target set to the recent average of v^2 (avg_vsq)
+        dg_dt = ((v - self.frame.W.T @ mu) ** 2 - self.theta_t) / self.tau_g # target set to the recent average of v^2 (avg_vsq)
         dv_dt = (-v + self.frame.W.T @ y) / self.tau_v # dynamics converge to whitening objective
 
         gain_feedback = self.frame.W @ (g * v)
-        input_drive = self.beta * z_t
 
-        dy_dt = (-y + input_drive - gain_feedback) / self.tau_y
+        dy_dt = (-y + z_t - gain_feedback) / self.tau_y
 
         return np.concatenate([dy_dt, dg_dt, dv_dt])
 
-    def run_simulation(self, stimulus_stream, initial_state=None):
+    def run_simulation(self, stimulus_stream, mu, initial_state=None):
         N, n_steps = stimulus_stream.shape
         K = self.frame.K
 
@@ -93,10 +91,10 @@ class Adapt_Dynamics:
         for t in tqdm(range(n_steps)):
             z_t = stimulus_stream[:, t]
             # RK4 Simulation
-            k1 = self._derivatives(state, z_t)
-            k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t)
-            k3 = self._derivatives(state + 0.5 * self.dt * k2, z_t)
-            k4 = self._derivatives(state + self.dt * k3, z_t)
+            k1 = self._derivatives(state, z_t, mu)
+            k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t, mu)
+            k3 = self._derivatives(state + 0.5 * self.dt * k2, z_t, mu)
+            k4 = self._derivatives(state + self.dt * k3, z_t, mu)
 
             state += (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
@@ -116,7 +114,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Parameters
     # ------------------------------------------------------------------
-    N_RF         = 13      # primary neurons
+    N_RF         = 13     # primary neurons
     DURATION     = 20     # timesteps each stimulus is held for
     TUNING_WIDTH = 0.75
     CONTRAST     = 0.5
@@ -125,7 +123,25 @@ if __name__ == "__main__":
     FRAME_PATH      = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
     TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 
-    print("Initializing tunings, frame, and adaptive whitening dynamics...")
+    print("Initializing stimuli, tunings, frame, and adaptive whitening dynamics...")
+
+    # ------------------------------------------------------------------
+    # Stimuli: uniform and biased ensembles (generate_input_ensembles), matched
+    # in vector length/duration/poisson-noise handling to generate_surround_ensembles.
+    # ------------------------------------------------------------------
+    stim_gen = StimulusGenerator(N=N_RF, num_angles=N_RF, stream_length=N_STEPS,
+                                  tuning_width=TUNING_WIDTH, contrast=CONTRAST)
+    
+
+    print("Generating uniform and biased stimulus streams...")
+    uniform_stream = stim_gen.generate_input_ensembles(biased=False, duration=DURATION, add_poisson_noise=False, mean_center=False)
+    mu_uniform = np.mean(uniform_stream, axis=1)
+    biased_stream  = stim_gen.generate_input_ensembles(biased=True,  duration=DURATION, add_poisson_noise=False, mean_center=False)
+    mu_biased = np.mean(biased_stream, axis=1)
+
+    assert uniform_stream.shape == (N_RF, N_STEPS), uniform_stream.shape
+    assert biased_stream.shape  == (N_RF, N_STEPS), biased_stream.shape
+
     tunings = V1Tunings(N=N_RF)
     frame   = Frame(FRAME_PATH)          # K = 91 for the N13 mercedes frame
     K       = frame.K
@@ -146,8 +162,7 @@ if __name__ == "__main__":
 
         # Covariance generation
         stimuli = np.asarray(stimuli)
-        Beta = 0.5
-        input_drive = stimuli * Beta
+        input_drive = stimuli 
 
         Covariance = np.cov(input_drive, rowvar=False)
 
@@ -162,7 +177,7 @@ if __name__ == "__main__":
         elif uniform_stimuli is not None:
             # Target variance from the uniform ensemble
             uniform_stimuli = np.asarray(uniform_stimuli)
-            uniform_drive = uniform_stimuli * Beta
+            uniform_drive = uniform_stimuli 
             uniform_covariance_matrix = uniform_drive
             uniform_Covariance = np.cov(uniform_drive, rowvar=False)
             target = np.diag(uniform_Covariance)
@@ -197,24 +212,10 @@ if __name__ == "__main__":
         return y
 
     # ------------------------------------------------------------------
-    # Stimuli: uniform and biased ensembles (generate_input_ensembles), matched
-    # in vector length/duration/poisson-noise handling to generate_surround_ensembles.
-    # ------------------------------------------------------------------
-    stim_gen = StimulusGenerator(N=N_RF, num_angles=N_RF, stream_length=N_STEPS,
-                                  tuning_width=TUNING_WIDTH, contrast=CONTRAST)
-
-    print("Generating uniform and biased stimulus streams...")
-    uniform_stream = stim_gen.generate_input_ensembles(biased=False, duration=DURATION, add_poisson_noise=True, mean_center=True)
-    biased_stream  = stim_gen.generate_input_ensembles(biased=True,  duration=DURATION, add_poisson_noise=True, mean_center=True)
-
-    assert uniform_stream.shape == (N_RF, N_STEPS), uniform_stream.shape
-    assert biased_stream.shape  == (N_RF, N_STEPS), biased_stream.shape
-
-    # ------------------------------------------------------------------
     # Analytic optimal gains for this environment. V1Dynamics here has no
-    # divisive-normalization stage (input_drive is just beta*z_t), and the local
+    # divisive-normalization stage (input_drive is just z_t), and the local
     # get_optimal_gains_target above never applies normalization either - it always
-    # uses the raw covariance of the beta-scaled stimuli (Covariance = cov(Beta * stimuli)).
+    # uses the raw covariance of the stimuli 
     #
     # target_covariance is explicitly set to dyn.uniform_target_covariance - the exact same
     # array Adapt_Dynamics uses to build theta_t (self.theta_t = diag(W.T @
@@ -229,12 +230,12 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
 
     print("Computing analytic optimal gains from the uniform ensemble...")
-    g_opt = get_optimal_gains_target(uniform_stream.T, frame.W, label='uniform',
-                                      target_covariance=dyn.uniform_target_covariance)
+    g_opt = get_optimal_gains_target(uniform_stream.T, frame.W, label='uniform', uniform_stimuli=uniform_stream.T)
+                                     # target_covariance=dyn.uniform_target_covariance)
 
     print("Computing analytic optimal gains from the biased ensemble...")
-    g_opt_bias = get_optimal_gains_target(biased_stream.T, frame.W, label='biased',
-                                           target_covariance=dyn.uniform_target_covariance)
+    g_opt_bias = get_optimal_gains_target(biased_stream.T, frame.W, label='biased', uniform_stimuli=uniform_stream.T)
+                                        #   target_covariance=dyn.uniform_target_covariance)
 
     # ------------------------------------------------------------------
     # Run both simulations. y starts at 0, but g and v are seeded at their
@@ -248,18 +249,18 @@ if __name__ == "__main__":
     v0 = np.sqrt(dyn.theta_t)
 
     init_state_uni = np.zeros(N_RF + 2 * K)
-    init_state_uni[N_RF:N_RF + K]         = g_opt
-    init_state_uni[N_RF + K:N_RF + 2 * K] = v0
+    #init_state_uni[N_RF:N_RF + K]         = g_opt
+    #init_state_uni[N_RF + K:N_RF + 2 * K] = v0
 
     init_state_bias = np.zeros(N_RF + 2 * K)
-    init_state_bias[N_RF:N_RF + K]         = g_opt_bias
-    init_state_bias[N_RF + K:N_RF + 2 * K] = v0
+    #init_state_bias[N_RF:N_RF + K]         = g_opt_bias
+    #init_state_bias[N_RF + K:N_RF + 2 * K] = v0
 
     print("\n--- Uniform ensemble ---")
-    y_uni, g_uni, v_uni = dyn.run_simulation(uniform_stream, initial_state=init_state_uni)
+    y_uni, g_uni, v_uni = dyn.run_simulation(uniform_stream, mu_uniform, initial_state=init_state_uni)
 
     print("\n--- Biased ensemble ---")
-    y_bias, g_bias, v_bias = dyn.run_simulation(biased_stream, initial_state=init_state_bias)
+    y_bias, g_bias, v_bias = dyn.run_simulation(biased_stream, mu_biased, initial_state=init_state_bias)
 
     # ==================================================================
     # Plot 1: subset of optimal gains (dotted) vs. online gains (solid)
