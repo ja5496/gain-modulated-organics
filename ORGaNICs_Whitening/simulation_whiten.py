@@ -188,6 +188,10 @@ class V1Dynamics_Surround:
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
         )
+        # Cached (was recomputed from uniform_target_covariance every _derivatives call - 4x/RK4
+        # step, wasted over 100k+ step runs). Callers may overwrite this directly with an
+        # empirically-calibrated (K,) target instead of rederiving one from a covariance matrix.
+        self.theta_t = np.diag(self.frame.W.T @ self.uniform_target_covariance @ self.frame.W)
 
         self.tau_y = 0.2       # time constant of primary neuron (fast)
         self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
@@ -231,9 +235,7 @@ class V1Dynamics_Surround:
         sqrt_y_plus = np.sqrt(y_plus)
         sqrt_y_minus = np.sqrt(y_minus)
 
-        # Derive theta_t's from target covariance matrix: theta_t[i] = w_i @ uniform_target_covariance @ w_i.T
-        theta_t = np.diag(self.frame.W.T @ self.uniform_target_covariance @ self.frame.W)
-        #theta_t = 0.05
+        theta_t = self.theta_t
 
         # Slow mean-tracking dynamics:
         dmu_cRF_dt = (-mu_cRF + y[:N_RF]) / self.tau_mu

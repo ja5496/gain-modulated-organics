@@ -92,9 +92,10 @@ CONDITION_COLOR = {
     'adapt surround only':    COLOR_NONCRF,
     'adapt CRF and surround': COLOR_BOTH,
 }
-# "no adaptation"'s entries below are unused - run_adaptation_phase short-circuits that condition
+# "no adaptation" -> unbiased ensemble to both regions: the zero-gain-feedback control condition,
+# and also what run_adaptation_phase uses to calibrate theta_t (see below).
 ADAPT_LOCATION_FOR_COND = {
-    'no adaptation':          'no adaptation',
+    'no adaptation':          'adapt CRF and surround',
     'adapt CRF only':         'adapt CRF only',
     'adapt surround only':   'adapt surround only',
     'adapt CRF and surround': 'adapt CRF and surround',
@@ -109,26 +110,43 @@ BIASED_FOR_COND = {
 
 def run_adaptation_phase(dyn, stim_gen, cond):
     '''
-    Simulates the adaptation state for one condition. Returns the frozen (g_cRF, g_surround, v_cRF, 
-    v_surround, mu_cRF, mu_surround). 
+    Simulates the adaptation state for one condition. Returns (g_cRF, g_surround, v_cRF,
+    v_surround, mu_cRF, mu_surround, stream) - stream is cached so later diagnostics can reuse
+    this exact run instead of re-simulating.
 
-    "no adaptation" is forced to exactly zero gain feedback - pure-normalization
-    control condition, not adaptation to a uniform ensemble.
+    "no adaptation" runs a real, unbiased ensemble to both regions (needed to calibrate theta_t,
+    below) but still forces zero gain feedback - it's the pure-normalization control condition,
+    not genuine adaptation.
 
-    For the other three conditions, whichever region generate_surround_ensembles does NOT route
-    the biased/adaptor ensemble to only sees the flat, orientation-less baseline (0.15 everywhere -
-    not a real uniform ensemble), so its gain feedback is forced to zero too.
+    theta_t calibration (cond == 'no adaptation' only): dyn.theta_t (loaded from
+    uniform_target_covariance.csv, an idealized *feedforward* approximation - see
+    frame_whiten.compute_uniform_target_covariance) is overwritten with the EMPIRICAL variance of
+    (v - W.T@mu) from this live recurrent run, pooling cRF+surround for more samples. This makes
+    theta_t consistent with what this model can actually achieve, rather than a static formula that
+    ignores recurrent excitation, the u/a pool, and gain feedback. Runs before the other 3
+    conditions (first in CONDITIONS), so they adapt against the calibrated target.
+
+    For the other three conditions, whichever region does NOT get the biased/adaptor ensemble only
+    sees the flat, orientation-less baseline, so its gain feedback is forced to zero too.
     '''
-    K = dyn.frame.K
-    N_RF = dyn.N_RF
-
-    if cond == 'no adaptation':
-        zeros_K = np.zeros(K)
-        zeros_N = np.zeros(N_RF)
-        return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N
+    K, N_RF = dyn.frame.K, dyn.N_RF
 
     stream = stim_gen.generate_surround_ensembles(
         ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION, add_poisson_noise=False)
+
+    if cond == 'no adaptation':
+        (_, _, _, _, _, v_cRF_hist, v_surround_hist,
+         mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
+
+        half = stream.shape[1] // 2   # skip mu's own warm-up transient
+        resid_cRF = v_cRF_hist[:, half:] - dyn.frame.W.T @ mu_cRF_hist[:, half:]
+        resid_surround = v_surround_hist[:, half:] - dyn.frame.W.T @ mu_surround_hist[:, half:]
+        dyn.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
+
+        zeros_K = np.zeros(K)
+        return (zeros_K, zeros_K, v_cRF_hist[:, -1], v_surround_hist[:, -1],
+                mu_cRF_hist[:, -1], mu_surround_hist[:, -1], stream)
+
     dyn.run_simulation(stream)
 
     N_TOT = dyn.N_RF * dyn.N_SETS
@@ -149,7 +167,7 @@ def run_adaptation_phase(dyn, stim_gen, cond):
         v_cRF = np.zeros(K)
         mu_cRF = np.zeros(N_RF)
 
-    return g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround
+    return g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround, stream
 
 def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
     '''
@@ -259,7 +277,7 @@ if __name__ == "__main__":
         '''Row i = settled gain feedback on every neuron (columns) when probed with a stimulus
         centered at gain_probe_thetas[i]. Sign convention matches the old plot: negated, so
         a positive entry means suppressive.'''
-        g_cRF, g_surround, _, _, mu_cRF, mu_surround = frozen_gains[cond]
+        g_cRF, g_surround, _, _, mu_cRF, mu_surround, _ = frozen_gains[cond]
         cRF_matrix = np.zeros((N_GAIN_PROBES, N_RF))
         surround_matrix = np.zeros((N_GAIN_PROBES, N_RF))
         for i, theta in enumerate(tqdm(gain_probe_thetas, desc=f"    {cond}", leave=False)):
@@ -364,20 +382,17 @@ if __name__ == "__main__":
     AR.N_matrix = tunings.N_matrix   # single-RF (N_RF, N_RF) pooling matrix - matches get_optimal_gains_target's expected shape
     AR.sigma = dyn.sigma             # match the live model's sigma, not Analytic_responses.py's own default
 
+    # Reuses the 'adapt CRF only' run already done above - no re-simulation. NOTE: get_optimal_gains_target
+    # still compares against dyn.uniform_target_covariance (the offline, feedforward-formula target), NOT
+    # dyn.theta_t (now empirically calibrated online, in interneuron- not neuron-space) - these two
+    # "theoretical" and "live" targets are no longer the same object, by construction.
     GAIN_CHECK_COND = 'adapt CRF only'
-    gain_check_stream = stim_gen.generate_surround_ensembles(
-        ADAPT_LOCATION_FOR_COND[GAIN_CHECK_COND], biased=BIASED_FOR_COND[GAIN_CHECK_COND],
-        duration=DURATION, add_poisson_noise=False)
+    frozen_g_cRF, _, _, _, _, _, gain_check_stream = frozen_gains[GAIN_CHECK_COND]
+    K = dyn.frame.K
 
     stimuli_for_theory = gain_check_stream[:N_RF, :].T   # (T, N_RF) - cRF block only, matches frame.W's shape
     g_optimal_cRF = AR.get_optimal_gains_target(
         stimuli_for_theory, dyn.frame.W, target_covariance=dyn.uniform_target_covariance)
-
-    # Run the real network on this EXACT SAME stream and read off its frozen g_cRF
-    dyn.run_simulation(gain_check_stream)
-    K = dyn.frame.K
-    N_TOT = dyn.N_RF * dyn.N_SETS
-    frozen_g_cRF = dyn.last_state[3*N_TOT:3*N_TOT+K]
 
     fig_gopt, ax_gopt = plt.subplots(figsize=(9, 5))
     gain_idx = np.arange(K)
@@ -435,7 +450,7 @@ if __name__ == "__main__":
     print("Computing contrast response functions...")
 
     def crf_curve(cond):
-        g_cRF, g_surround, _, _, mu_cRF, mu_surround = frozen_gains[cond]
+        g_cRF, g_surround, _, _, mu_cRF, mu_surround, _ = frozen_gains[cond]
         resp = np.zeros(N_CONTRASTS)
         for i, c in enumerate(tqdm(CRF_CONTRASTS, desc=f"    {cond}", leave=False)):
             probe = probe_input_drive(adaptor_rad, c)
