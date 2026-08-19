@@ -13,13 +13,18 @@ from scipy.linalg import block_diag
 Stores RK4 Dynamics and simulation code for computational neural modeling of joint 
 adaptation and normalization in V1. Dynamics are designed for orientation adaptation. 
 
+V1Dynamics: Joint normalization + adaptation dynamics for a single RF. Adaptation and normalization are 
+both local only to this RF.
+
+V1Dyamics_Surround: Joint normalization + adaptation dynamics for a cRF and its surround. Surround is 
+modeled  by many small RFs that are exposed to the same stimuli. Adaptation is local to each RF, whereas 
+normalization is global across the cRF + Surround. 
+
 '''
 
 class Frame:
 
-    '''  Loads W (Frame connecting primary neurons to interneurons) from a pre-computed 
-    csv file. If an accompanying _centers.csv exists alongside the frame file, loads orientation
-    centers (radians) for each frame vector into self.centers; otherwise None. '''
+    '''  Loads W (overcomplete frame) from a pre-computed csv file. '''
 
     def __init__(self, csv_path: str):
         import os
@@ -28,36 +33,25 @@ class Frame:
         self.dim = self.W.shape[0]
         self.K = self.W.shape[1]
         print(f"Loaded frame (N={self.dim}, K={self.K})")
-        centers_path = csv_path.replace(".csv", "_centers.csv")
-        if os.path.exists(centers_path):
-            self.centers = np.loadtxt(centers_path, delimiter=",")
-            print(f"Loaded orientation centers from {centers_path}")
-        else:
-            self.centers = None
 
 class V1Dynamics:
-    def __init__(self, v1_model, frame, dt=0.1, adaptive=True, input_adaptive=True):
+    def __init__(self, v1_model, frame, dt=0.1, adaptive=True):
         self.v1 = v1_model
         self.frame = frame
         self.dt = dt 
         self.adaptive = adaptive
-        self.input_adaptive = input_adaptive
 
-        self.tau_y = 0.2 
-        self.tau_a = 0.2  
-        self.tau_u = 12.0 
-        self.tau_g = 500.0 
-        self.tau_v = 5.0 # from 50
+        self.tau_y = 0.2    # time constant of primary neurons
+        self.tau_a = 0.2    # time constant of inhibitory neurons in normalization pool
+        self.tau_u = 12.0   # time constant of excitatory neurons in normalization pool
+        self.tau_g = 500.0  # time constant of interneuron gains
+        self.tau_v = 5.0    # time constant of variance interneurons
         self.tau_avg = 12.0 
         self.tau_avg_z = 400
         
-        self.sigma = 0.4
-        self.alpha = 0.0
+        self.sigma = 0.4 
 
-        if input_adaptive:
-            self.beta = None
-        else:
-            self.beta = 1.0
+        self.beta = 0.5
 
     def gaussian_rectify(self, y, threshold=0.6, sigma=0.35, r_max=1.0):
         # Rectification function (crudely) estimates firing rates from membrane potential
@@ -100,12 +94,10 @@ class V1Dynamics:
             davg_vsq_dt = np.zeros(1)
 
         recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.v1.W_yy @ sqrt_y_plus)
-        if self.input_adaptive:
-            beta = 1 - 0.4 * avg_z  # Common stimuli are less effective at driving the cortex
-        else:
-            beta = self.beta
 
-        input_drive = (beta * z_t) / 2
+        beta = self.beta
+
+        input_drive = beta * z_t
         
         sigma_term = (self.sigma / 2) ** 2
         pool_term = self.v1.N_matrix @ (y_plus * (u_plus ** 2))
@@ -113,7 +105,7 @@ class V1Dynamics:
         # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
         dy_dt = (-y + input_drive + recurrent_drive - gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
-        da_dt = (-a + u_plus + a * u_plus + self.alpha * du_dt) / self.tau_a
+        da_dt = (-a + u_plus + a * u_plus) / self.tau_a
         
         return np.concatenate([dy_dt, du_dt, da_dt, dg_dt, dv_dt, davg_z_dt, davg_vsq_dt])
         
@@ -166,50 +158,49 @@ class V1Dynamics:
 
 class V1Dynamics_Surround:
     def __init__(self, v1_model, frame, dt=0.1, N_RF = 13, N_SETS = 7,
-                 target_covariance_path="data/target_covs/uniform_target_covariance.csv"):
-        self.v1 = v1_model
-        self.frame = frame
-        self.dt = dt
-        self.N_RF = N_RF
-        self.N_SETS = N_SETS
-        N_TOT = N_RF * N_SETS
+                 target_covariance_path="data/target_covs/uniform_target_covariance.csv",
+                 gains_nonneg=False):
+        self.v1 = v1_model     # Refers to tunings_whiten.py
+        self.frame = frame     # Overcomplete frame (W)
+        self.dt = dt           # Time step of simulation
+        self.N_RF = N_RF       # Number of neurons in each small receptive field
+        self.N_SETS = N_SETS   # Number of total RFs being modeled. 1 is the cRF and all else make up the surround
+        N_TOT = N_RF * N_SETS  # Total number of neurons in cRF and Surround
+        # If True, g_cRF/g_surround are clamped to >=0 after every RK4 step in run_simulation, for
+        # the entire adaptation phase - dg/dt itself has no such floor (it's a plain difference of
+        # squared terms, see _derivatives), so without this g can go negative and gain feedback
+        # (W @ (g*v)) can turn facilitatory rather than strictly suppressive.
+        self.gains_nonneg = gains_nonneg
 
-        # v1_model.W_yy is the single-location (N_RF, N_RF) recurrent matrix; tile it into
-        # the block-diagonal (N_TOT, N_TOT) matrix needed now that y spans all N_SETS
-        # locations (recurrence stays local to each location, unlike the pooling below).
+        # Make single-RF W_yy block-diagonal (N_TOT, N_TOT):
         assert v1_model.W_yy.shape == (N_RF, N_RF), (
             f"v1_model.W_yy must be the single-location ({N_RF}, {N_RF}) matrix - "
             f"construct V1Tunings with N=N_RF (got shape {v1_model.W_yy.shape})."
         )
         self.W_yy = block_diag(*[v1_model.W_yy] * N_SETS)
-        # Normalization pool spans cRF and surround: every one of the N_TOT neurons
-        # pools together, unlike W_yy which stays local per location.
+        # Normalization pool spans cRF and surround: every one of the N_TOT neurons pools together
         self.N_matrix = np.ones((N_TOT, N_TOT))
 
         # Target covariance of one RF's responses to a uniform ensemble (see
-        # frame_whiten.py:compute_uniform_target_covariance), used to derive per-interneuron
-        # adaptation targets theta_t in _derivatives.
+        # frame_whiten.py:compute_uniform_target_covariance)
         self.uniform_target_covariance = np.loadtxt(target_covariance_path, delimiter=",")
         assert self.uniform_target_covariance.shape == (N_RF, N_RF), (
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
         )
 
-        self.tau_y = 0.2
-        self.tau_a = 0.1
-        self.tau_u = 15.0
-        self.tau_g = 25000.0
-        self.tau_v = 1000.0
-        self.tau_mu = 25000.0  # slow mean tracker mu = E[y]; same order as tau_g by design - mu
-                                # should represent the ensemble-level mean the way theta_t represents
-                                # the ensemble-level variance target, so v - W.T@mu isolates a genuine
-                                # sub-ensemble fluctuation instead of re-including the mean drive.
+        self.tau_y = 0.2       # time constant of primary neuron (fast)
+        self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
+        self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
+        self.tau_g = 2500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
+        self.tau_v = 10.0    # time constant of excitatory neurons in normalization pool (medium to fast)
+        self.tau_mu = 2500.0  # time constant of mean-response tracker (very slow, full context window needed)
 
-        self.sigma = 0.25
-        self.beta = 0.5
+        self.sigma = 0.25      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
+        self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation
 
-    def half_wave_rectify(self, y, Beta=2.0):
-        return (np.maximum(y,0)) ** Beta
+    def half_wave_rectify(self, y, alpha=2.0):  # Used to estimate firing rates from membrane potential
+        return (np.maximum(y,0)) ** alpha       # Rectify and raise to the power Beta (NOT input gain)
 
     def _derivatives(self, state, z_t):
         K = self.frame.K
@@ -217,24 +208,22 @@ class V1Dynamics_Surround:
         N_RF = self.N_RF
         N_TOT = N_RF * N_SETS
 
-        # Global variables - all span the full population (N_TOT = N_RF * N_SETS)
-        y = state[0:N_TOT] # Primary responses across all RFs
-        u = state[N_TOT:2*N_TOT] # Normalization pool spanning cRF and surround
-        a = state[2*N_TOT:3*N_TOT] # Normalization pool spanning cRF and surround
+        # Global variables 
+        y = state[0:N_TOT]              # Primary responses across all RFs
+        u = state[N_TOT:2*N_TOT]        # Normalization pool spanning cRF and surround
+        a = state[2*N_TOT:3*N_TOT]      # Normalization pool spanning cRF and surround
 
-        # Local variables confined to each RF - assuming all surround gains are the same by symmetry
+        # Local variables 
         g_cRF = state[3*N_TOT:3*N_TOT+K]
         g_surround = state[3*N_TOT+K:3*N_TOT+2*K]
         v_cRF = state[3*N_TOT+2*K:3*N_TOT+3*K]
         v_surround = state[3*N_TOT+3*K:3*N_TOT+4*K]
-        # Slow mean trackers mu = E[y], one per RF region (cRF / representative surround RF). Used
-        # below to mean-center v before it's compared to theta_t. Duong et al. assume a pre-centered
-        # (zero-mean) input, so a raw projection v_k = w_k @ y is itself a valid zero-mean fluctuation
-        # estimator there; our y carries a real, condition-dependent DC component, so v_k on its own
-        # conflates mean drive with fluctuation unless explicitly corrected by mu.
+
+        # Slow mean trackers:
         mu_cRF = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
         mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
 
+        # Rectifications consistent with Asit's 'Heirarchical ORGaNICs' paper
         u_plus = self.half_wave_rectify(u, 0.5)
         y_plus = self.half_wave_rectify(y, 2.0)
         y_minus = self.half_wave_rectify(-y, 2.0)
@@ -242,16 +231,15 @@ class V1Dynamics_Surround:
         sqrt_y_plus = np.sqrt(y_plus)
         sqrt_y_minus = np.sqrt(y_minus)
 
-        # Derive Targets (theta_t) from target covariance matrix: theta_t[i] = w_i @ uniform_target_covariance @ w_i.T,
-        # where w_i is the i-th frame vector (column i of self.frame.W) - one target per interneuron.
+        # Derive theta_t's from target covariance matrix: theta_t[i] = w_i @ uniform_target_covariance @ w_i.T
         theta_t = np.diag(self.frame.W.T @ self.uniform_target_covariance @ self.frame.W)
+        #theta_t = 0.05
 
-        # Slow mean dynamics - raw y (not y_plus), matching v_*_dt's raw-y convention below, so that
-        # v - W.T@mu is a self-consistent mean/fluctuation decomposition of the same signal.
+        # Slow mean-tracking dynamics:
         dmu_cRF_dt = (-mu_cRF + y[:N_RF]) / self.tau_mu
         dmu_surround_dt = (-mu_surround + y[N_RF:2*N_RF]) / self.tau_mu
 
-        # Classical Receptive Field Adaptation Dynamics
+        # cRF Adaptation Dynamics
         dg_cRF_dt = ((v_cRF - self.frame.W.T @ mu_cRF) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
         dv_cRF_dt = (-v_cRF + self.frame.W.T @ y[:N_RF]) / self.tau_v # Estimation of variance of cRF neurons
         cRF_gain_feedback = self.frame.W @ (g_cRF * v_cRF) # unchanged: suppression still scales with raw v_cRF, not the mean-corrected version
@@ -317,6 +305,10 @@ class V1Dynamics_Surround:
             k4 = self._derivatives(state + self.dt * k3, z_t)
 
             state += (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+
+            if self.gains_nonneg:
+                # g_cRF and g_surround are contiguous in the state layout - clamp both in one call.
+                state[3*N_TOT:3*N_TOT+2*K] = np.maximum(state[3*N_TOT:3*N_TOT+2*K], 0)
 
             y_hist[:, t] = np.maximum(state[0:N_TOT], 0)
             u_hist[:, t] = state[N_TOT:2*N_TOT]

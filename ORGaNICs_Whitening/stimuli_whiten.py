@@ -4,13 +4,13 @@ from typing import Literal
 
 '''
 ---- stimuli_whiten.py ----
-Generates synthetic responses to orientation gratings using raised cosine functions.
-These responses are fed into our V1 dynamics as the input layer.
+Generates synthetic LGN responses to orientation gratings using gaussian functions.
+These responses are fed into our V1 dynamics as the input layer. 
 
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, Ensemble=False, contrast=1.0, N_RF = 13, N_SETS = 7):
+    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, contrast=1.0, N_RF = 13, N_SETS = 7):
         self.N = N # Number of primary neurons
         self.num_angles = num_angles # Number of distinct input orientations
         self.stream_length = stream_length # Total length of the input stream
@@ -19,13 +19,10 @@ class StimulusGenerator:
         self.N_RF = N_RF
         self.N_SETS = N_SETS
 
-        # Preferred orientations of the stimuli from 0 to pi
+        # Preferred orientations of the neurons and stimuli are evenly spaced from 0 to pi
         self.theta_tunings = np.linspace(0, np.pi, N, endpoint=False)
         self.theta_inputs = np.linspace(0, np.pi, num_angles, endpoint=False)
-        # Preferred orientations of the N_RF receptive-field neurons. Kept separate from
-        # theta_inputs: num_angles sets the resolution of the discrete stimulus identities
-        # drawn at each timestep, while theta_RF is the (independent) set of tuning centers
-        # the RF neurons project that continuous stimulus angle onto to form their drive.
+        # Preferred orientations of the N_RF receptive-field neurons. 
         self.theta_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
 
     def generate_input_ensembles(self, biased=False, mean_center=False,
@@ -51,8 +48,7 @@ class StimulusGenerator:
             delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
             delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2
             profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3
-            scale = 1 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
-            profiles = self.contrast * scale * profiles / np.max(profiles)
+            profiles = self.contrast * profiles / np.linalg.norm(profiles, keepdims=True, axis=0)
             if mean_center:
                 profiles -= profiles.mean(axis=1, keepdims=True)
             if return_angles:
@@ -82,7 +78,7 @@ class StimulusGenerator:
         # Adding the duration of the inputs in so it doesn't flash a new one every time step. 
         indices = np.repeat(indices, duration)
 
-        # Convert indices to actual orientation centers; shape: (stream_length,)
+        # Convert indices to orientation centers; shape: (stream_length,)
         centers = self.theta_inputs[indices]
 
         # Generate stimulus curves using broadcasting - matrix of shape (K_stimuli, stream_length).
@@ -91,9 +87,8 @@ class StimulusGenerator:
         #profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
         profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
         
-        # 5. Normalize, scale, then (optionally) mean-center across the ensemble
-        scale = 1 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
-        profiles = self.contrast * scale * profiles / np.linalg.norm(profiles, keepdims=True, axis=0)
+        # 5. Normalize, then (optionally) mean-center across the ensemble
+        profiles = self.contrast * profiles / np.linalg.norm(profiles, keepdims=True, axis=0)
         
         if add_poisson_noise:
             noise_std = np.sqrt(poisson_fano * np.clip(profiles, 0, None))
@@ -159,26 +154,16 @@ class StimulusGenerator:
 
         # Project the (num_angles-resolution) stimulus angle at each timestep onto the
         # N_RF receptive-field neurons' own tuning curves - matrix of shape (N_RF, stream_length).
-        # num_angles only controls how finely the discrete stimulus identity is sampled above;
-        # it has no bearing on how many neurons receive the resulting drive. Left raw
-        # (unnormalized) here - normalization happens below, after extension to the full
-        # population, so it sees the true full-population input vector (see note below).
         delta_theta = self.theta_RF[:, np.newaxis] - centers[np.newaxis, :]
         delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
         #profile = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
         profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
 
-        # Extend each individual (still-raw) profile (i.e. each column/timestep of the stream)
-        # from N_RF neurons to the full N_RF * N_SETS population, placing the driven profile
-        # in the CRF and/or surround slots and a flat baseline elsewhere. baseline is
-        # broadcast across the full stream length so this applies per-timestep. This happens
-        # BEFORE normalization (unlike before) so that the L2-normalize-to-unit-length step
-        # below acts on the true full-population input vector b*z, not just the driven
-        # N_RF-neuron sub-block - the ORGaNICs papers' fixed-point derivation assumes ||z|| is
-        # O(1) for the whole population, and normalizing only the driven sub-block left the
-        # full vector's length scaling with sqrt(N_SETS) once baseline was concatenated in.
+        # Extend each individual profile from N_RF neurons to the full N_RF * N_SETS population:
         baseline = np.full((self.N_RF, profile.shape[1]), 0.10)
         match adapt_location:
+            case 'no adaptation':
+                full_profile = np.concatenate([baseline] * (self.N_SETS), axis=0)
             case 'adapt CRF only':
                 full_profile = np.concatenate([profile] + [baseline] * (self.N_SETS - 1), axis=0)
             case 'adapt surround only':
@@ -187,8 +172,7 @@ class StimulusGenerator:
                 full_profile = np.concatenate([profile] * (self.N_SETS), axis=0)
 
         # 5. Normalize the full population vector to unit length, then scale by contrast.
-        scale = 1 # COEFFICIENT OF ~15 ACHIEVES CORRECT SATURATION FOR CONTRAST OF 1
-        profiles = self.contrast * scale * full_profile / np.linalg.norm(full_profile, keepdims=True, axis=0)
+        profiles = self.contrast * full_profile / np.linalg.norm(full_profile, keepdims=True, axis=0)
 
         if add_poisson_noise:
             # Gaussian approximation to Poisson noise, applied independently at every
@@ -208,19 +192,9 @@ class StimulusGenerator:
             noise_std = np.sqrt(poisson_fano * np.clip(profiles, 0, None))
             profiles = profiles + np.random.normal(0, noise_std)
 
-            # Hard cap: noise can push a column's norm well past the length-1 ceiling the
-            # normalization step above was trying to enforce (confirmed in stimuli_whiten.py's
-            # __main__ diagnostic - poisson_fano=5.0 alone reached column norms of ~8.8), which is
-            # almost certainly what tips V1Dynamics_Surround's RK4 integration into runaway - the
-            # whole model is tuned/tested around ||z|| <= 1. Only rescale columns that actually
-            # exceed 1 (at realistic poisson_fano this ends up being ~every column, not a rare
-            # correction - verified this doesn't distort the covariance structure though: the
-            # per-column norm barely varies with which orientation is shown, since it's dominated
-            # by the 6 orientation-blind surround blocks, so the divisor is nearly constant across
-            # columns anyway). Chosen over a single global rescale (divide every column by the
-            # stream's largest norm) because that alternative is dominated by one rare outlier draw
-            # - it would crush the *typical* column well below length 1, and gets worse the longer
-            # the stream runs (more chances to draw a bigger outlier).
+            # Hard cap: noise can push a column's norm well past the length-1 ceiling. Only rescale 
+            # columns that actually exceed 1 (at realistic poisson_fano this ends up being ~every column, not a rare
+            # correction)
             norms = np.linalg.norm(profiles, axis=0, keepdims=True)
             profiles = profiles * np.minimum(1.0, 1.0 / norms)
 
@@ -232,7 +206,6 @@ class StimulusGenerator:
         
 
         return profiles
-
 
     def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=1.0,
                                  return_metadata=False, **kwargs):
@@ -287,7 +260,6 @@ class StimulusGenerator:
             angles_per_pres = centers[::duration]   # one angle per presentation
             return stream, angles_per_pres, contrasts
         return stream
-
 
     def plot_covariance_matrices(self):
         '''Plot heatmaps of the covariance matrix for both uniform and biased ensembles.'''
@@ -490,75 +462,3 @@ if __name__ == "__main__":
     #stim_gen.plot_von_mises_distributions()
     #stim_gen.plot_contrast_distributions()
     #stim_gen.plot_surround_covariance_matrices()
-
-    # ==========================================================================
-    # Poisson-noise divergence diagnostic: generate_surround_ensembles normalizes
-    # each column to ||z||=contrast BEFORE add_poisson_noise perturbs it, so the
-    # noisy stream can end up with columns longer than 1 - which is almost
-    # certainly what's tipping V1Dynamics_Surround's RK4 integration into runaway
-    # (the whole model is tuned/tested around ||z|| <= 1). Testing two fixes here
-    # without touching the functions yet:
-    #   1. Hard cap - only rescale columns whose norm exceeds 1, down to exactly 1;
-    #      columns already <= 1 are left untouched.
-    #   2. Global rescale - divide the ENTIRE stream by its single largest column
-    #      norm, so every column ends up <= 1 but relative scaling between
-    #      columns/timesteps (i.e. the actual noise structure) is preserved.
-    # ==========================================================================
-    ADAPT_LOCATION = 'adapt CRF only'
-    POISSON_FANO   = 5.0
-
-    def hard_cap(stream, max_len=1.0):
-        '''Rescale only the columns whose norm exceeds max_len, down to exactly max_len.'''
-        norms = np.linalg.norm(stream, axis=0, keepdims=True)
-        scale = np.minimum(1.0, max_len / norms)
-        return stream * scale
-
-    def global_rescale(stream, max_len=1.0):
-        '''Divide every column by the single largest column norm in the whole stream.'''
-        max_norm = np.linalg.norm(stream, axis=0).max()
-        return stream * (max_len / max_norm)
-
-    uni_raw  = stim_gen.generate_surround_ensembles(ADAPT_LOCATION, biased=False, add_poisson_noise=True, poisson_fano=POISSON_FANO)
-    bias_raw = stim_gen.generate_surround_ensembles(ADAPT_LOCATION, biased=True,  add_poisson_noise=True, poisson_fano=POISSON_FANO)
-
-    print(f"Raw (noisy) max column norm - uniform: {np.linalg.norm(uni_raw, axis=0).max():.3f}, "
-          f"biased: {np.linalg.norm(bias_raw, axis=0).max():.3f}  (fixed-point derivation assumes <= 1)")
-
-    fixes = {
-        'Hard cap (clip norm > 1)':     hard_cap,
-        'Global rescale (/ max norm)':  global_rescale,
-    }
-
-    for fix_name, fix_fn in fixes.items():
-        uni  = fix_fn(uni_raw)
-        bias = fix_fn(bias_raw)
-        print(f"  {fix_name} - max column norm after fix: uniform={np.linalg.norm(uni, axis=0).max():.3f}, "
-              f"biased={np.linalg.norm(bias, axis=0).max():.3f}")
-
-        uni_rf  = uni[:stim_gen.N_RF]
-        bias_rf = bias[:stim_gen.N_RF]
-
-        cov_uni  = np.cov(uni_rf,  rowvar=True)
-        cov_bias = np.cov(bias_rf, rowvar=True)
-
-        ticks = np.linspace(0, stim_gen.N_RF - 1, min(5, stim_gen.N_RF)).astype(int)
-        tick_labels = [str(t) for t in ticks]
-
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-        for ax, mat, title in zip(axes, [cov_uni, cov_bias],
-                                  [f'Uniform Ensemble (CRF)\n{fix_name}', f'Biased Ensemble (CRF)\n{fix_name}']):
-            im = ax.imshow(mat, cmap='viridis', aspect='auto')
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            ax.set_title(title, fontsize=16, fontweight='bold', pad=12)
-            ax.set_xlabel('CRF neuron index', fontsize=14, fontweight='bold')
-            ax.set_ylabel('CRF neuron index', fontsize=14, fontweight='bold')
-            ax.set_xticks(ticks); ax.set_xticklabels(tick_labels, fontsize=12)
-            ax.set_yticks(ticks); ax.set_yticklabels(tick_labels, fontsize=12)
-            for spine in ax.spines.values():
-                spine.set_linewidth(2.5)
-            ax.tick_params(width=2.5, length=6)
-
-        plt.tight_layout()
-
-    plt.show()
-    

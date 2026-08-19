@@ -105,7 +105,7 @@ def _pooled_denom(raw_input_drive, pool_stimuli, Beta):
 
 def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_stimuli=None,
                                 poisson_variance=False, target_covariance=None,
-                                pool_stimuli=None, pool_uniform_stimuli=None):
+                                pool_stimuli=None, pool_uniform_stimuli=None, identity=None):
     '''
     target_covariance (optional): an (N, N) covariance matrix to use directly as the target,
     instead of estimating one from a fresh uniform_stimuli sample - e.g. the same

@@ -3,20 +3,15 @@ Surround_Analytic_Responses.py
 
 Calculates neural firing rates for a known input distribution using analytical expressions.
 Interactions between classical receptive field (cRF) neurons and surround (non-cRF) neurons are modeled.
-The normalization pool includes all neurons, while adaptation (gain feedback) is local to each RF.
+The normalization pool includes all neurons, while adaptation is local to each RF.
 
 Population structure: 7 sets of 13 primary neurons each (91 total). One set (CRF_IDX) is the
 classical RF; the other 6 are surround sets. All 7 sets share the same tuning-curve basis and the
-same per-RF frame, so the 6 surround sets are treated as fully interchangeable (no distance-dependent
-weighting) -- only cRF vs. non-cRF membership matters.
+same per-RF frame.
 
 Methodology:
-1. Optimal gains for a single 13-neuron RF pool are computed once PER ADAPTATION CONDITION
-   (cRF-only / surround-only / cRF+surround), not once overall -- the divisive normalization
-   pool is global (all 91 neurons), so how much of the population is co-active during that
-   condition changes how strongly a driven RF's output is suppressed, and therefore what gains
-   are needed to whiten it to the shared target. Each condition's gains are fit against a
-   covariance computed with that condition's actual full-population pool composition.
+1. Optimal gains for a single 13-neuron RF pool are computed once per adaptation condition
+   (cRF-only / surround-only / cRF+surround).
 2. For each of the 4 adaptation conditions (none / cRF-only / non-cRF-only / both), a block-diagonal
    feedback matrix M (91x91) is assembled from that condition's own per-RF gains, and mu = <y> is
    found via a joint self-consistency loop over the full 91-neuron population (normalization pools
@@ -40,21 +35,21 @@ from analysis import Analytic_responses as ar
 from typing import Literal
 from scipy.linalg import block_diag
 
-N_RF       = 13                    # primary neurons per receptive field
+N_RF       = 13                    # Primary neurons per receptive field
 N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
-N_TOTAL    = N_RF * N_SETS         # full primary-neuron population
-CRF_IDX    = 0                     # which of the 7 sets is the cRF (arbitrary; sets are symmetric)
+N_TOTAL    = N_RF * N_SETS         # Full primary-neuron population
+CRF_IDX    = 0                     # Which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
-sigma = 0.7
+sigma = 0.7                        
 Beta  = 0.5
 
 
-ENSEMBLE_CONTRAST = 0.6      # contrast of the adaptation ensembles (baseline & adaptor)
-TUNING_WIDTH      = 0.75
-N_CONTRASTS   = 20
+ENSEMBLE_CONTRAST = 0.6      # Contrast of the adaptation ensembles (baseline & adaptor)
+TUNING_WIDTH      = 0.75     # Width of the gaussian stimulus profiles
+N_CONTRASTS   = 20           # Number of contrasts to probe with
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 0.2   
+PROBE_CONTRAST = 0.8         
 N_PROBES       = 720
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
@@ -64,16 +59,17 @@ COLOR_NONCRF = 'red'
 COLOR_BOTH   = 'darkorange'
 
 
-def half_wave_rectify(y):
+def half_wave_rectify(y):      # Estimates primary neuron firing rate from membrane potential
     return np.maximum(y, 0.0) ** 2
 
 def probe_local_profile(input_theta, contrast, tuning_width=TUNING_WIDTH):
     '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding.'''
-    theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False) # Evenly spaced orientation preferences for neurons
-    delta = theta_grid - input_theta # Distance between neuron preference from stimulus orientation
-    delta = (delta + np.pi / 2) % np.pi - np.pi / 2
-    profile = np.exp(-delta**2 / (2 * tuning_width**2))
-    return contrast * 1 * profile / np.linalg.norm(profile) # Gaussian input response profile scaled by contrast
+    theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False)    # Evenly spaced orientation preferences for neurons
+    delta = theta_grid - input_theta                            # Distance between neuron preference from stimulus orientation
+    delta = (delta + np.pi / 2) % np.pi - np.pi / 2             # Shift by 90 degrees to match other scripts
+    profile = np.exp(-delta**2 / (2 * tuning_width**2))         # Gaussian profile
+    profile = contrast * profile / np.linalg.norm(profile)      # Normalize and scale by contrast
+    return profile
 
 def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation state.'''
@@ -106,12 +102,7 @@ def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt 
 
 def block_diag_W(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     '''
-    Block-diagonal embedding of the shared per-RF frame across all N_SETS sets, together with the
-    matching full-length gain vector for `adapt_location` -- mirrors block_diag_M's per-condition
-    dispatch exactly, but keeps W and g separate instead of fusing them into M = W@diag(g)@W.T, so
-    the interneuron/variance-proxy activity v = W_full.T @ y_centered stays inspectable on its own
-    (needed by get_response_fast_v). Returns (W_full, g_full): W_full is (N_TOTAL, N_SETS*K),
-    g_full is (N_SETS*K,).
+    Block-diagonal embedding of the shared per-RF frame
     '''
     K = frame.shape[1]
     zeros_local = np.zeros(K)
@@ -169,28 +160,20 @@ def get_mu(stimuli, M, alpha=0.1, Beta=0.5):
         pbar.update(1)
     pbar.close()
     return mu
-    
-def get_mu_norm(stimuli):
-    '''
-    Ensemble mean of the (adaptation-free) NORMALIZED response, i.e. <y_norm> = <z / sqrt(sigma^2 +
-    N_matrix @ z^2)> averaged over the ensemble. This is NOT the same as normalizing the mean
-    stimulus (sqrt(...) is nonlinear, so normalize-the-mean != mean-of-normalized, a Jensen's-gap
-    difference) -- must match how y_norm is computed per-sample in get_response_fast_v.
-    '''
-    stimuli = np.asarray(stimuli)                                       # (T, N_TOTAL)
-    denom = np.sqrt(sigma**2 + (N_matrix @ (stimuli**2).T).T)            # (T, N_TOTAL)
-    y_norm_samples = stimuli / denom                                    # (T, N_TOTAL)
-    return y_norm_samples.mean(axis=0)                                  # (N_TOTAL,)
 
 def get_response_moments(stimulus, mu, M, Beta=0.5):
-    # Normalized response after the average (mean-centering) gain feedback
-    gain_feedback = M @ mu
-    z_prime = 2 * (Beta * stimulus - gain_feedback)
-    y_prime = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
+    ''' 
+    Assumes the time constant of the variance interneuron is fast enough to factorize the 
+    covariance transformation (meaning it does NOT just settle to W.T @ mu)
+    '''
+    # Normalized response after the average gain feedback
+    gain_feedback = M @ mu                                              # Estimation of average gain feedback
+    z_prime = 2 * (Beta * stimulus - gain_feedback)                     # Adjusted approximate input drive
+    y_prime = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))     # Normalize approx. input drive
 
     # Now apply the covariance transformation on the response:
-    T = np.linalg.inv(np.eye(N_TOTAL) + M) # T = [I + WgW.T]^-1
-    y_2 = T @ y_prime
+    T = np.linalg.inv(np.eye(N_TOTAL) + M)      # T = [I + WgW.T]^-1
+    y_2 = T @ y_prime                            
 
     # Now normalize again to get steady state
     y = y_2 / np.sqrt(sigma**2 + N_matrix @ (y_2**2))
@@ -199,9 +182,14 @@ def get_response_moments(stimulus, mu, M, Beta=0.5):
     return rectified_y
 
 def get_response(stimulus, mu, M, Beta=0.5):
-    gain_feedback = M @ mu
-    z_prime = 2 * (Beta * stimulus - gain_feedback)
-    y = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
+    ''' 
+    Assumes the time constant of the variance interneuron is extremely slow so that it settles 
+    as an average: v = W.T @ mu. Since this is effectively a constant vector, it cannot factorize 
+    into the proper covariance tranformation on the inputs. 
+    '''
+    gain_feedback = M @ mu                                      # Gain feedback ~ constant vector from slow v, g
+    z_prime = 2 * (Beta * stimulus - gain_feedback)             # Modified approx input drive
+    y = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))   # Normalize the approx input drive
 
     rectified_y = half_wave_rectify(y)
     return rectified_y
@@ -226,14 +214,6 @@ if __name__ == "__main__":
     print("Initializing tunings and frame...")
     tunings = V1Tunings(N=N_RF)
     frame   = Frame(csv_path=FRAME_PATH)
-
-    # Gains are still solved for a single 13-neuron RF's frame (the numerator), but the
-    # denominator now comes from the true full-population pool via pool_stimuli passed
-    # explicitly below (summed uniformly over all N_pool neurons -- see _pooled_denom).
-    # ar.N_matrix is only the fallback used if pool_stimuli is omitted, so keep it at the
-    # local (13x13) shape for that fallback case.
-    ar.sigma    = sigma
-    ar.N_matrix = np.ones((N_RF, N_RF))
 
     # ---- Local (single-RF) biased ensemble: shared context for every adaptation case ----
     stim_gen = StimulusGenerator(N=N_RF, num_angles=N_RF, stream_length=N_RF,
@@ -264,17 +244,10 @@ if __name__ == "__main__":
     delta = stim_gen.theta_inputs[:, None] - centers_bias[None, :]
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2
     seq_bias = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
-    seq_bias = stim_gen.contrast * 1 * seq_bias / np.linalg.norm(seq_bias)
+    seq_bias = stim_gen.contrast * seq_bias / np.linalg.norm(seq_bias)
     stimuli_bias = list(seq_bias.T)
 
     # ---- Optimal gains, one set per stimulus condition ----
-    # The whitening TARGET (the variance level gains are fit to reach) is anchored to a single
-    # common reference across all three conditions: the uniform ensemble under the "large"
-    # (cRF + surround) stimulus, i.e. the full 91-neuron pool driven by the uniform ensemble.
-    # Only the BIASED ensemble's pool composition (the numerator/suppression side of the fit)
-    # varies per condition -- so cRF-only, surround-only, and cRF+surround gains all whiten
-    # toward the same reference variance, differing only in how strongly their own condition's
-    # pool suppresses the biased drive.
     GAIN_CONDITIONS = ['adapt CRF only', 'adapt surround only', 'adapt CRF and surround']
     pool_uni = np.array([full_spatial_stimuli(z, 'adapt CRF and surround') for z in stimuli_uni])
     print("Computing optimal gains...")
@@ -285,13 +258,6 @@ if __name__ == "__main__":
             stimuli_bias, frame.W, label=f'biased ({cond})',
             poisson_variance=True, uniform_stimuli=stimuli_uni,
             pool_stimuli=pool_bias, pool_uniform_stimuli=pool_uni)
-
-    # CALCULATE mu_norm BY CONDITION RIGHT 
-    mu_norm_by_condition = {}
-    for cond in CONDITIONS:
-        print(f"Computing mu ({CONDITION_LABEL[cond]})...")
-        full_stimuli = [full_spatial_stimuli(z, cond) for z in stimuli_bias]
-        mu_norm_by_condition[cond] = get_mu_norm(full_stimuli)
 
     print("Building M for each condition...")
     M_by_condition = {
@@ -331,7 +297,7 @@ if __name__ == "__main__":
 
 
     # ==========================================================================
-    # CHECK 2 -- Contrast response functions of the cRF neuron that prefers the adaptor
+    # Figure 1 -- Contrast response functions of the cRF neuron that prefers the adaptor
     # ==========================================================================
     print("Computing contrast response functions...")
     crf_target_idx = CRF_IDX * N_RF + adaptor_idx
@@ -341,8 +307,8 @@ if __name__ == "__main__":
         W_full, g_full = Wg_full_by_condition[cond]
         for i, c in enumerate(CRF_CONTRASTS):
             probe = probe_input_drive(adaptor_rad, c)
-            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond]) 
-            y = get_response_moments(probe, mu_by_condition[cond], M_by_condition[cond]) 
+            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])        # Approximates slow v steady state
+            y = get_response_moments(probe, mu_by_condition[cond], M_by_condition[cond]) # Approximates fast v steady state
             resp[i] = y[crf_target_idx]
         return resp
 
@@ -385,7 +351,7 @@ if __name__ == "__main__":
     plt.tight_layout(); plt.show()
 
     # ==========================================================================
-    # CHECK 3 -- Gain feedback (M @ mu) for each adaptation case
+    # CHECK 2 -- Gain feedback (M @ mu) for each adaptation case
     # ==========================================================================
     print("Computing gain feedback...")
     gain_feedback_by_condition = {
@@ -405,7 +371,7 @@ if __name__ == "__main__":
     plt.tight_layout(); plt.show()
 
     # ==========================================================================
-    # CHECK 7 -- Tuning curve of a neuron adjacent to the adaptor-preferring neuron
+    # CHECK 3 -- Tuning curve of a neuron adjacent to the adaptor-preferring neuron
     # ==========================================================================
     print("Computing flank-neuron tuning curves...")
     flank_idx = (adaptor_idx - 1) % N_RF
@@ -473,15 +439,7 @@ if __name__ == "__main__":
     plt.tight_layout(); plt.show()
 
     # ==========================================================================
-    # FIGURE 1 (surround) -- recreates Figure 1 from Analytic_responses.py with
-    # the exact same layout/style and the exact same input-ensemble histograms
-    # (top row: Uniform Ensemble / Biased Ensemble). The only thing that changes
-    # is the adaptation state driving the bottom-row tuning curves: instead of
-    # separate uniform/biased gain contexts (that script had no surround), the
-    # left column uses the 'no adaptation' state and the right column uses the
-    # 'adapt CRF only' state from this script's block-diagonal model. The probe
-    # still sweeps the full 0-180 deg range and always drives the whole cRF +
-    # surround population (probe_input_drive), matching the original's coverage.
+    # FIGURE 2 (surround) Tuning Curves 
     # ==========================================================================
     print("Recreating Figure 1 (cRF-only-adapted state)...")
     N_BINS = N_RF
@@ -503,7 +461,8 @@ if __name__ == "__main__":
         resp = np.zeros((N_RF, N_PROBES))
         for i, ang in enumerate(probe_angles):
             probe = probe_input_drive(ang, PROBE_CONTRAST)
-            y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])
+            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])
+            y = get_response_moments(probe, mu_by_condition[cond], M_by_condition[cond])
             resp[:, i] = y[crf_slice]
         return resp
 
