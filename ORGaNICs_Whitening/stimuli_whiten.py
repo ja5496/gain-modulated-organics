@@ -160,7 +160,7 @@ class StimulusGenerator:
         profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
 
         # Extend each individual profile from N_RF neurons to the full N_RF * N_SETS population:
-        baseline = np.full((self.N_RF, profile.shape[1]), 0.10)
+        baseline = np.full((self.N_RF, profile.shape[1]), 0.20)
         match adapt_location:
             case 'no adaptation':
                 full_profile = np.concatenate([baseline] * (self.N_SETS), axis=0)

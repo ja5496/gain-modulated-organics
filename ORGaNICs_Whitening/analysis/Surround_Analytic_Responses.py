@@ -27,19 +27,23 @@ sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 from tqdm import tqdm
 from simulation_whiten import Frame
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from analysis import Analytic_responses as ar
 from typing import Literal
-from scipy.linalg import block_diag
+from scipy.linalg import block_diag, eigh as scipy_eigh
 
 N_RF       = 13                    # Primary neurons per receptive field
 N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL    = N_RF * N_SETS         # Full primary-neuron population
 CRF_IDX    = 0                     # Which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
+# Same target-covariance file V1Dynamics_Surround loads for theta_t (simulation_whiten.py) -
+# used below so the PCA whitening diagnostic's "T" matches the live model's target exactly.
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
 sigma = 0.7                        
 Beta  = 0.5
@@ -49,7 +53,7 @@ ENSEMBLE_CONTRAST = 0.6      # Contrast of the adaptation ensembles (baseline & 
 TUNING_WIDTH      = 0.75     # Width of the gaussian stimulus profiles
 N_CONTRASTS   = 20           # Number of contrasts to probe with
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 0.8         
+PROBE_CONTRAST = 1.0         
 N_PROBES       = 720
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
@@ -407,16 +411,25 @@ if __name__ == "__main__":
 
     peak_deg = {cond: curve_peak_deg(flank_curves[cond]) for cond in TUNING_CONDITIONS}
     control_peak = peak_deg['no adaptation']
+    peak_shift_deg = {cond: ((peak_deg[cond] - control_peak + 90) % 180) - 90 for cond in TUNING_CONDITIONS}
 
     print("Flank neuron tuning-preference shift (vs. control):")
     for cond in TUNING_CONDITIONS:
-        shift = ((peak_deg[cond] - control_peak + 90) % 180) - 90
-        print(f"  {CONDITION_LABEL[cond]:25s} peak={peak_deg[cond]:7.2f} deg   shift={shift:+6.2f} deg")
+        print(f"  {CONDITION_LABEL[cond]:25s} peak={peak_deg[cond]:7.2f} deg   "
+              f"shift={peak_shift_deg[cond]:+6.2f} deg")
+
+    # Compact legend labels folding in each condition's peak shift (in degrees) relative to
+    # the no-adaptation control, so the shift is readable directly off the plot.
+    FLANK_LEGEND_LABEL = {
+        'no adaptation':       'No adaptation',
+        'adapt surround only': f"Surround: {peak_shift_deg['adapt surround only']:+.2f}°",
+        'adapt CRF only':      f"cRF: {peak_shift_deg['adapt CRF only']:+.2f}°",
+    }
 
     fig_flank, ax_flank = plt.subplots(figsize=(7, 5.5))
     for cond in TUNING_CONDITIONS:
         ax_flank.plot(probe_angles_deg, flank_curves[cond], color=CONDITION_COLOR[cond],
-                      linewidth=3.5, label=CONDITION_LABEL[cond])
+                      linewidth=3.5, label=FLANK_LEGEND_LABEL[cond])
 
     # Vertical arrow marking the adaptor orientation
     adaptor_deg = adaptor_rad * 180 / np.pi
@@ -435,7 +448,7 @@ if __name__ == "__main__":
     ax_flank.spines['left'].set_visible(False)
     ax_flank.spines['bottom'].set_linewidth(2.5)
     ax_flank.tick_params(axis='x', width=2.5, length=6, labelsize=12)
-    ax_flank.legend(fontsize=10, frameon=False)
+    ax_flank.legend(fontsize=15, frameon=False)
     plt.tight_layout(); plt.show()
 
     # ==========================================================================
@@ -538,4 +551,228 @@ if __name__ == "__main__":
         ax.spines['right'].set_visible(False)
 
     plt.tight_layout()
+
+    # ==========================================================================
+    # PCA whitening diagnostic: the biased single-RF stimulus ensemble (stimuli_bias, the
+    # same array get_optimal_gains_target above is fit on) before vs. after three
+    # covariance transforms:
+    #   (1) full whitening, from the RAW stimuli's own covariance.
+    #   (2) "T" - Analytic_responses.get_optimal_gains_target's shrink-to-target transform,
+    #       built from the covariance of the NORMALIZED stimuli z/sqrt(sigma^2+||z||^2)
+    #       (no Beta: Beta's only role is cancelling the factor of 2 in the y-dynamics fixed
+    #       point y* = 2*(Beta*z - fb)/..., it has no place in this covariance/basis calc) -
+    #       this is the actual quantity divisive normalization drives responses toward, so T
+    #       is derived on the same footing as the target covariance it shrinks toward. Only
+    #       eigen-directions whose variance exceeds the model's target get pulled down to
+    #       that target; directions already below it are untouched. Uses the SAME target
+    #       covariance file V1Dynamics_Surround loads for theta_t (simulation_whiten.py /
+    #       TARGET_COV_PATH), so T here matches what the live gain-feedback circuit in
+    #       Surround_simulated_responses.py actually approximates.
+    #   (3) top-eigenvalue clip, from the RAW stimuli's own covariance (same basis as (1)):
+    #       leaves every eigen-direction untouched EXCEPT the single largest eigenvalue,
+    #       whose variance is shrunk down to exactly the second-largest eigenvalue - isolates
+    #       how much of the stimuli-vs-response structural difference the single most
+    #       dominant direction (e.g. the adaptor orientation) accounts for on its own.
+    # Same red=stimuli / blue=response color scheme as the PCA scatter in
+    # Surround_simulated_responses.py's Figure 7. 3 panels (one per transform), each
+    # overlaying its stimuli/response pair on a SHARED joint-PCA frame so their relative
+    # scale is directly visible (not each rescaled to fill its own axes).
+    # ==========================================================================
+    print("Building PCA whitening diagnostic (biased ensemble)...")
+    stimuli_bias_matrix = np.array(stimuli_bias)   # (n_bias, N_RF)
+
+    Covariance_bias = np.cov(stimuli_bias_matrix, rowvar=False)
+    eigvals_bias, eigvecs_bias = np.linalg.eigh(Covariance_bias)
+    safe_lambdas = np.maximum(eigvals_bias, 1e-9)
+
+    # (1) Full whitening: Cov^-1/2, raw-stimuli basis.
+    W_whiten_full = eigvecs_bias @ np.diag(np.sqrt(0.02) / np.sqrt(safe_lambdas)) @ eigvecs_bias.T
+    stim_whitened_full = (W_whiten_full @ stimuli_bias_matrix.T).T
+
+    # (2) T: shrink-to-target whitening, normalized-stimuli basis. sigma=0.25 matches
+    # frame_whiten.compute_uniform_target_covariance / V1Dynamics_Surround's default - the
+    # same sigma that produced target_covariance itself.
+    SIGMA_NORM = 0.25
+    pooled_energy = np.sum(stimuli_bias_matrix ** 2, axis=1, keepdims=True)   # (n_bias, 1)
+    stimuli_bias_normalized = stimuli_bias_matrix / np.sqrt(SIGMA_NORM**2 + pooled_energy)
+
+    Covariance_norm = np.cov(stimuli_bias_normalized, rowvar=False)
+    eigvals_norm, eigvecs_norm = np.linalg.eigh(Covariance_norm)
+    safe_lambdas_norm = np.maximum(eigvals_norm, 1e-9)
+
+    target_covariance = np.loadtxt(TARGET_COV_PATH, delimiter=",")
+    target_variance = np.mean(np.diag(target_covariance))
+    d_target = np.minimum(1.0, np.sqrt(target_variance / safe_lambdas_norm))
+    T = eigvecs_norm @ np.diag(d_target) @ eigvecs_norm.T
+    stim_T = (T @ stimuli_bias_normalized.T).T
+
+    # (3) Top-eigenvalue clip: same raw-stimuli eigenbasis as (1), but only the single
+    # largest eigenvalue is shrunk - down to exactly the second-largest - and every other
+    # eigen-direction's coefficient stays at 1.
+    sorted_desc = np.argsort(eigvals_bias)[::-1]
+    top_idx, second_idx = sorted_desc[0], sorted_desc[1]
+    second_highest_eigval = eigvals_bias[second_idx]
+    d_clip_top = np.ones_like(safe_lambdas)
+    d_clip_top[top_idx] = np.sqrt(second_highest_eigval / safe_lambdas[top_idx])
+    W_clip_top = eigvecs_bias @ np.diag(d_clip_top) @ eigvecs_bias.T
+    stim_clip_top = (W_clip_top @ stimuli_bias_matrix.T).T
+
+    def pca_project_pair(raw, transformed):
+        '''Joint PCA on [raw; transformed] so both scatters share one 2D coordinate frame -
+        preserves their relative scale instead of each getting its own independent axes.'''
+        combined = np.concatenate([raw, transformed], axis=0)
+        centered = combined - combined.mean(axis=0, keepdims=True)
+        cov2 = np.cov(centered, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov2)
+        top2 = eigvecs[:, np.argsort(eigvals)[::-1][:2]]
+        proj = centered @ top2
+        n = raw.shape[0]
+        return proj[:n], proj[n:]
+
+    def cov_ellipse(ax, points, color, n_std=1.0):
+        '''Draws a 2*n_std-sigma covariance ellipse characterizing a 2D point cloud and
+        returns its (eigval_1, eigval_2) variances along the major/minor axes.'''
+        center = points.mean(axis=0)
+        cov2 = np.cov(points, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov2)
+        order = np.argsort(eigvals)[::-1]
+        eigvals, eigvecs = eigvals[order], eigvecs[:, order]
+        angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
+        width, height = 2 * n_std * np.sqrt(np.maximum(eigvals, 0))
+        ax.add_patch(Ellipse(center, width, height, angle=angle,
+                              facecolor='none', edgecolor=color, linewidth=2.5))
+        return eigvals
+
+    raw_proj_full, whitened_proj_full = pca_project_pair(stimuli_bias_matrix, stim_whitened_full)
+    norm_proj_T,   T_proj             = pca_project_pair(stimuli_bias_normalized, stim_T)
+    raw_proj_clip, clip_proj          = pca_project_pair(stimuli_bias_matrix, stim_clip_top)
+
+    fig_pca, (ax_full, ax_T, ax_clip) = plt.subplots(1, 3, figsize=(19, 6.5))
+    panels = [
+        (ax_full, raw_proj_full, whitened_proj_full, 'Stimuli',            'Whitened Response',
+         r"Full Whitening ($\Sigma^{-1/2}$)"),
+        (ax_T,    norm_proj_T,   T_proj,              'Normalized Stimuli', 'T Response',
+         r"Target-Covariance Whitening ($T$)"),
+        (ax_clip, raw_proj_clip, clip_proj,           'Stimuli',            'Clipped Response',
+         "Top-Eigenvalue Clip"),
+    ]
+    for ax, raw_proj, resp_proj, raw_label, resp_label, title in panels:
+        # alpha < 1 so exactly-overlapping points compound into a visibly darker/denser
+        # patch instead of one opaque marker silently hiding how many points land there.
+        ax.scatter(raw_proj[:, 0],  raw_proj[:, 1],  color='red',  alpha=0.6, s=45, label=raw_label)
+        ax.scatter(resp_proj[:, 0], resp_proj[:, 1], color='blue', alpha=0.6, s=45, label=resp_label)
+        eig_raw  = cov_ellipse(ax, raw_proj,  'red',  n_std=1.0)
+        eig_resp = cov_ellipse(ax, resp_proj, 'blue', n_std=1.0)
+        ax.set_title(title, fontsize=16, fontweight='bold')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.legend(fontsize=12, loc='upper right', frameon=False)
+        ax.text(0.02, 0.98, rf"{raw_label} $\lambda$: {eig_raw[0]:.3g}, {eig_raw[1]:.3g}",
+                transform=ax.transAxes, color='red', fontsize=10, fontweight='bold', va='top', ha='left')
+        ax.text(0.02, 0.91, rf"{resp_label} $\lambda$: {eig_resp[0]:.3g}, {eig_resp[1]:.3g}",
+                transform=ax.transAxes, color='blue', fontsize=10, fontweight='bold', va='top', ha='left')
+
+    fig_pca.suptitle("PCA Whitening Diagnostic (Biased Ensemble)", fontsize=18, fontweight='bold')
+    plt.tight_layout()
+
+    # ==========================================================================
+    # Eigenvalue-difference diagnostic: which directions of stimulus covariance actually
+    # change between the uniform and biased ensembles, and by how much? This directly bears
+    # on how many gain-modulating interneurons (Duong et al.) the circuit needs: if only a
+    # handful of directions ever carry real variance (in EITHER ensemble), that many
+    # interneurons suffice - the rest of an overcomplete frame (K=91 elsewhere in this
+    # codebase) would be adapting to structure that was never there.
+    #
+    # CRITICAL FIRST STEP - checking whether "compare all 13 eigenvalues" is even a
+    # well-posed question here. Cov_bias and Cov_uniform (raw OR normalized) both turn out
+    # to be effectively RANK 2: eigh on either one gives a top pair 1e3-1e4x larger than
+    # every remaining eigenvalue (verified numerically). This is a real, if extreme,
+    # consequence of TUNING_WIDTH=0.75 - a raised-Gaussian profile that wide, sampled and
+    # circularly shifted across N_RF=13 orientations, is itself close to rank 2 (its
+    # discrete circular Fourier transform is dominated by the DC + first-harmonic
+    # component; verified via SVD of the raw 13x13 category-template matrix). Comparing
+    # "eigenvalues" past rank 2 would be comparing two numbers that are BOTH indistinguishable
+    # from each ensemble's own residual-harmonic floor - a ratio of noise to noise, not
+    # signal to signal, and not a meaningful measure of anything. So the generalized
+    # eigenvalue problem
+    #     Cov_biased v = lambda * Cov_uniform v
+    # is solved ONLY within the shared real signal subspace, whose rank is picked
+    # explicitly below (pooled-covariance eigenvalues within 1e-3 relative of the top),
+    # rather than blindly on the full 13x13 matrices (which is what an earlier version of
+    # this diagnostic did, and which produced a misleading "11-12 of 13 directions differ"
+    # readout that was really just noise-floor ratios).
+    # ==========================================================================
+    print("Running eigenvalue-difference diagnostic (biased vs. uniform ensembles)...")
+    stimuli_uni_matrix = np.array(stimuli_uni)   # (N_RF, N_RF) - one exact sample per category
+    pooled_energy_uni = np.sum(stimuli_uni_matrix ** 2, axis=1, keepdims=True)
+    stimuli_uni_normalized = stimuli_uni_matrix / np.sqrt(SIGMA_NORM**2 + pooled_energy_uni)
+
+    Covariance_uni_raw = np.cov(stimuli_uni_matrix, rowvar=False)
+    Covariance_uni_norm = np.cov(stimuli_uni_normalized, rowvar=False)
+
+    def signal_subspace_gen_eigvals(Cov_biased, Cov_uniform, rel_thresh=1e-3):
+        '''Restricts the generalized eigenvalue problem Cov_biased v = lambda*Cov_uniform v
+        to the shared real signal subspace: eigenvectors of the pooled covariance whose
+        eigenvalue is within rel_thresh of the top one. Returns (pooled_spectrum_normalized,
+        retained_rank, generalized_eigenvalues_within_that_subspace).'''
+        Cov_pooled = 0.5 * (Cov_biased + Cov_uniform)
+        pooled_eigvals, pooled_eigvecs = np.linalg.eigh(Cov_pooled)
+        order = np.argsort(pooled_eigvals)[::-1]
+        pooled_eigvals, pooled_eigvecs = pooled_eigvals[order], pooled_eigvecs[:, order]
+        pooled_spectrum = pooled_eigvals / pooled_eigvals[0]
+        rank = int(np.sum(pooled_spectrum > rel_thresh))
+        V_signal = pooled_eigvecs[:, :rank]
+        Cov_biased_reduced = V_signal.T @ Cov_biased @ V_signal
+        Cov_uniform_reduced = V_signal.T @ Cov_uniform @ V_signal
+        gen_eigvals = scipy_eigh(Cov_biased_reduced, Cov_uniform_reduced, eigvals_only=True)[::-1]
+        return pooled_spectrum, rank, gen_eigvals
+
+    spectrum_raw,  rank_raw,  gen_eigvals_raw  = signal_subspace_gen_eigvals(Covariance_bias, Covariance_uni_raw)
+    spectrum_norm, rank_norm, gen_eigvals_norm = signal_subspace_gen_eigvals(Covariance_norm, Covariance_uni_norm)
+
+    print(f"  Pooled-covariance spectrum (raw, relative to top):        "
+          f"{np.array2string(spectrum_raw, precision=2, suppress_small=True)}")
+    print(f"  Pooled-covariance spectrum (normalized, relative to top): "
+          f"{np.array2string(spectrum_norm, precision=2, suppress_small=True)}")
+    print(f"  Retained signal rank (raw / normalized): {rank_raw} / {rank_norm} out of {N_RF}")
+    print(f"  Generalized eigenvalues within signal subspace, biased/uniform (raw):        "
+          f"{np.array2string(gen_eigvals_raw, precision=3)}")
+    print(f"  Generalized eigenvalues within signal subspace, biased/uniform (normalized): "
+          f"{np.array2string(gen_eigvals_norm, precision=3)}")
+
+    fig_eig, (ax_spec, ax_gen) = plt.subplots(1, 2, figsize=(13, 5.5))
+
+    rank_idx = np.arange(1, N_RF + 1)
+    ax_spec.plot(rank_idx, spectrum_raw,  'o-', color='#800020', linewidth=2.5, markersize=6, label='Raw')
+    ax_spec.plot(rank_idx, spectrum_norm, 'o-', color='#002060', linewidth=2.5, markersize=6, label='Normalized')
+    ax_spec.axhline(1e-3, color='black', linestyle='--', linewidth=1.5, label='Retention threshold')
+    ax_spec.set_yscale('log')
+    ax_spec.set_title("Pooled Covariance Spectrum", fontsize=15, fontweight='bold')
+    ax_spec.set_xlabel("Rank (descending)", fontsize=13, fontweight='bold')
+    ax_spec.set_ylabel("Eigenvalue (relative to top)", fontsize=12, fontweight='bold')
+    ax_spec.tick_params(labelsize=11)
+    ax_spec.legend(fontsize=11, frameon=False)
+    ax_spec.spines['top'].set_visible(False)
+    ax_spec.spines['right'].set_visible(False)
+
+    bar_w = 0.35
+    idx_max_rank = max(rank_raw, rank_norm)
+    x = np.arange(1, idx_max_rank + 1)
+    gen_raw_padded  = np.pad(gen_eigvals_raw,  (0, idx_max_rank - rank_raw))
+    gen_norm_padded = np.pad(gen_eigvals_norm, (0, idx_max_rank - rank_norm))
+    ax_gen.bar(x - bar_w/2, gen_raw_padded,  width=bar_w, color='#800020', label='Raw')
+    ax_gen.bar(x + bar_w/2, gen_norm_padded, width=bar_w, color='#002060', label='Normalized')
+    ax_gen.axhline(1.0, color='black', linestyle='--', linewidth=1.5)
+    ax_gen.set_xticks(x)
+    ax_gen.set_title("Generalized Eigenvalues (Signal Subspace)", fontsize=15, fontweight='bold')
+    ax_gen.set_xlabel("Signal-subspace rank", fontsize=13, fontweight='bold')
+    ax_gen.set_ylabel(r"$\lambda$ (biased / uniform)", fontsize=12, fontweight='bold')
+    ax_gen.tick_params(labelsize=11)
+    ax_gen.legend(fontsize=11, frameon=False)
+    ax_gen.spines['top'].set_visible(False)
+    ax_gen.spines['right'].set_visible(False)
+
+    fig_eig.suptitle("Which Directions Differ: Biased vs. Uniform Ensemble", fontsize=17, fontweight='bold')
+    plt.tight_layout()
+
     plt.show()
