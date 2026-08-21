@@ -49,7 +49,7 @@ class V1Dynamics:
         self.tau_avg = 12.0 
         self.tau_avg_z = 400
         
-        self.sigma = 0.4 
+        self.sigma = 0.1 
 
         self.beta = 0.5
 
@@ -200,7 +200,7 @@ class V1Dynamics_Surround:
         self.tau_v = 50.0    # time constant of excitatory neurons in normalization pool (medium to fast)
         self.tau_mu = 2500.0  # time constant of mean-response tracker (very slow, full context window needed)
 
-        self.sigma = 0.25      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
+        self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
         self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation
 
     def half_wave_rectify(self, y, alpha=2.0):  # Used to estimate firing rates from membrane potential
@@ -251,7 +251,7 @@ class V1Dynamics_Surround:
         dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
         surround_gain_feedback = self.frame.W @ (g_surround * v_surround) # unchanged: suppression still scales with raw v_surround
 
-        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ (sqrt_y_plus - sqrt_y_minus)) # matches Norm_Dynamics_1 (norm_diagnostic.py) - no complementary -sqrt_y_minus term
+        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ (sqrt_y_plus - sqrt_y_minus)) # matches Norm_Dynamics_1 (norm_diagnostic.py) 
         input_drive = self.beta * z_t
 
         # Local gain feedback matrix that can be applied to the full y dynamics

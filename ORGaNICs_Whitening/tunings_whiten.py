@@ -35,8 +35,8 @@ class V1Tunings: # Artificial tuning curves of each neuron
 
                     # Normalize so maximum eigenvalue is 1
         max_eig = np.max(np.real(np.linalg.eigvals(W)))
-        W = W / max_eig'''
-
+        W = W / max_eig
+'''
         if Surround:
             W = block_diag(*[W] * self.N_SETS)
             max_eig_full = np.max(np.linalg.eigvals(W))

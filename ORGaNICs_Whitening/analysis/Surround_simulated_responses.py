@@ -47,16 +47,16 @@ CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 
-ENSEMBLE_CONTRAST    = 0.4       # contrast of the adaptation ensembles (baseline & adaptor)
+ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
-N_SETTLE_STEPS       = 300     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
+N_SETTLE_STEPS       = 200     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
 N_CONTRASTS    = 20
 CRF_CONTRASTS  = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 1.0
-N_PROBES       = 720
+PROBE_CONTRAST = 0.8
+N_PROBES       = 180
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
 COLOR_NONE   = 'black'
@@ -248,10 +248,12 @@ def get_response(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=
         k4 = frozen_derivatives(state + dt * k3, stimulus, dyn, g_cRF, g_surround)
         state += (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
-    y_final = np.maximum(state[0:N_TOT], 0)
+    y_final = state[0:N_TOT]
     v_cRF_final = state[3*N_TOT:3*N_TOT+K]
     v_surround_final = state[3*N_TOT+K:3*N_TOT+2*K]
-    return y_final, v_cRF_final, v_surround_final
+
+    y_final_rect = dyn.half_wave_rectify(y_final, 2.0)
+    return y_final_rect, v_cRF_final, v_surround_final
 
 if __name__ == "__main__":
 
@@ -519,7 +521,7 @@ if __name__ == "__main__":
             # get_response only half-wave-rectifies (max(y,0)); square to get the firing-rate
             # estimate, matching half_wave_rectify(y, alpha=2.0) used everywhere else (y is
             # already >=0 here, so squaring is equivalent and needs no re-clipping).
-            resp[:, i] = y[crf_slice] ** 2
+            resp[:, i] = y[crf_slice]
         return resp
 
     tc_none = crf_tuning_curves('no adaptation')
