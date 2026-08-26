@@ -105,7 +105,7 @@ class StimulusGenerator:
     
     def generate_surround_ensembles(self, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
                                  biased=False, return_angles=False, mean_center=False,
-                                 duration=20, add_poisson_noise=False, poisson_fano=1.0):
+                                 duration=20, add_poisson_noise=False, poisson_fano=0.2):
         '''
         Generate uniform or biased ensemble of raised cosine input profiles
         centered at random orientations, projected onto the N_RF receptive-field

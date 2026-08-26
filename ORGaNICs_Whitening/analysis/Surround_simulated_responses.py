@@ -42,16 +42,15 @@ import Analytic_responses as AR
 
 N_RF       = 13                    # Number of primary neurons per receptive field
 N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
-N_TOTAL    = N_RF * N_SETS         # Full primary-neuron population
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 
-ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
+ENSEMBLE_CONTRAST    = 1.0       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
-N_SETTLE_STEPS       = 200     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
+N_SETTLE_STEPS       = 1500     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
 N_CONTRASTS    = 20
 CRF_CONTRASTS  = np.logspace(-2, 0, N_CONTRASTS)
@@ -120,17 +119,13 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     v_surround, mu_cRF, mu_surround, stream) - stream is cached so later diagnostics can reuse
     this exact run instead of re-simulating.
 
-    "no adaptation" runs a real, unbiased ensemble to both regions (needed to calibrate theta_t,
-    below) but still forces zero gain feedback - it's the pure-normalization control condition,
-    not genuine adaptation.
-
-    theta_t calibration (cond == 'no adaptation' only): dyn.theta_t (loaded from
-    uniform_target_covariance.csv, an idealized *feedforward* approximation - see
-    frame_whiten.compute_uniform_target_covariance) is overwritten with the EMPIRICAL variance of
-    (v - W.T@mu) from this live recurrent run, pooling cRF+surround for more samples. This makes
-    theta_t consistent with what this model can actually achieve, rather than a static formula that
-    ignores recurrent excitation, the u/a pool, and gain feedback. Runs before the other 3
-    conditions (first in CONDITIONS), so they adapt against the calibrated target.
+    "no adaptation" runs a real, unbiased ensemble to both regions - needed to calibrate
+    theta_t (see dyn.calibrate_theta_t) - but still forces zero gain feedback in the returned
+    values: it's the pure-normalization control condition, not genuine adaptation. Runs before
+    the other 3 conditions (first in CONDITIONS), so they adapt against the calibrated target.
+    Correctness of the calibration depends on THIS run's own g_cRF/g_surround having stayed at
+    exactly zero throughout - guaranteed by theta_t's sentinel value at V1Dynamics_Surround
+    construction (see there), not by anything in this function.
 
     For the other three conditions, whichever region does NOT get the biased/adaptor ensemble only
     sees the flat, orientation-less baseline, so its gain feedback is forced to zero too.
@@ -139,7 +134,7 @@ def run_adaptation_phase(dyn, stim_gen, cond):
 
     stream, centers = stim_gen.generate_surround_ensembles(
         ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
-        add_poisson_noise=False, return_angles=True)
+        add_poisson_noise=True, return_angles=True)
 
     if cond == 'no adaptation':
         (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
@@ -147,10 +142,13 @@ def run_adaptation_phase(dyn, stim_gen, cond):
         SIM_HISTORY[cond] = dict(y_hist=y_hist, g_cRF_hist=g_cRF_hist,
                                   g_surround_hist=g_surround_hist, stream=stream)
 
-        half = stream.shape[1] // 2   # skip mu's own warm-up transient
-        resid_cRF = v_cRF_hist[:, half:] - dyn.frame.W.T @ mu_cRF_hist[:, half:]
-        resid_surround = v_surround_hist[:, half:] - dyn.frame.W.T @ mu_surround_hist[:, half:]
-        dyn.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
+        assert np.all(g_cRF_hist == 0) and np.all(g_surround_hist == 0), (
+            "'no adaptation' run's own gains moved away from zero - theta_t's sentinel "
+            "(see V1Dynamics_Surround.__init__) no longer holds, or calibrate_theta_t was "
+            "already called on this dyn instance. The calibration below would be measuring a "
+            "partially-adapted reference, not a genuinely unbiased one."
+        )
+        dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist)
 
         zeros_K = np.zeros(K)
         return (zeros_K, zeros_K, v_cRF_hist[:, -1], v_surround_hist[:, -1],
@@ -179,12 +177,38 @@ def run_adaptation_phase(dyn, stim_gen, cond):
         v_cRF = np.zeros(K)
         mu_cRF = np.zeros(N_RF)
 
+    # Confirm the fix actually holds for this condition: theta_t must sit below at least
+    # SOME interneurons' achieved variance, or every gain is clipped to zero (see
+    # dyn.calibrate_theta_t's docstring). Checked directly here, every run, rather than
+    # trusted - a warning below means this condition's stimulus statistics didn't exceed
+    # the calibrated target anywhere, not that the calibration itself is broken.
+    g_active = g_cRF if cond != 'adapt surround only' else g_surround
+    n_active = int(np.sum(g_active > 1e-3))
+    print(f"  [{cond}] gains active (>1e-3): {n_active}/{K} interneurons "
+          f"(mean={g_active.mean():.4g}, max={g_active.max():.4g})")
+    if n_active == 0:
+        print(f"  WARNING: [{cond}] every gain collapsed to zero - this condition's stimulus "
+              f"never drove any interneuron's variance above the calibrated theta_t.")
+
     return g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround, (stream, centers)
 
 def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
     '''
     y/u/a/v_cRF/v_surround dynamics, matching V1Dynamics_Surround._derivatives, but with
     g_cRF/g_surround held fixed.
+
+    Synced (per Asit's equations, pasted 2026-08-26) to match two fixes already applied to
+    _derivatives -- this function is a hand-maintained mirror and had drifted out of sync,
+    silently running the OLD (incorrect) forms for every probe while the adaptation phase
+    used the corrected ones:
+      1. recurrent_drive uses ONLY sqrt(y+) (Asit: W_yy @ sqrt(y1+), rectified/one-sided).
+         The old sqrt_y_plus - sqrt_y_minus reduces to y itself (max(y,0)-max(-y,0) = y,
+         identically for every real y) -- silently cancelling the rectification and
+         reintroducing full signed-y linear recurrent coupling. Matches V1Dynamics's
+         existing (already-correct) recurrent_drive line for corroboration.
+      2. da_dt uses raw `a`, not `a_plus`, in the a*u+ term (Asit: a ⊙ u+, using bold/
+         unrectified a). Asit's equation also has an additive alpha*du/dt term; alpha=0 in
+         Asit's own convention, so it correctly contributes nothing and needs no term here.
     '''
     N_TOT = dyn.N_RF * dyn.N_SETS
     N_RF = dyn.N_RF
@@ -198,19 +222,17 @@ def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
 
     u_plus = dyn.half_wave_rectify(u, 0.5)
     y_plus = dyn.half_wave_rectify(y, 2.0)
-    y_minus = dyn.half_wave_rectify(-y, 2.0)
     a_plus = dyn.half_wave_rectify(a, 1.0)
     sqrt_y_plus = np.sqrt(y_plus)
-    sqrt_y_minus = np.sqrt(y_minus)
 
     dv_cRF_dt = (-v_cRF + dyn.frame.W.T @ y[:N_RF]) / dyn.tau_v
     dv_surround_dt = (-v_surround + dyn.frame.W.T @ y[N_RF:2*N_RF]) / dyn.tau_v
 
     cRF_gain_feedback = dyn.frame.W @ (g_cRF * v_cRF)
     surround_gain_feedback = dyn.frame.W @ (g_surround * v_surround)
-    full_gain_feedback = np.concatenate([cRF_gain_feedback] + [surround_gain_feedback] * (dyn.N_SETS - 1))
+    full_gain_feedback = (a_plus / (1 + a_plus)) * np.concatenate([cRF_gain_feedback] + [surround_gain_feedback] * (dyn.N_SETS - 1))
 
-    recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ (sqrt_y_plus - sqrt_y_minus))  
+    recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ sqrt_y_plus)
     input_drive = dyn.beta * z_t
 
     sigma_term = (dyn.sigma / 2) ** 2
@@ -218,7 +240,7 @@ def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
 
     dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / dyn.tau_y
     du_dt = (-u + sigma_term + pool_term) / dyn.tau_u
-    da_dt = (-a + (1 + a_plus) * u_plus) / dyn.tau_a
+    da_dt = (-a + (1 + a) * u_plus) / dyn.tau_a
 
     return np.concatenate([dy_dt, du_dt, da_dt, dv_cRF_dt, dv_surround_dt])
 
@@ -254,6 +276,55 @@ def get_response(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=
 
     y_final_rect = dyn.half_wave_rectify(y_final, 2.0)
     return y_final_rect, v_cRF_final, v_surround_final
+
+def get_response_traced(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=N_SETTLE_STEPS):
+    '''
+    Identical dynamics to get_response (same frozen g_cRF/g_surround, same v initialized to
+    W.T @ mu_{cRF,surround}), but returns the FULL time course of y, u, a, v_cRF, v_surround
+    over all n_steps instead of only the final settled state.
+
+    Exists to directly check a specific hypothesis (per user request, Problem 2): does
+    N_SETTLE_STEPS actually give y/u/a/v time to reach their true fixed point for a NEW
+    probe stimulus, or is get_response's reported "steady state" still measuring a
+    transient that has not finished relaxing away from v's initial condition? That initial
+    condition, W.T @ mu, is exactly the "variance settles over a long time" approximation
+    Jake's notes (Sec. 1) identify as inconsistent with Lyndon's framework -- it reflects
+    the LONG-RUN adaptation-phase average, not necessarily anything close to what this one
+    new probe would settle to.
+
+    Returns (y_hist, u_hist, a_hist, v_cRF_hist, v_surround_hist), each (dim, n_steps).
+    '''
+    N_TOT = dyn.N_RF * dyn.N_SETS
+    K = dyn.frame.K
+    dt = dyn.dt
+
+    v_cRF_init = dyn.frame.W.T @ mu_cRF
+    v_surround_init = dyn.frame.W.T @ mu_surround
+
+    state = np.zeros(3 * N_TOT + 2 * K)
+    state[3*N_TOT:3*N_TOT+K] = v_cRF_init
+    state[3*N_TOT+K:3*N_TOT+2*K] = v_surround_init
+
+    y_hist = np.zeros((N_TOT, n_steps))
+    u_hist = np.zeros((N_TOT, n_steps))
+    a_hist = np.zeros((N_TOT, n_steps))
+    v_cRF_hist = np.zeros((K, n_steps))
+    v_surround_hist = np.zeros((K, n_steps))
+
+    for t in range(n_steps):
+        k1 = frozen_derivatives(state, stimulus, dyn, g_cRF, g_surround)
+        k2 = frozen_derivatives(state + 0.5 * dt * k1, stimulus, dyn, g_cRF, g_surround)
+        k3 = frozen_derivatives(state + 0.5 * dt * k2, stimulus, dyn, g_cRF, g_surround)
+        k4 = frozen_derivatives(state + dt * k3, stimulus, dyn, g_cRF, g_surround)
+        state += (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+
+        y_hist[:, t] = state[0:N_TOT]
+        u_hist[:, t] = state[N_TOT:2*N_TOT]
+        a_hist[:, t] = state[2*N_TOT:3*N_TOT]
+        v_cRF_hist[:, t] = state[3*N_TOT:3*N_TOT+K]
+        v_surround_hist[:, t] = state[3*N_TOT+K:3*N_TOT+2*K]
+
+    return y_hist, u_hist, a_hist, v_cRF_hist, v_surround_hist
 
 if __name__ == "__main__":
 
@@ -376,7 +447,7 @@ if __name__ == "__main__":
 
     stimuli_for_theory = gain_check_stream[:N_RF, :].T   # (T, N_RF) - cRF block only, matches frame.W's shape
     g_optimal_cRF = AR.get_optimal_gains_target(
-        stimuli_for_theory, dyn.frame.W, target_covariance=dyn.uniform_target_covariance)
+        stimuli_for_theory, dyn.frame.W, target_covariance=dyn.uniform_target_covariance) # CHANGED FROM dyn.uniform_target_covariance)
 
     # ==========================================================================
     # Figure 2: subset of g_cRF gains vs. time step, for one adaptive simulation - checks
@@ -664,13 +735,17 @@ if __name__ == "__main__":
 
     # ==========================================================================
     # Figure 7: PCA scatter of stimuli vs. steady-state responses (biased ensemble = 'adapt
-    # CRF and surround'), over the last quarter of the adaptation stream. One point per
-    # distinct stimulus presentation, not per timestep: both the stimulus and the response
-    # are sampled at the LAST timestep of each DURATION-length hold, so the response is the
-    # settled, steady-state reaction to that exposure. PCA is fit jointly on stimuli +
-    # responses so both point clouds share one 2D coordinate frame, making their covariance
-    # ellipses directly comparable. Reuses the stream/y_hist already captured in SIM_HISTORY
-    # during the adaptation phase - no new simulation.
+    # CRF and surround'), over the last quarter of the adaptation stream. Scoped to the cRF's
+    # OWN N_RF neurons only, not the full N_RF*N_SETS population (per user request) - the 6
+    # replica surround blocks see a heavily-correlated copy of the same stimulus, so a joint
+    # PCA over all of them was dominated by that between-block redundancy rather than
+    # within-RF whitening quality. One point per distinct stimulus presentation, not per
+    # timestep: both the stimulus and the response are sampled at the LAST timestep of each
+    # DURATION-length hold, so the response is the settled, steady-state reaction to that
+    # exposure. PCA is fit jointly on stimuli + responses so both point clouds share one 2D
+    # coordinate frame, making their covariance ellipses directly comparable. Reuses the
+    # stream/y_hist already captured in SIM_HISTORY during the adaptation phase - no new
+    # simulation.
     # ==========================================================================
     print("Building PCA scatter of stimuli vs. steady-state responses...")
     PCA_COND = 'adapt CRF and surround'
@@ -682,8 +757,28 @@ if __name__ == "__main__":
     quarter_start = int(np.ceil(quarter_start / DURATION)) * DURATION  # align to a block boundary
     last_exposure_idx = np.arange(quarter_start + DURATION - 1, n_steps_pca, DURATION)
 
-    stim_points = pca_stream[:, last_exposure_idx].T   # (n_blocks, N_TOT) - one row per presentation
-    resp_points = pca_y_hist[:, last_exposure_idx].T   # (n_blocks, N_TOT) - steady-state response
+    # ---- Step 1 (per user request): confirm these responses are gain-ADAPTED, not
+    # frozen/early-transient. pca_y_hist/pca_stream come straight from run_simulation
+    # (called inside run_adaptation_phase), which integrates g_cRF/g_surround as live ODE
+    # state (tau_g=500) jointly with y/u/a/v -- this is NOT the frozen-g get_response path
+    # used for every probe/tuning-curve figure above. ADAPT_STREAM_LENGTH=100000 steps at
+    # dt=0.1 -> 10000 time units ~ 20*tau_g, so gains should be fully converged well
+    # before the last-quarter window sampled below (Figure 2, same condition, already
+    # plots this settling time course). Confirmed numerically here from the actual g_cRF
+    # history over exactly the sampled window, rather than just the theoretical estimate.
+    g_cRF_hist_pca = SIM_HISTORY[PCA_COND]['g_cRF_hist']
+    g_window = g_cRF_hist_pca[:, quarter_start:]
+    g_drift = np.linalg.norm(g_window[:, -1] - g_window[:, 0]) / (np.linalg.norm(g_window[:, 0]) + 1e-12)
+    print(f"  g_cRF relative drift over the sampled (last-quarter) window: {g_drift:.2%} "
+          f"({'converged -- gains are adapted' if g_drift < 0.01 else 'STILL DRIFTING -- window may be too early'})")
+
+    # cRF block ONLY (first N_RF rows), not the full N_TOT-dim population: the 6 surround
+    # blocks see a heavily-correlated, near-redundant copy of the same stimulus (confirmed
+    # separately: cross-block response correlation ~0.55 even with independent per-neuron
+    # noise), so a joint PCA over all 91 dims was picking up that between-block redundancy
+    # structure as much as any within-RF whitening quality - not the intended test.
+    stim_points = pca_stream[:N_RF, last_exposure_idx].T   # (n_blocks, N_RF) - one row per presentation, cRF only
+    resp_points = pca_y_hist[:N_RF, last_exposure_idx].T   # (n_blocks, N_RF) - steady-state response, cRF only
     n_blocks = stim_points.shape[0]
     print(f"  {n_blocks} distinct stimulus presentations in the last quarter of the stream.")
 
@@ -696,6 +791,29 @@ if __name__ == "__main__":
     proj = combined_centered @ top2
     stim_proj = proj[:n_blocks]
     resp_proj = proj[n_blocks:]
+
+    # ---- Step 2 (per user request): does the pure LINEAR-ALGEBRA gain-feedback
+    # factorization (I + W diag(g_opt) W^T)^-1, applied directly to the SAME (now cRF-only)
+    # stim_points used above, circularize their covariance the way the full dynamical
+    # model's responses (panel 1) apparently do NOT? g_opt is the theoretically optimal
+    # gain vector (Analytic_responses.get_optimal_gains_target), computed fresh from THIS
+    # condition's own cRF-block stream (the network's full adaptation history, not just
+    # the last-quarter window) -- NOT reused from the earlier 'adapt CRF only' diagnostic
+    # above, which is a different run with different stream statistics. Scoped to the
+    # cRF's own N_RF dims to match stim_points above -- no N_SETS block-replication needed
+    # now. This isolates the gain-feedback linear algebra from every other piece of the
+    # full model (rectification, the u/a divisive-normalization pool, v's dynamic
+    # settling, recurrent W_yy drive) -- if THIS circularizes but panel 1 doesn't, the
+    # discrepancy lives in one of those other mechanisms, not in the gains being wrong.
+    print("Computing optimal-gain linear factorization for the same stimulus points...")
+    stimuli_pca_cRF_block = pca_stream[:N_RF, :].T   # (n_steps_pca, N_RF) - full stream, matches the earlier g_optimal_cRF diagnostic's convention
+    g_optimal_pca = AR.get_optimal_gains_target(
+        stimuli_pca_cRF_block, dyn.frame.W, target_covariance=dyn.uniform_target_covariance)
+
+    M_opt_inv = np.linalg.inv(np.eye(N_RF) + dyn.frame.W @ np.diag(g_optimal_pca) @ dyn.frame.W.T)
+
+    linfact_points = (M_opt_inv @ stim_points.T).T            # (n_blocks, N_RF)
+    linfact_proj = (linfact_points - combined.mean(axis=0, keepdims=True)) @ top2
 
     def cov_ellipse(ax, points, color, n_std=2.0):
         '''Draws a 2*n_std-sigma covariance ellipse characterizing a 2D point cloud and
@@ -711,7 +829,7 @@ if __name__ == "__main__":
                               facecolor='none', edgecolor=color, linewidth=2.5))
         return eigvals
 
-    fig_pca, ax_pca = plt.subplots(figsize=(7, 7))
+    fig_pca, (ax_pca, ax_linfact) = plt.subplots(1, 2, figsize=(14, 7))
     # alpha < 1 so exactly-overlapping points compound into a visibly darker/denser patch
     # instead of one opaque marker silently hiding how many points actually land there.
     ax_pca.scatter(stim_proj[:, 0], stim_proj[:, 1], color='red', alpha=0.1, s=45, label='Stimuli')
@@ -727,6 +845,94 @@ if __name__ == "__main__":
                 transform=ax_pca.transAxes, color='red', fontsize=12, fontweight='bold', va='top', ha='left')
     ax_pca.text(0.02, 0.92, rf"Responses $\lambda$: {eig_resp[0]:.3g}, {eig_resp[1]:.3g}",
                 transform=ax_pca.transAxes, color='blue', fontsize=12, fontweight='bold', va='top', ha='left')
+
+    # Same stim_proj (same points, same top2 projection) as panel 1, so panel 1's red
+    # ellipse and this panel's red ellipse are identical by construction -- only the
+    # green (linear-factorization) cloud is new.
+    ax_linfact.scatter(stim_proj[:, 0], stim_proj[:, 1], color='red', alpha=0.1, s=45, label='Stimuli')
+    ax_linfact.scatter(linfact_proj[:, 0], linfact_proj[:, 1], color='green', alpha=0.1, s=45,
+                        label=r'$(I+W\,\mathrm{diag}(g_{opt})\,W^T)^{-1}$ Stimuli')
+    eig_stim2 = cov_ellipse(ax_linfact, stim_proj, 'red')
+    eig_linfact = cov_ellipse(ax_linfact, linfact_proj, 'green')
+
+    ax_linfact.set_title("Optimal-Gain Linear Factorization", fontsize=20, fontweight='bold')
+    ax_linfact.set_xticks([])
+    ax_linfact.set_yticks([])
+    ax_linfact.legend(fontsize=13, loc='upper right', frameon=False)
+    ax_linfact.text(0.02, 0.98, rf"Stimuli $\lambda$: {eig_stim2[0]:.3g}, {eig_stim2[1]:.3g}",
+                     transform=ax_linfact.transAxes, color='red', fontsize=12, fontweight='bold', va='top', ha='left')
+    ax_linfact.text(0.02, 0.92, rf"Lin. fact. $\lambda$: {eig_linfact[0]:.3g}, {eig_linfact[1]:.3g}",
+                     transform=ax_linfact.transAxes, color='green', fontsize=12, fontweight='bold', va='top', ha='left')
+    plt.tight_layout()
+
+    # ==========================================================================
+    # Figure 8 (per user request, Problem 2): single-probe dynamics diagnostic. Traces
+    # y (cRF + surround adaptor-preferring neurons), u, a+, and ||v|| over the FULL
+    # N_SETTLE_STEPS settling window, for 'adapt CRF only' (Problem 2's own condition) at
+    # contrasts 0.6 and 1.0 -- directly matching "recurrent drive should change a lot from
+    # contrast 0.6 to 1.0" and testing whether get_response's reported "steady state" has
+    # actually converged within N_SETTLE_STEPS, or is still a transient relaxing away from
+    # v's initial condition (W.T@mu, the long-run adaptation-phase average -- see
+    # get_response_traced's docstring and Jake's notes Sec. 1 on why that initial condition
+    # is NOT the same thing as Lyndon's fast-v factorization).
+    # ==========================================================================
+    print("Tracing single-probe dynamics (y, u, a, v) for Problem 2 diagnostic...")
+    DIAG_COND = 'adapt CRF only'
+    g_cRF_diag, g_surround_diag, _, _, mu_cRF_diag, mu_surround_diag, _ = frozen_gains[DIAG_COND]
+    surround_target_idx = N_RF * 1 + adaptor_idx   # adaptor-preferring neuron, first surround block
+
+    DIAG_CONTRASTS = [0.6, 1.0]
+    DIAG_COLORS = {0.6: '#4C72B0', 1.0: '#C44E52'}
+    traces = {}
+    for c in DIAG_CONTRASTS:
+        probe = probe_input_drive(adaptor_rad, c)
+        traces[c] = get_response_traced(dyn, probe, g_cRF_diag, g_surround_diag, mu_cRF_diag, mu_surround_diag)
+
+    time_axis = np.arange(N_SETTLE_STEPS) * dyn.dt
+
+    def rel_change_last_10pct(trace_1d):
+        '''Relative change over the last 10% of the settle window -- near 0 means
+        converged; still-substantial means get_response's "final state" was a transient.'''
+        i90 = int(0.9 * len(trace_1d))
+        return abs(trace_1d[-1] - trace_1d[i90]) / (abs(trace_1d[-1]) + 1e-9)
+
+    fig_diag, axes_diag = plt.subplots(2, 2, figsize=(12, 8))
+    ax_y, ax_u, ax_a, ax_v = axes_diag[0, 0], axes_diag[0, 1], axes_diag[1, 0], axes_diag[1, 1]
+
+    for c in DIAG_CONTRASTS:
+        y_hist, u_hist, a_hist, v_cRF_hist, v_surround_hist = traces[c]
+        color = DIAG_COLORS[c]
+        u_mean = u_hist.mean(axis=0)
+        a_plus_mean = dyn.half_wave_rectify(a_hist, 1.0).mean(axis=0)
+        v_cRF_norm = np.linalg.norm(v_cRF_hist, axis=0)
+        v_surround_norm = np.linalg.norm(v_surround_hist, axis=0)
+
+        ax_y.plot(time_axis, y_hist[crf_target_idx], color=color, linewidth=2.5, label=f"cRF, c={c}")
+        ax_y.plot(time_axis, y_hist[surround_target_idx], color=color, linewidth=2.0, linestyle='--', label=f"surround, c={c}")
+        ax_u.plot(time_axis, u_mean, color=color, linewidth=2.5, label=f"c={c}")
+        ax_a.plot(time_axis, a_plus_mean, color=color, linewidth=2.5, label=f"c={c}")
+        ax_v.plot(time_axis, v_cRF_norm, color=color, linewidth=2.5, label=f"||v_cRF||, c={c}")
+        ax_v.plot(time_axis, v_surround_norm, color=color, linewidth=2.0, linestyle='--', label=f"||v_surround||, c={c}")
+
+        print(f"  c={c}: relative change over the LAST 10% of the settle window -- "
+              f"y[cRF]={rel_change_last_10pct(y_hist[crf_target_idx]):.2%}, "
+              f"y[surround]={rel_change_last_10pct(y_hist[surround_target_idx]):.2%}, "
+              f"mean(u)={rel_change_last_10pct(u_mean):.2%}, "
+              f"mean(a+)={rel_change_last_10pct(a_plus_mean):.2%}, "
+              f"||v_cRF||={rel_change_last_10pct(v_cRF_norm):.2%}, "
+              f"||v_surround||={rel_change_last_10pct(v_surround_norm):.2%}")
+
+    ax_y.set_title("y (membrane potential)", fontweight='bold')
+    ax_u.set_title("u (mean over population)", fontweight='bold')
+    ax_a.set_title(r"$a_+$ (mean over population)", fontweight='bold')
+    ax_v.set_title("||v|| (cRF vs. surround)", fontweight='bold')
+    for ax in (ax_y, ax_u, ax_a, ax_v):
+        ax.set_xlabel("Time within probe (settle window)", fontsize=11)
+        ax.legend(fontsize=9, frameon=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    fig_diag.suptitle(f"Single-Probe Dynamics ({CONDITION_LABEL[DIAG_COND]}, adaptor orientation)",
+                       fontsize=15, fontweight='bold')
     plt.tight_layout()
 
     plt.show()

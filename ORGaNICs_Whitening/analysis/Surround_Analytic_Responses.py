@@ -34,7 +34,7 @@ from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from analysis import Analytic_responses as ar
 from typing import Literal
-from scipy.linalg import block_diag, eigh as scipy_eigh
+from scipy.linalg import block_diag
 
 N_RF       = 13                    # Primary neurons per receptive field
 N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
@@ -452,7 +452,7 @@ if __name__ == "__main__":
     plt.tight_layout(); plt.show()
 
     # ==========================================================================
-    # FIGURE 2 (surround) Tuning Curves 
+    # FIGURE 2 Tuning Curves 
     # ==========================================================================
     print("Recreating Figure 1 (cRF-only-adapted state)...")
     N_BINS = N_RF
@@ -676,103 +676,80 @@ if __name__ == "__main__":
     plt.tight_layout()
 
     # ==========================================================================
-    # Eigenvalue-difference diagnostic: which directions of stimulus covariance actually
-    # change between the uniform and biased ensembles, and by how much? This directly bears
-    # on how many gain-modulating interneurons (Duong et al.) the circuit needs: if only a
-    # handful of directions ever carry real variance (in EITHER ensemble), that many
-    # interneurons suffice - the rest of an overcomplete frame (K=91 elsewhere in this
-    # codebase) would be adapting to structure that was never there.
-    #
-    # CRITICAL FIRST STEP - checking whether "compare all 13 eigenvalues" is even a
-    # well-posed question here. Cov_bias and Cov_uniform (raw OR normalized) both turn out
-    # to be effectively RANK 2: eigh on either one gives a top pair 1e3-1e4x larger than
-    # every remaining eigenvalue (verified numerically). This is a real, if extreme,
-    # consequence of TUNING_WIDTH=0.75 - a raised-Gaussian profile that wide, sampled and
-    # circularly shifted across N_RF=13 orientations, is itself close to rank 2 (its
-    # discrete circular Fourier transform is dominated by the DC + first-harmonic
-    # component; verified via SVD of the raw 13x13 category-template matrix). Comparing
-    # "eigenvalues" past rank 2 would be comparing two numbers that are BOTH indistinguishable
-    # from each ensemble's own residual-harmonic floor - a ratio of noise to noise, not
-    # signal to signal, and not a meaningful measure of anything. So the generalized
-    # eigenvalue problem
-    #     Cov_biased v = lambda * Cov_uniform v
-    # is solved ONLY within the shared real signal subspace, whose rank is picked
-    # explicitly below (pooled-covariance eigenvalues within 1e-3 relative of the top),
-    # rather than blindly on the full 13x13 matrices (which is what an earlier version of
-    # this diagnostic did, and which produced a misleading "11-12 of 13 directions differ"
-    # readout that was really just noise-floor ratios).
+    # FIGURE 2b -- Same tuning-curve plot as Figure 2, but the "adapted" panel is produced by
+    # simply applying the top-eigenvalue-clip transform (W_clip_top, from the "Top-Eigenvalue
+    # Clip" ellipse panel above) directly to the probe stimulus, instead of running the actual
+    # optimal-gain adaptation model. M/mu are held at the 'no adaptation' (all-zero) values used
+    # for tc_none - there is no gain-feedback loop here at all, only the bare linear clip of the
+    # single dominant stimulus eigen-direction, before divisive normalization. This isolates how
+    # much of Figure 2's tuning-curve effect (surround suppression / sharpening near the adaptor)
+    # that one clipped eigenvalue can reproduce on its own, with no adaptive circuitry involved.
     # ==========================================================================
-    print("Running eigenvalue-difference diagnostic (biased vs. uniform ensembles)...")
-    stimuli_uni_matrix = np.array(stimuli_uni)   # (N_RF, N_RF) - one exact sample per category
-    pooled_energy_uni = np.sum(stimuli_uni_matrix ** 2, axis=1, keepdims=True)
-    stimuli_uni_normalized = stimuli_uni_matrix / np.sqrt(SIGMA_NORM**2 + pooled_energy_uni)
+    print("Recreating Figure 2 with the top-eigenvalue clip standing in for the gain model...")
 
-    Covariance_uni_raw = np.cov(stimuli_uni_matrix, rowvar=False)
-    Covariance_uni_norm = np.cov(stimuli_uni_normalized, rowvar=False)
+    M_none  = M_by_condition['no adaptation']
+    mu_none = mu_by_condition['no adaptation']
 
-    def signal_subspace_gen_eigvals(Cov_biased, Cov_uniform, rel_thresh=1e-3):
-        '''Restricts the generalized eigenvalue problem Cov_biased v = lambda*Cov_uniform v
-        to the shared real signal subspace: eigenvectors of the pooled covariance whose
-        eigenvalue is within rel_thresh of the top one. Returns (pooled_spectrum_normalized,
-        retained_rank, generalized_eigenvalues_within_that_subspace).'''
-        Cov_pooled = 0.5 * (Cov_biased + Cov_uniform)
-        pooled_eigvals, pooled_eigvecs = np.linalg.eigh(Cov_pooled)
-        order = np.argsort(pooled_eigvals)[::-1]
-        pooled_eigvals, pooled_eigvecs = pooled_eigvals[order], pooled_eigvecs[:, order]
-        pooled_spectrum = pooled_eigvals / pooled_eigvals[0]
-        rank = int(np.sum(pooled_spectrum > rel_thresh))
-        V_signal = pooled_eigvecs[:, :rank]
-        Cov_biased_reduced = V_signal.T @ Cov_biased @ V_signal
-        Cov_uniform_reduced = V_signal.T @ Cov_uniform @ V_signal
-        gen_eigvals = scipy_eigh(Cov_biased_reduced, Cov_uniform_reduced, eigvals_only=True)[::-1]
-        return pooled_spectrum, rank, gen_eigvals
+    def crf_tuning_curves_clip():
+        resp = np.zeros((N_RF, N_PROBES))
+        for i, ang in enumerate(probe_angles):
+            local_probe   = probe_local_profile(ang, PROBE_CONTRAST)   # (N_RF,) local drive
+            local_clipped = W_clip_top @ local_probe                    # top-eigenvalue clip
+            probe = np.concatenate([local_clipped] * N_SETS)
+            y = get_response_moments(probe, mu_none, M_none)
+            resp[:, i] = y[crf_slice]
+        return resp
 
-    spectrum_raw,  rank_raw,  gen_eigvals_raw  = signal_subspace_gen_eigvals(Covariance_bias, Covariance_uni_raw)
-    spectrum_norm, rank_norm, gen_eigvals_norm = signal_subspace_gen_eigvals(Covariance_norm, Covariance_uni_norm)
+    tc_clip = crf_tuning_curves_clip()
+    binned_clip = bin_by_preference(tc_clip, tunings.theta)
+    # Normalized against the SAME 'no adaptation' bin min/max as Figure 2, so the two figures'
+    # right-hand panels are directly comparable.
+    norm_clip = (binned_clip - bin_min) / (bin_max - bin_min + 1e-9)
 
-    print(f"  Pooled-covariance spectrum (raw, relative to top):        "
-          f"{np.array2string(spectrum_raw, precision=2, suppress_small=True)}")
-    print(f"  Pooled-covariance spectrum (normalized, relative to top): "
-          f"{np.array2string(spectrum_norm, precision=2, suppress_small=True)}")
-    print(f"  Retained signal rank (raw / normalized): {rank_raw} / {rank_norm} out of {N_RF}")
-    print(f"  Generalized eigenvalues within signal subspace, biased/uniform (raw):        "
-          f"{np.array2string(gen_eigvals_raw, precision=3)}")
-    print(f"  Generalized eigenvalues within signal subspace, biased/uniform (normalized): "
-          f"{np.array2string(gen_eigvals_norm, precision=3)}")
+    fig1s_clip, axes1s_clip = plt.subplots(2, 2, figsize=(10, 6), sharey='row',
+                                            gridspec_kw={'height_ratios': [0.8, 1.0]})
 
-    fig_eig, (ax_spec, ax_gen) = plt.subplots(1, 2, figsize=(13, 5.5))
+    axes1s_clip[0, 0].hist(uni_angles_deg, bins=bins_hist, weights=weights_uni,
+                           color='black', rwidth=0.9)
+    axes1s_clip[0, 0].set_title("Uniform Ensemble", fontweight='bold', fontsize=18)
+    axes1s_clip[0, 0].set_ylabel("Probability", fontsize=18)
 
-    rank_idx = np.arange(1, N_RF + 1)
-    ax_spec.plot(rank_idx, spectrum_raw,  'o-', color='#800020', linewidth=2.5, markersize=6, label='Raw')
-    ax_spec.plot(rank_idx, spectrum_norm, 'o-', color='#002060', linewidth=2.5, markersize=6, label='Normalized')
-    ax_spec.axhline(1e-3, color='black', linestyle='--', linewidth=1.5, label='Retention threshold')
-    ax_spec.set_yscale('log')
-    ax_spec.set_title("Pooled Covariance Spectrum", fontsize=15, fontweight='bold')
-    ax_spec.set_xlabel("Rank (descending)", fontsize=13, fontweight='bold')
-    ax_spec.set_ylabel("Eigenvalue (relative to top)", fontsize=12, fontweight='bold')
-    ax_spec.tick_params(labelsize=11)
-    ax_spec.legend(fontsize=11, frameon=False)
-    ax_spec.spines['top'].set_visible(False)
-    ax_spec.spines['right'].set_visible(False)
+    axes1s_clip[0, 1].hist(bias_angles_deg, bins=bins_hist, weights=weights_bias,
+                           color='black', rwidth=0.9)
+    axes1s_clip[0, 1].set_title("Biased Ensemble", fontweight='bold', fontsize=18)
 
-    bar_w = 0.35
-    idx_max_rank = max(rank_raw, rank_norm)
-    x = np.arange(1, idx_max_rank + 1)
-    gen_raw_padded  = np.pad(gen_eigvals_raw,  (0, idx_max_rank - rank_raw))
-    gen_norm_padded = np.pad(gen_eigvals_norm, (0, idx_max_rank - rank_norm))
-    ax_gen.bar(x - bar_w/2, gen_raw_padded,  width=bar_w, color='#800020', label='Raw')
-    ax_gen.bar(x + bar_w/2, gen_norm_padded, width=bar_w, color='#002060', label='Normalized')
-    ax_gen.axhline(1.0, color='black', linestyle='--', linewidth=1.5)
-    ax_gen.set_xticks(x)
-    ax_gen.set_title("Generalized Eigenvalues (Signal Subspace)", fontsize=15, fontweight='bold')
-    ax_gen.set_xlabel("Signal-subspace rank", fontsize=13, fontweight='bold')
-    ax_gen.set_ylabel(r"$\lambda$ (biased / uniform)", fontsize=12, fontweight='bold')
-    ax_gen.tick_params(labelsize=11)
-    ax_gen.legend(fontsize=11, frameon=False)
-    ax_gen.spines['top'].set_visible(False)
-    ax_gen.spines['right'].set_visible(False)
+    for ax in axes1s_clip[0]:
+        ax.set_xlim(bins_hist[0], bins_hist[-1])
+        ax.tick_params(labelbottom=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
 
-    fig_eig.suptitle("Which Directions Differ: Biased vs. Uniform Ensemble", fontsize=17, fontweight='bold')
+    for i in range(N_BINS):
+        axes1s_clip[1, 0].plot(x_axis_sorted, norm_none[i][sort_idx],
+                               color=blue_colors[i], linewidth=2.0)
+        axes1s_clip[1, 1].plot(x_axis_sorted, norm_clip[i][sort_idx],
+                               color=blue_colors[i], linewidth=2.0)
+
+    axes1s_clip[1, 0].set_ylabel("Response", fontsize=18)
+    axes1s_clip[1, 0].set_title("No Adaptation", fontsize=14, fontweight='bold')
+    axes1s_clip[1, 1].set_title("Top-Eigenvalue Clip", fontsize=14, fontweight='bold')
+
+    for c in [0, 1]:
+        ax = axes1s_clip[1, c]
+        ax.set_xlim(-90, 90)
+        ymin, ymax = ax.get_ylim()
+        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax)
+        ax.grid(False)
+        ax.set_xlabel("Stimulus Orientation (°)", fontsize=18)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    fig1s_clip.suptitle("Tuning Curves via Top-Eigenvalue Clip (cf. Figure 2's gain-adapted model)",
+                         fontsize=14, fontweight='bold')
     plt.tight_layout()
+
+    # NOTE: the eigenvalue-difference diagnostic (biased vs. uniform covariance spectrum
+    # comparison) has moved to figures.py, which now also covers the Poisson-variance and
+    # double-peaked ensemble cases. Run `python analysis/figures.py` for that figure.
 
     plt.show()

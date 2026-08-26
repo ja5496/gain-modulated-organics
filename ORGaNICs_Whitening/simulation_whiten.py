@@ -188,16 +188,45 @@ class V1Dynamics_Surround:
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
         )
-        # Cached (was recomputed from uniform_target_covariance every _derivatives call - 4x/RK4
-        # step, wasted over 100k+ step runs). Callers may overwrite this directly with an
-        # empirically-calibrated (K,) target instead of rederiving one from a covariance matrix.
-        self.theta_t = np.diag(self.frame.W.T @ self.uniform_target_covariance @ self.frame.W)
+        # theta_t starts UNCALIBRATED - a large sentinel, not a real target. It used to be
+        # seeded directly from uniform_target_covariance here, but that seeded value was
+        # ALWAYS silently overwritten by calibrate_theta_t() (called from
+        # Surround_simulated_responses.py's run_adaptation_phase) before any real adaptation
+        # run - so setting theta_t here, or in uniform_target_covariance.csv, had no effect on
+        # the live simulation, only a misleading appearance of one.
+        #
+        # That overwrite is NECESSARY, not optional: uniform_target_covariance.csv's value
+        # (diag mean ~0.05) sits ABOVE this model's own achievable (v-mean)^2 ceiling
+        # (~0.01-0.03 in practice, confirmed by direct measurement). With theta_t set that
+        # high, dg/dt = (v-mean)^2 - theta_t is negative for every one of the K interneurons,
+        # for the entire run - gains_nonneg then clips every gain to exactly zero at every
+        # RK4 step, permanently, regardless of tau_g or run length. Bypassing calibration
+        # (e.g. commenting out the overwrite and relying on a fixed theta_t instead)
+        # reproduces this exact collapse - confirmed both by direct measurement and by
+        # independently hitting the same failure while testing this fix.
+        #
+        # The sentinel here guarantees gains stay at EXACTLY zero until calibrate_theta_t()
+        # runs - including during the reference run calibrate_theta_t() itself is measured
+        # from, so that "unadapted" reference is genuinely uncontaminated by any partial
+        # gain feedback. Its magnitude is NOT arbitrary: it must sit safely above the
+        # achievable ceiling (~0.01-0.06 in practice) WITHOUT being needlessly huge. A
+        # too-large sentinel (tried 1e4 first) makes |dg/dt| = |v^2-theta_t|/tau_g large
+        # too - and gains_nonneg only clips g at the END of each full RK4 step, not during
+        # its four intermediate sub-evaluations, so a large |dg/dt| still produces a large
+        # UNCLAMPED excursion in the intermediate g used mid-step, which the gain-feedback
+        # term W@(g*v) then injects into y - large enough, empirically, to push this
+        # model's own near-critical u/a normalization dynamics (a_ss = u+/(1-u+), diverging
+        # as u+ -> 1) into a genuine NaN blowup partway through a real run. Swept
+        # {1e4, 100, 10, 1, 0.5} directly against a fixed adaptation stream: 1e4 reliably
+        # produced NaN, all of {100, 10, 1, 0.5} stayed clean with g provably never leaving
+        # zero. 1.0 keeps a full order-of-magnitude margin on both sides.
+        self.theta_t = np.full(self.frame.K, 1.0)
 
         self.tau_y = 0.2       # time constant of primary neuron (fast)
         self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
         self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
         self.tau_g = 2500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
-        self.tau_v = 50.0    # time constant of excitatory neurons in normalization pool (medium to fast)
+        self.tau_v = 15.0    # time constant of excitatory neurons in normalization pool (medium to fast)
         self.tau_mu = 2500.0  # time constant of mean-response tracker (very slow, full context window needed)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
@@ -205,6 +234,42 @@ class V1Dynamics_Surround:
 
     def half_wave_rectify(self, y, alpha=2.0):  # Used to estimate firing rates from membrane potential
         return (np.maximum(y,0)) ** alpha       # Rectify and raise to the power Beta (NOT input gain)
+
+    def calibrate_theta_t(self, v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist, verbose=True):
+        '''
+        Sets self.theta_t (in place) from the EMPIRICAL variance of (v - W.T@mu), pooling
+        cRF + surround, over the second half of the given histories (skips the slow
+        mean-tracker mu's own warm-up transient). Returns the new theta_t.
+
+        Call this ONCE, on a reference run of the UNBIASED/uniform ensemble. Correctness
+        depends on that run having g_cRF/g_surround held at exactly zero for its ENTIRE
+        duration - guaranteed by theta_t's sentinel value at __init__ (see there), provided
+        this method has not already been called on this instance (a second call calibrates
+        against a run that itself had nonzero, partially-adapted gain feedback, corrupting
+        the "unadapted" reference this is meant to measure).
+
+        This calibration is NECESSARY, not cosmetic: theta_t must sit BELOW at least some
+        interneurons' achievable (v-mean)^2 under a BIASED ensemble, or dg/dt = v^2 - theta_t
+        is negative everywhere and gains_nonneg clips every gain to exactly zero, permanently
+        (see __init__'s comment for the full argument and confirmed numbers). Calibrating
+        theta_t to THIS model's own unbiased-ensemble variance - rather than an offline/
+        idealized value like uniform_target_covariance.csv - is what gives a later biased
+        run's excess variance somewhere to be measured against, matching this codebase's
+        existing "shrink to the ensemble's own mean/reference" convention elsewhere (see
+        Analytic_responses.get_optimal_gains_target).
+
+        Prints a summary (theta_t mean, before -> after) unless verbose=False - this
+        overwrite is intentionally never a silent side effect.
+        '''
+        half = v_cRF_hist.shape[1] // 2
+        resid_cRF = v_cRF_hist[:, half:] - self.frame.W.T @ mu_cRF_hist[:, half:]
+        resid_surround = v_surround_hist[:, half:] - self.frame.W.T @ mu_surround_hist[:, half:]
+        theta_t_before = self.theta_t.copy()
+        self.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
+        if verbose:
+            print(f"  theta_t calibrated: mean {theta_t_before.mean():.5g} -> {self.theta_t.mean():.5g} "
+                  f"(min {self.theta_t.min():.5g}, max {self.theta_t.max():.5g})")
+        return self.theta_t
 
     def _derivatives(self, state, z_t):
         K = self.frame.K
@@ -230,10 +295,8 @@ class V1Dynamics_Surround:
         # Rectifications consistent with Asit's 'Heirarchical ORGaNICs' paper
         u_plus = self.half_wave_rectify(u, 0.5)
         y_plus = self.half_wave_rectify(y, 2.0)
-        y_minus = self.half_wave_rectify(-y, 2.0)
         a_plus = self.half_wave_rectify(a, 1.0)
         sqrt_y_plus = np.sqrt(y_plus)
-        sqrt_y_minus = np.sqrt(y_minus)
 
         theta_t = self.theta_t
 
@@ -251,11 +314,15 @@ class V1Dynamics_Surround:
         dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
         surround_gain_feedback = self.frame.W @ (g_surround * v_surround) # unchanged: suppression still scales with raw v_surround
 
-        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ (sqrt_y_plus - sqrt_y_minus)) # matches Norm_Dynamics_1 (norm_diagnostic.py) 
+        # W_yy @ sqrt(y1+), rectified/one-sided per Asit's equation (DC_y1_dynamics) -- the
+        # old (sqrt_y_plus - sqrt_y_minus) reduced to y itself (max(y,0)-max(-y,0) = y,
+        # identically), silently cancelling the rectification. Matches V1Dynamics's own
+        # (already-correct) recurrent_drive line above.
+        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ sqrt_y_plus)
         input_drive = self.beta * z_t
 
         # Local gain feedback matrix that can be applied to the full y dynamics
-        full_gain_feedback = np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
+        full_gain_feedback = (a_plus / (1 + a_plus)) * np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
 
         sigma_term = (self.sigma / 2) ** 2
         pool_term = self.N_matrix @ (y_plus * (u_plus ** 2))
@@ -263,7 +330,11 @@ class V1Dynamics_Surround:
         # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
         dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / self.tau_y
         du_dt = (-u + sigma_term + pool_term) / self.tau_u
-        da_dt = (-a + (1 + a_plus) * u_plus) / self.tau_a
+        # -a + u+ + a*u+ per Asit's equation (DC_a_dynamics: -a + u+ + a⊙u+ + alpha*du/dt) --
+        # raw a, not a_plus, in the multiplicative term (CHANGED FROM (1+a_plus)*u_plus).
+        # Asit's own alpha=0, so the additive alpha*du/dt term is correctly absent here, not
+        # a missing term.
+        da_dt = (-a + (1 + a) * u_plus) / self.tau_a
 
         return np.concatenate([dy_dt, du_dt, da_dt, dg_cRF_dt, dg_surround_dt, dv_cRF_dt, dv_surround_dt, dmu_cRF_dt, dmu_surround_dt])
 
