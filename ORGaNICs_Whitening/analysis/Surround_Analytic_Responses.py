@@ -45,11 +45,21 @@ FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 # used below so the PCA whitening diagnostic's "T" matches the live model's target exactly.
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
-sigma = 0.7                        
+sigma = 0.35
 Beta  = 0.5
 
+# Semi-saturation constant the LIVE network actually normalizes with (V1Dynamics_Surround.sigma,
+# simulation_whiten.py) -- distinct from this file's own `sigma` above (used only in get_response /
+# get_response_new / get_mu's *response* denominator). ar.get_optimal_gains_target's pooled
+# denominator (Analytic_responses._pooled_denom) reads the ar module's own `sigma` global, which
+# defaults to 0.1 (Analytic_responses.py's own stale default) unless overridden -- must be set to
+# THIS value so get_optim's covariance/target is computed against the same normalized stimulus
+# environment the online gain dynamics see. Mirrors Surround_simulated_responses.py's own
+# "AR.sigma = dyn.sigma" line.
+SIM_SIGMA = 0.15
 
-ENSEMBLE_CONTRAST = 0.6      # Contrast of the adaptation ensembles (baseline & adaptor)
+
+ENSEMBLE_CONTRAST = 1.0      # Contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH      = 0.75     # Width of the gaussian stimulus profiles
 N_CONTRASTS   = 20           # Number of contrasts to probe with
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
@@ -80,6 +90,7 @@ def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     return np.concatenate([probe_local_profile(input_theta, contrast, tuning_width)] * N_SETS)
 
 def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
+    '''M = W @ diag(g) W.T '''
     match adapt_location:
         case 'adapt CRF only':
             M_adapt_local = frame @ np.diag(g_opt) @ frame.T
@@ -125,12 +136,12 @@ def block_diag_W(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt 
 def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     match adapt_location:
         case 'adapt CRF only':
-            baseline = np.full(N_RF, 0.0)            
+            baseline = np.full(N_RF, 0.2)            
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([stimuli] + [baseline] * repeats)
             return full_stimuli
         case 'adapt surround only':
-            baseline = np.full(N_RF, 0.0)
+            baseline = np.full(N_RF, 0.2)
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([baseline] + [stimuli] * repeats)
             return full_stimuli
@@ -138,7 +149,7 @@ def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'ada
             full_stimuli = np.concatenate([stimuli] * N_SETS)
             return full_stimuli
         case 'no adaptation':
-            baseline = np.full(N_RF, 0.0)            
+            baseline = np.full(N_RF, 0.2)            
             full_stimuli = np.concatenate([baseline] * N_SETS)
             return full_stimuli
 
@@ -165,26 +176,6 @@ def get_mu(stimuli, M, alpha=0.1, Beta=0.5):
     pbar.close()
     return mu
 
-def get_response_moments(stimulus, mu, M, Beta=0.5):
-    ''' 
-    Assumes the time constant of the variance interneuron is fast enough to factorize the 
-    covariance transformation (meaning it does NOT just settle to W.T @ mu)
-    '''
-    # Normalized response after the average gain feedback
-    gain_feedback = M @ mu                                              # Estimation of average gain feedback
-    z_prime = 2 * (Beta * stimulus - gain_feedback)                     # Adjusted approximate input drive
-    y_prime = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))     # Normalize approx. input drive
-
-    # Now apply the covariance transformation on the response:
-    T = np.linalg.inv(np.eye(N_TOTAL) + M)      # T = [I + WgW.T]^-1
-    y_2 = T @ y_prime                            
-
-    # Now normalize again to get steady state
-    y = y_2 / np.sqrt(sigma**2 + N_matrix @ (y_2**2))
-
-    rectified_y = half_wave_rectify(y)
-    return rectified_y
-
 def get_response(stimulus, mu, M, Beta=0.5):
     ''' 
     Assumes the time constant of the variance interneuron is extremely slow so that it settles 
@@ -198,10 +189,19 @@ def get_response(stimulus, mu, M, Beta=0.5):
     rectified_y = half_wave_rectify(y)
     return rectified_y
 
+def get_response_new(stimulus, M, Beta=0.5):
+    ''' Calculation of fixed point with fast v dynamics. Response is consistent with normalized,
+    whitened inputs.'''
+
+    z_prime = np.linalg.inv(np.eye(N_TOTAL) + M) @ stimulus
+    y = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))
+    rectified_y = half_wave_rectify(y)
+
+    return rectified_y
 
 CONDITIONS = ['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt CRF and surround']
 CONDITION_LABEL = {
-    'no adaptation':          'No adaptation',
+    'no adaptation':          'no adaptation',
     'adapt CRF only':         'Classical RF adapted',
     'adapt surround only':    'Surround adapted',
     'adapt CRF and surround': 'RF + surround adapted',
@@ -251,17 +251,36 @@ if __name__ == "__main__":
     seq_bias = stim_gen.contrast * seq_bias / np.linalg.norm(seq_bias)
     stimuli_bias = list(seq_bias.T)
 
+    uniform_target_covariance = np.loadtxt(TARGET_COV_PATH, delimiter=",")
+    assert uniform_target_covariance.shape == (N_RF, N_RF), (
+        f"uniform_target_covariance at {TARGET_COV_PATH} has shape "
+        f"{uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
+    )
+
     # ---- Optimal gains, one set per stimulus condition ----
     GAIN_CONDITIONS = ['adapt CRF only', 'adapt surround only', 'adapt CRF and surround']
+    # NOTE: pool_uni is unused below -- get_optimal_gains_target is always called with an explicit
+    # target_covariance (uniform_target_covariance), so its uniform_stimuli/pool_uniform_stimuli
+    # re-derivation path (the only place a uniform-ensemble pool would be needed) never runs. Kept
+    # here only in case that path is exercised later.
     pool_uni = np.array([full_spatial_stimuli(z, 'adapt CRF and surround') for z in stimuli_uni])
     print("Computing optimal gains...")
+    ar.sigma = SIM_SIGMA   # match the live network's semi-saturation constant (see SIM_SIGMA above)
     g_opt_by_condition = {}
     for cond in GAIN_CONDITIONS:
+        # Full 91-neuron population drive under THIS condition -- same numerator (stimuli_bias,
+        # this RF's own local biased drive) for every condition, but the pool (denominator) differs
+        # per condition since full_spatial_stimuli places the biased ensemble in a different
+        # cRF/surround location each time. Passing this as pool_stimuli makes get_optimal_gains_target
+        # normalize by the FULL population's pooled energy (matching the live circuit's global
+        # normalization pool, V1Dynamics_Surround.N_matrix = ones((N_TOT, N_TOT))) instead of just
+        # this RF's own N_RF=13-neuron local energy -- i.e. gains are now computed against the actual
+        # normalized stimulus environment each condition produces, not an unsuppressed local proxy.
         pool_bias = np.array([full_spatial_stimuli(z, cond) for z in stimuli_bias])
         g_opt_by_condition[cond] = ar.get_optimal_gains_target(
             stimuli_bias, frame.W, label=f'biased ({cond})',
-            poisson_variance=True, uniform_stimuli=stimuli_uni,
-            pool_stimuli=pool_bias, pool_uniform_stimuli=pool_uni)
+            target_covariance=uniform_target_covariance,
+            pool_stimuli=pool_bias)
 
     print("Building M for each condition...")
     M_by_condition = {
@@ -297,7 +316,7 @@ if __name__ == "__main__":
     for cond in CONDITIONS:
         print(f"Computing mu ({CONDITION_LABEL[cond]})...")
         full_stimuli = [full_spatial_stimuli(z, cond) for z in stimuli_bias]
-        mu_by_condition[cond] = get_mu(full_stimuli, M_by_condition[cond])
+        #mu_by_condition[cond] = get_mu(full_stimuli, M_by_condition[cond])
 
 
     # ==========================================================================
@@ -312,7 +331,7 @@ if __name__ == "__main__":
         for i, c in enumerate(CRF_CONTRASTS):
             probe = probe_input_drive(adaptor_rad, c)
             #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])        # Approximates slow v steady state
-            y = get_response_moments(probe, mu_by_condition[cond], M_by_condition[cond]) # Approximates fast v steady state
+            y = get_response_new(probe, M_by_condition[cond]) # Fast v steady state
             resp[i] = y[crf_target_idx]
         return resp
 
@@ -355,26 +374,6 @@ if __name__ == "__main__":
     plt.tight_layout(); plt.show()
 
     # ==========================================================================
-    # CHECK 2 -- Gain feedback (M @ mu) for each adaptation case
-    # ==========================================================================
-    print("Computing gain feedback...")
-    gain_feedback_by_condition = {
-        cond: M_by_condition[cond] @ mu_by_condition[cond] for cond in CONDITIONS
-    }
-
-    fig_gf, ax_gf = plt.subplots(figsize=(9, 4))
-    for cond in CONDITIONS:
-        ax_gf.plot(- gain_feedback_by_condition[cond], color=CONDITION_COLOR[cond],
-                   linewidth=2.5, label=CONDITION_LABEL[cond])
-    for s in range(1, N_SETS):
-        ax_gf.axvline(s * N_RF - 0.5, color='grey', linestyle='--', linewidth=1.0)
-    ax_gf.set_xlabel("Neuron index (7 sets x 13 neurons; set 0 = cRF)")
-    ax_gf.set_ylabel("Gain feedback")
-    ax_gf.set_title("Gain feedback (M @ mu) per adaptation case", fontweight='bold')
-    ax_gf.legend()
-    plt.tight_layout(); plt.show()
-
-    # ==========================================================================
     # CHECK 3 -- Tuning curve of a neuron adjacent to the adaptor-preferring neuron
     # ==========================================================================
     print("Computing flank-neuron tuning curves...")
@@ -389,7 +388,7 @@ if __name__ == "__main__":
         resp = np.zeros(N_PROBES)
         for i, ang in enumerate(probe_angles):
             probe = probe_input_drive(ang, PROBE_CONTRAST)
-            y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])
+            y = get_response_new(probe, M_by_condition[cond])
             resp[i] = y[flank_target_idx]
         return resp
 
@@ -475,7 +474,7 @@ if __name__ == "__main__":
         for i, ang in enumerate(probe_angles):
             probe = probe_input_drive(ang, PROBE_CONTRAST)
             #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])
-            y = get_response_moments(probe, mu_by_condition[cond], M_by_condition[cond])
+            y = get_response_new(probe, M_by_condition[cond])
             resp[:, i] = y[crf_slice]
         return resp
 
@@ -688,7 +687,6 @@ if __name__ == "__main__":
     print("Recreating Figure 2 with the top-eigenvalue clip standing in for the gain model...")
 
     M_none  = M_by_condition['no adaptation']
-    mu_none = mu_by_condition['no adaptation']
 
     def crf_tuning_curves_clip():
         resp = np.zeros((N_RF, N_PROBES))
@@ -696,7 +694,7 @@ if __name__ == "__main__":
             local_probe   = probe_local_profile(ang, PROBE_CONTRAST)   # (N_RF,) local drive
             local_clipped = W_clip_top @ local_probe                    # top-eigenvalue clip
             probe = np.concatenate([local_clipped] * N_SETS)
-            y = get_response_moments(probe, mu_none, M_none)
+            y = get_response_new(probe, M_none)
             resp[:, i] = y[crf_slice]
         return resp
 
