@@ -10,7 +10,7 @@ These responses are fed into our V1 dynamics as the input layer.
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, contrast=1.0, N_RF = 13, N_SETS = 7):
+    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, contrast=1.0, N_RF = 13, N_SETS = 5):
         self.N = N # Number of primary neurons
         self.num_angles = num_angles # Number of distinct input orientations
         self.stream_length = stream_length # Total length of the input stream

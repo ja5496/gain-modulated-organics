@@ -41,7 +41,7 @@ from typing import Literal
 import Analytic_responses as AR
 
 N_RF       = 13                    # Number of primary neurons per receptive field
-N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
+N_SETS     = 5                     # 1 classical RF (cRF) + 6 surround sets
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
