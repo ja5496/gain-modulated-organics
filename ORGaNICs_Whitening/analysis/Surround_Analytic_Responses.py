@@ -24,20 +24,22 @@ import os
 import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # analysis/ -- for `import Surround_simulated_responses`
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from tqdm import tqdm
-from simulation_whiten import Frame
+from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from analysis import Analytic_responses as ar
+import Surround_simulated_responses as SSR   # reuses run_adaptation_phase -- see gain computation below
 from typing import Literal
 from scipy.linalg import block_diag
 
 N_RF       = 13                    # Primary neurons per receptive field
-N_SETS     = 7                     # 1 classical RF (cRF) + 6 surround sets
+N_SETS     = 5                    # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL    = N_RF * N_SETS         # Full primary-neuron population
 CRF_IDX    = 0                     # Which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
@@ -45,25 +47,17 @@ FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 # used below so the PCA whitening diagnostic's "T" matches the live model's target exactly.
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
-sigma = 0.35
-Beta  = 0.5
 
-# Semi-saturation constant the LIVE network actually normalizes with (V1Dynamics_Surround.sigma,
-# simulation_whiten.py) -- distinct from this file's own `sigma` above (used only in get_response /
-# get_response_new / get_mu's *response* denominator). ar.get_optimal_gains_target's pooled
-# denominator (Analytic_responses._pooled_denom) reads the ar module's own `sigma` global, which
-# defaults to 0.1 (Analytic_responses.py's own stale default) unless overridden -- must be set to
-# THIS value so get_optim's covariance/target is computed against the same normalized stimulus
-# environment the online gain dynamics see. Mirrors Surround_simulated_responses.py's own
-# "AR.sigma = dyn.sigma" line.
 SIM_SIGMA = 0.15
+sigma = SIM_SIGMA
+Beta  = 0.5
 
 
 ENSEMBLE_CONTRAST = 1.0      # Contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH      = 0.75     # Width of the gaussian stimulus profiles
 N_CONTRASTS   = 20           # Number of contrasts to probe with
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 1.0         
+PROBE_CONTRAST = 0.8         
 N_PROBES       = 720
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
@@ -77,7 +71,10 @@ def half_wave_rectify(y):      # Estimates primary neuron firing rate from membr
     return np.maximum(y, 0.0) ** 2
 
 def probe_local_profile(input_theta, contrast, tuning_width=TUNING_WIDTH):
-    '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding.'''
+    '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding. Currently
+    unused by any figure below (probe_input_drive, which normalizes AFTER replication -- not this
+    function's own per-block normalization -- is what every contrast/tuning-curve figure uses);
+    kept as a building block for any single-local-block diagnostic added later.'''
     theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False)    # Evenly spaced orientation preferences for neurons
     delta = theta_grid - input_theta                            # Distance between neuron preference from stimulus orientation
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2             # Shift by 90 degrees to match other scripts
@@ -86,8 +83,21 @@ def probe_local_profile(input_theta, contrast, tuning_width=TUNING_WIDTH):
     return profile
 
 def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
-    '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation state.'''
-    return np.concatenate([probe_local_profile(input_theta, contrast, tuning_width)] * N_SETS)
+    '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation
+    state. Normalizes the FULL replicated (N_TOTAL,) vector to unit norm, matching
+    Surround_simulated_responses.py's own probe_input_drive exactly -- normalizing each local
+    block to unit norm BEFORE replicating (the old behavior here) inflates the total probe energy
+    by an extra factor of sqrt(N_SETS), which shifts the effective semi-saturation contrast by
+    that same factor (c50 = sigma/sqrt(N_SETS) instead of sigma, for the M=0 baseline). That's
+    what was making sigma=0.15 look "wrong" -- the response formula was correct, the probe
+    amplitude convention was not. See conversation for the derivation and the sigma=0.35 vs 0.15
+    ~sqrt(5)=2.236 numerical match that gave it away.'''
+    theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False)
+    delta = theta_grid - input_theta
+    delta = (delta + np.pi / 2) % np.pi - np.pi / 2
+    profile = np.exp(-delta**2 / (2 * tuning_width**2))
+    full_profile = np.concatenate([profile] * N_SETS)
+    return contrast * full_profile / np.linalg.norm(full_profile)
 
 def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     '''M = W @ diag(g) W.T '''
@@ -153,43 +163,8 @@ def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'ada
             full_stimuli = np.concatenate([baseline] * N_SETS)
             return full_stimuli
 
-def get_mu(stimuli, M, alpha=0.1, Beta=0.5):
-    # Self-consistency loop to calculate mu given the input dataset and optimal gains
-    mu = np.zeros(N_TOTAL)
-    diff = 1
 
-    pbar = tqdm(desc="  mu convergence", unit="iter")
-    while diff > 1e-6:
-        y_total = 0
-
-        for z in tqdm(stimuli, desc="    stimuli", leave=False):
-            z_prime = 2*(Beta * z - M @ mu)
-            y_total += z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime * z_prime))
-
-        mu_new = y_total / len(stimuli)
-        mu_old = mu.copy()
-        diff = np.linalg.norm(mu_new - mu_old)
-        mu += alpha * (mu_new - mu_old)
-        print(np.mean(mu))
-        pbar.set_postfix(diff=f"{diff:.2e}")
-        pbar.update(1)
-    pbar.close()
-    return mu
-
-def get_response(stimulus, mu, M, Beta=0.5):
-    ''' 
-    Assumes the time constant of the variance interneuron is extremely slow so that it settles 
-    as an average: v = W.T @ mu. Since this is effectively a constant vector, it cannot factorize 
-    into the proper covariance tranformation on the inputs. 
-    '''
-    gain_feedback = M @ mu                                      # Gain feedback ~ constant vector from slow v, g
-    z_prime = 2 * (Beta * stimulus - gain_feedback)             # Modified approx input drive
-    y = z_prime / np.sqrt(sigma**2 + N_matrix @ (z_prime**2))   # Normalize the approx input drive
-
-    rectified_y = half_wave_rectify(y)
-    return rectified_y
-
-def get_response_new(stimulus, M, Beta=0.5):
+def get_response(stimulus, M, Beta=0.5):
     ''' Calculation of fixed point with fast v dynamics. Response is consistent with normalized,
     whitened inputs.'''
 
@@ -219,37 +194,52 @@ if __name__ == "__main__":
     tunings = V1Tunings(N=N_RF)
     frame   = Frame(csv_path=FRAME_PATH)
 
-    # ---- Local (single-RF) biased ensemble: shared context for every adaptation case ----
-    stim_gen = StimulusGenerator(N=N_RF, num_angles=N_RF, stream_length=N_RF,
+    # ---- Gains: loaded from data/optimal_gains/, precomputed by precompute_adapted_gains.py as
+    # the MEAN of N=16 independent live V1Dynamics_Surround adaptation runs (RK4,
+    # dg/dt=(v-W.T@mu)^2-theta_t, gains_nonneg=True) -- not fit via Analytic_responses.
+    # get_optimal_gains_target's closed-form covariance-shrink optimum (diverges from the live
+    # circuit: its g>=0 clip is commented out, so it isn't solving the same nonnegativity-
+    # constrained optimization -- see conversation). A single live run was also tried directly in
+    # this script, but its result varied several percent run-to-run from the unseeded Poisson
+    # stream noise; averaging over many seeds offline (once, via precompute_adapted_gains.py)
+    # removes that variance while keeping this script itself fast and deterministic. Each cached
+    # file's columns are (g_cRF_mean, g_surround_mean, g_cRF_std) -- see
+    # data/optimal_gains/meta.json for the seeds/stream-length/duration used to generate them.
+    GAINS_DIR = os.path.join(REPO_ROOT, "data", "optimal_gains")
+    GAIN_FILE = {
+        'adapt CRF only':         'adapt_CRF_only.csv',
+        'adapt surround only':    'adapt_surround_only.csv',
+        'adapt CRF and surround': 'adapt_CRF_and_surround.csv',
+    }
+    print("Loading precomputed, seed-averaged adaptation gains...")
+    cached_gains = {}
+    for cond, fname in GAIN_FILE.items():
+        path = os.path.join(GAINS_DIR, fname)
+        assert os.path.exists(path), (
+            f"Missing precomputed gains at {path} -- run `python precompute_adapted_gains.py` "
+            f"from the repo root first."
+        )
+        cols = np.loadtxt(path, delimiter=",")
+        cached_gains[cond] = (cols[:, 0], cols[:, 1])   # (g_cRF_mean, g_surround_mean)
+    cached_gains['no adaptation'] = (np.zeros(frame.K), np.zeros(frame.K))
+
+    def M_from_cached(cond):
+        '''M = block_diag(W diag(g_cRF) W.T, [W diag(g_surround) W.T] * (N_SETS-1)) -- matches
+        V1Dynamics_Surround's own replication assumption (one shared g_surround, tiled across all
+        surround RFs; see full_gain_feedback in simulation_whiten.py's _derivatives).'''
+        g_cRF, g_surround = cached_gains[cond]
+        M_cRF = frame.W @ np.diag(g_cRF) @ frame.W.T
+        M_surround = frame.W @ np.diag(g_surround) @ frame.W.T
+        return block_diag(M_cRF, *[M_surround] * (N_SETS - 1))
+
+    print("Building M for each condition (from precomputed, seed-averaged gains)...")
+    M_by_condition = {cond: M_from_cached(cond) for cond in CONDITIONS}
+
+    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF,
+                                 stream_length=SSR.ADAPT_STREAM_LENGTH,
                                  tuning_width=TUNING_WIDTH, contrast=ENSEMBLE_CONTRAST)
-
-    print("Generating local uniform and biased ensembles...")
-    seq_uni, centers_uni = stim_gen.generate_input_ensembles(
-        biased=False, return_angles=True, duration=1)
-    stimuli_uni = list(seq_uni.T)
-
     adaptor_idx = N_RF // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
-
-    # Build the biased stream manually for equal non-adaptor representation 
-    n_non_adaptor  = N_RF - 1
-    n_adaptor_reps = n_non_adaptor // 2
-
-    non_adaptor_thetas = np.concatenate([
-        stim_gen.theta_inputs[:adaptor_idx],
-        stim_gen.theta_inputs[adaptor_idx + 1:]
-    ])
-    centers_bias = np.concatenate([
-        non_adaptor_thetas,
-        np.full(n_adaptor_reps, adaptor_rad)
-    ])
-    np.random.shuffle(centers_bias)
-
-    delta = stim_gen.theta_inputs[:, None] - centers_bias[None, :]
-    delta = (delta + np.pi / 2) % np.pi - np.pi / 2
-    seq_bias = np.exp(-delta**2 / (2 * stim_gen.tuning_width**2))
-    seq_bias = stim_gen.contrast * seq_bias / np.linalg.norm(seq_bias)
-    stimuli_bias = list(seq_bias.T)
 
     uniform_target_covariance = np.loadtxt(TARGET_COV_PATH, delimiter=",")
     assert uniform_target_covariance.shape == (N_RF, N_RF), (
@@ -257,44 +247,17 @@ if __name__ == "__main__":
         f"{uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
     )
 
-    # ---- Optimal gains, one set per stimulus condition ----
-    GAIN_CONDITIONS = ['adapt CRF only', 'adapt surround only', 'adapt CRF and surround']
-    # NOTE: pool_uni is unused below -- get_optimal_gains_target is always called with an explicit
-    # target_covariance (uniform_target_covariance), so its uniform_stimuli/pool_uniform_stimuli
-    # re-derivation path (the only place a uniform-ensemble pool would be needed) never runs. Kept
-    # here only in case that path is exercised later.
-    pool_uni = np.array([full_spatial_stimuli(z, 'adapt CRF and surround') for z in stimuli_uni])
-    print("Computing optimal gains...")
-    ar.sigma = SIM_SIGMA   # match the live network's semi-saturation constant (see SIM_SIGMA above)
-    g_opt_by_condition = {}
-    for cond in GAIN_CONDITIONS:
-        # Full 91-neuron population drive under THIS condition -- same numerator (stimuli_bias,
-        # this RF's own local biased drive) for every condition, but the pool (denominator) differs
-        # per condition since full_spatial_stimuli places the biased ensemble in a different
-        # cRF/surround location each time. Passing this as pool_stimuli makes get_optimal_gains_target
-        # normalize by the FULL population's pooled energy (matching the live circuit's global
-        # normalization pool, V1Dynamics_Surround.N_matrix = ones((N_TOT, N_TOT))) instead of just
-        # this RF's own N_RF=13-neuron local energy -- i.e. gains are now computed against the actual
-        # normalized stimulus environment each condition produces, not an unsuppressed local proxy.
-        pool_bias = np.array([full_spatial_stimuli(z, cond) for z in stimuli_bias])
-        g_opt_by_condition[cond] = ar.get_optimal_gains_target(
-            stimuli_bias, frame.W, label=f'biased ({cond})',
-            target_covariance=uniform_target_covariance,
-            pool_stimuli=pool_bias)
-
-    print("Building M for each condition...")
-    M_by_condition = {
-        cond: block_diag_M(frame.W, g_opt_by_condition[cond], cond) if cond in g_opt_by_condition
-              else block_diag_M(frame.W, None, cond)
-        for cond in CONDITIONS
-    }
-
-    # Block-diagonal (W_full, g_full) per condition 
-    Wg_full_by_condition = {
-        cond: block_diag_W(frame.W, g_opt_by_condition[cond], cond) if cond in g_opt_by_condition
-              else block_diag_W(frame.W, None, cond)
-        for cond in CONDITIONS
-    }
+    # centers_uni/stimuli_uni, centers_bias/stimuli_bias: purely for Figure 2's histogram and the
+    # PCA whitening diagnostic below -- a representative ensemble draw, not tied to gain
+    # computation (gains come from the cache above), so a single fresh, noisy draw is enough here.
+    stream_uni, centers_uni = stim_gen.generate_surround_ensembles(
+        'adapt CRF and surround', biased=False, duration=SSR.DURATION,
+        add_poisson_noise=True, return_angles=True)
+    stimuli_uni = list(stream_uni[:N_RF, :].T)
+    stream_bias, centers_bias = stim_gen.generate_surround_ensembles(
+        'adapt CRF and surround', biased=True, duration=SSR.DURATION,
+        add_poisson_noise=True, return_angles=True)
+    stimuli_bias = list(stream_bias[:N_RF, :].T)
 
     # ==========================================================================
     # CHECK 1 -- Plot probe_input_drive, centered at the biased ensemble's adaptor
@@ -327,11 +290,9 @@ if __name__ == "__main__":
 
     def crf_curve(cond):
         resp = np.zeros(N_CONTRASTS)
-        W_full, g_full = Wg_full_by_condition[cond]
         for i, c in enumerate(CRF_CONTRASTS):
             probe = probe_input_drive(adaptor_rad, c)
-            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])        # Approximates slow v steady state
-            y = get_response_new(probe, M_by_condition[cond]) # Fast v steady state
+            y = get_response(probe, M_by_condition[cond]) # Fast v steady state
             resp[i] = y[crf_target_idx]
         return resp
 
@@ -388,7 +349,7 @@ if __name__ == "__main__":
         resp = np.zeros(N_PROBES)
         for i, ang in enumerate(probe_angles):
             probe = probe_input_drive(ang, PROBE_CONTRAST)
-            y = get_response_new(probe, M_by_condition[cond])
+            y = get_response(probe, M_by_condition[cond])
             resp[i] = y[flank_target_idx]
         return resp
 
@@ -472,14 +433,13 @@ if __name__ == "__main__":
     def crf_tuning_curves(cond):
         resp = np.zeros((N_RF, N_PROBES))
         for i, ang in enumerate(probe_angles):
-            probe = probe_input_drive(ang, PROBE_CONTRAST)
-            #y = get_response(probe, mu_by_condition[cond], M_by_condition[cond])
-            y = get_response_new(probe, M_by_condition[cond])
+            probe = probe_input_drive(ang, PROBE_CONTRAST)  
+            y = get_response(probe, M_by_condition[cond])
             resp[:, i] = y[crf_slice]
         return resp
 
     tc_none = crf_tuning_curves('no adaptation')
-    tc_crf  = crf_tuning_curves('adapt CRF and surround') #adapt CRF only
+    tc_crf  = crf_tuning_curves('adapt CRF only') 
 
     # Bin by neuron preference (same logic/dimensions as get_tuning_curves in
     # Analytic_responses.py); get_response already half-wave rectifies, so no
@@ -550,204 +510,6 @@ if __name__ == "__main__":
         ax.spines['right'].set_visible(False)
 
     plt.tight_layout()
-
-    # ==========================================================================
-    # PCA whitening diagnostic: the biased single-RF stimulus ensemble (stimuli_bias, the
-    # same array get_optimal_gains_target above is fit on) before vs. after three
-    # covariance transforms:
-    #   (1) full whitening, from the RAW stimuli's own covariance.
-    #   (2) "T" - Analytic_responses.get_optimal_gains_target's shrink-to-target transform,
-    #       built from the covariance of the NORMALIZED stimuli z/sqrt(sigma^2+||z||^2)
-    #       (no Beta: Beta's only role is cancelling the factor of 2 in the y-dynamics fixed
-    #       point y* = 2*(Beta*z - fb)/..., it has no place in this covariance/basis calc) -
-    #       this is the actual quantity divisive normalization drives responses toward, so T
-    #       is derived on the same footing as the target covariance it shrinks toward. Only
-    #       eigen-directions whose variance exceeds the model's target get pulled down to
-    #       that target; directions already below it are untouched. Uses the SAME target
-    #       covariance file V1Dynamics_Surround loads for theta_t (simulation_whiten.py /
-    #       TARGET_COV_PATH), so T here matches what the live gain-feedback circuit in
-    #       Surround_simulated_responses.py actually approximates.
-    #   (3) top-eigenvalue clip, from the RAW stimuli's own covariance (same basis as (1)):
-    #       leaves every eigen-direction untouched EXCEPT the single largest eigenvalue,
-    #       whose variance is shrunk down to exactly the second-largest eigenvalue - isolates
-    #       how much of the stimuli-vs-response structural difference the single most
-    #       dominant direction (e.g. the adaptor orientation) accounts for on its own.
-    # Same red=stimuli / blue=response color scheme as the PCA scatter in
-    # Surround_simulated_responses.py's Figure 7. 3 panels (one per transform), each
-    # overlaying its stimuli/response pair on a SHARED joint-PCA frame so their relative
-    # scale is directly visible (not each rescaled to fill its own axes).
-    # ==========================================================================
-    print("Building PCA whitening diagnostic (biased ensemble)...")
-    stimuli_bias_matrix = np.array(stimuli_bias)   # (n_bias, N_RF)
-
-    Covariance_bias = np.cov(stimuli_bias_matrix, rowvar=False)
-    eigvals_bias, eigvecs_bias = np.linalg.eigh(Covariance_bias)
-    safe_lambdas = np.maximum(eigvals_bias, 1e-9)
-
-    # (1) Full whitening: Cov^-1/2, raw-stimuli basis.
-    W_whiten_full = eigvecs_bias @ np.diag(np.sqrt(0.02) / np.sqrt(safe_lambdas)) @ eigvecs_bias.T
-    stim_whitened_full = (W_whiten_full @ stimuli_bias_matrix.T).T
-
-    # (2) T: shrink-to-target whitening, normalized-stimuli basis. sigma=0.25 matches
-    # frame_whiten.compute_uniform_target_covariance / V1Dynamics_Surround's default - the
-    # same sigma that produced target_covariance itself.
-    SIGMA_NORM = 0.25
-    pooled_energy = np.sum(stimuli_bias_matrix ** 2, axis=1, keepdims=True)   # (n_bias, 1)
-    stimuli_bias_normalized = stimuli_bias_matrix / np.sqrt(SIGMA_NORM**2 + pooled_energy)
-
-    Covariance_norm = np.cov(stimuli_bias_normalized, rowvar=False)
-    eigvals_norm, eigvecs_norm = np.linalg.eigh(Covariance_norm)
-    safe_lambdas_norm = np.maximum(eigvals_norm, 1e-9)
-
-    target_covariance = np.loadtxt(TARGET_COV_PATH, delimiter=",")
-    target_variance = np.mean(np.diag(target_covariance))
-    d_target = np.minimum(1.0, np.sqrt(target_variance / safe_lambdas_norm))
-    T = eigvecs_norm @ np.diag(d_target) @ eigvecs_norm.T
-    stim_T = (T @ stimuli_bias_normalized.T).T
-
-    # (3) Top-eigenvalue clip: same raw-stimuli eigenbasis as (1), but only the single
-    # largest eigenvalue is shrunk - down to exactly the second-largest - and every other
-    # eigen-direction's coefficient stays at 1.
-    sorted_desc = np.argsort(eigvals_bias)[::-1]
-    top_idx, second_idx = sorted_desc[0], sorted_desc[1]
-    second_highest_eigval = eigvals_bias[second_idx]
-    d_clip_top = np.ones_like(safe_lambdas)
-    d_clip_top[top_idx] = np.sqrt(second_highest_eigval / safe_lambdas[top_idx])
-    W_clip_top = eigvecs_bias @ np.diag(d_clip_top) @ eigvecs_bias.T
-    stim_clip_top = (W_clip_top @ stimuli_bias_matrix.T).T
-
-    def pca_project_pair(raw, transformed):
-        '''Joint PCA on [raw; transformed] so both scatters share one 2D coordinate frame -
-        preserves their relative scale instead of each getting its own independent axes.'''
-        combined = np.concatenate([raw, transformed], axis=0)
-        centered = combined - combined.mean(axis=0, keepdims=True)
-        cov2 = np.cov(centered, rowvar=False)
-        eigvals, eigvecs = np.linalg.eigh(cov2)
-        top2 = eigvecs[:, np.argsort(eigvals)[::-1][:2]]
-        proj = centered @ top2
-        n = raw.shape[0]
-        return proj[:n], proj[n:]
-
-    def cov_ellipse(ax, points, color, n_std=1.0):
-        '''Draws a 2*n_std-sigma covariance ellipse characterizing a 2D point cloud and
-        returns its (eigval_1, eigval_2) variances along the major/minor axes.'''
-        center = points.mean(axis=0)
-        cov2 = np.cov(points, rowvar=False)
-        eigvals, eigvecs = np.linalg.eigh(cov2)
-        order = np.argsort(eigvals)[::-1]
-        eigvals, eigvecs = eigvals[order], eigvecs[:, order]
-        angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
-        width, height = 2 * n_std * np.sqrt(np.maximum(eigvals, 0))
-        ax.add_patch(Ellipse(center, width, height, angle=angle,
-                              facecolor='none', edgecolor=color, linewidth=2.5))
-        return eigvals
-
-    raw_proj_full, whitened_proj_full = pca_project_pair(stimuli_bias_matrix, stim_whitened_full)
-    norm_proj_T,   T_proj             = pca_project_pair(stimuli_bias_normalized, stim_T)
-    raw_proj_clip, clip_proj          = pca_project_pair(stimuli_bias_matrix, stim_clip_top)
-
-    fig_pca, (ax_full, ax_T, ax_clip) = plt.subplots(1, 3, figsize=(19, 6.5))
-    panels = [
-        (ax_full, raw_proj_full, whitened_proj_full, 'Stimuli',            'Whitened Response',
-         r"Full Whitening ($\Sigma^{-1/2}$)"),
-        (ax_T,    norm_proj_T,   T_proj,              'Normalized Stimuli', 'T Response',
-         r"Target-Covariance Whitening ($T$)"),
-        (ax_clip, raw_proj_clip, clip_proj,           'Stimuli',            'Clipped Response',
-         "Top-Eigenvalue Clip"),
-    ]
-    for ax, raw_proj, resp_proj, raw_label, resp_label, title in panels:
-        # alpha < 1 so exactly-overlapping points compound into a visibly darker/denser
-        # patch instead of one opaque marker silently hiding how many points land there.
-        ax.scatter(raw_proj[:, 0],  raw_proj[:, 1],  color='red',  alpha=0.6, s=45, label=raw_label)
-        ax.scatter(resp_proj[:, 0], resp_proj[:, 1], color='blue', alpha=0.6, s=45, label=resp_label)
-        eig_raw  = cov_ellipse(ax, raw_proj,  'red',  n_std=1.0)
-        eig_resp = cov_ellipse(ax, resp_proj, 'blue', n_std=1.0)
-        ax.set_title(title, fontsize=16, fontweight='bold')
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.legend(fontsize=12, loc='upper right', frameon=False)
-        ax.text(0.02, 0.98, rf"{raw_label} $\lambda$: {eig_raw[0]:.3g}, {eig_raw[1]:.3g}",
-                transform=ax.transAxes, color='red', fontsize=10, fontweight='bold', va='top', ha='left')
-        ax.text(0.02, 0.91, rf"{resp_label} $\lambda$: {eig_resp[0]:.3g}, {eig_resp[1]:.3g}",
-                transform=ax.transAxes, color='blue', fontsize=10, fontweight='bold', va='top', ha='left')
-
-    fig_pca.suptitle("PCA Whitening Diagnostic (Biased Ensemble)", fontsize=18, fontweight='bold')
-    plt.tight_layout()
-
-    # ==========================================================================
-    # FIGURE 2b -- Same tuning-curve plot as Figure 2, but the "adapted" panel is produced by
-    # simply applying the top-eigenvalue-clip transform (W_clip_top, from the "Top-Eigenvalue
-    # Clip" ellipse panel above) directly to the probe stimulus, instead of running the actual
-    # optimal-gain adaptation model. M/mu are held at the 'no adaptation' (all-zero) values used
-    # for tc_none - there is no gain-feedback loop here at all, only the bare linear clip of the
-    # single dominant stimulus eigen-direction, before divisive normalization. This isolates how
-    # much of Figure 2's tuning-curve effect (surround suppression / sharpening near the adaptor)
-    # that one clipped eigenvalue can reproduce on its own, with no adaptive circuitry involved.
-    # ==========================================================================
-    print("Recreating Figure 2 with the top-eigenvalue clip standing in for the gain model...")
-
-    M_none  = M_by_condition['no adaptation']
-
-    def crf_tuning_curves_clip():
-        resp = np.zeros((N_RF, N_PROBES))
-        for i, ang in enumerate(probe_angles):
-            local_probe   = probe_local_profile(ang, PROBE_CONTRAST)   # (N_RF,) local drive
-            local_clipped = W_clip_top @ local_probe                    # top-eigenvalue clip
-            probe = np.concatenate([local_clipped] * N_SETS)
-            y = get_response_new(probe, M_none)
-            resp[:, i] = y[crf_slice]
-        return resp
-
-    tc_clip = crf_tuning_curves_clip()
-    binned_clip = bin_by_preference(tc_clip, tunings.theta)
-    # Normalized against the SAME 'no adaptation' bin min/max as Figure 2, so the two figures'
-    # right-hand panels are directly comparable.
-    norm_clip = (binned_clip - bin_min) / (bin_max - bin_min + 1e-9)
-
-    fig1s_clip, axes1s_clip = plt.subplots(2, 2, figsize=(10, 6), sharey='row',
-                                            gridspec_kw={'height_ratios': [0.8, 1.0]})
-
-    axes1s_clip[0, 0].hist(uni_angles_deg, bins=bins_hist, weights=weights_uni,
-                           color='black', rwidth=0.9)
-    axes1s_clip[0, 0].set_title("Uniform Ensemble", fontweight='bold', fontsize=18)
-    axes1s_clip[0, 0].set_ylabel("Probability", fontsize=18)
-
-    axes1s_clip[0, 1].hist(bias_angles_deg, bins=bins_hist, weights=weights_bias,
-                           color='black', rwidth=0.9)
-    axes1s_clip[0, 1].set_title("Biased Ensemble", fontweight='bold', fontsize=18)
-
-    for ax in axes1s_clip[0]:
-        ax.set_xlim(bins_hist[0], bins_hist[-1])
-        ax.tick_params(labelbottom=False)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-
-    for i in range(N_BINS):
-        axes1s_clip[1, 0].plot(x_axis_sorted, norm_none[i][sort_idx],
-                               color=blue_colors[i], linewidth=2.0)
-        axes1s_clip[1, 1].plot(x_axis_sorted, norm_clip[i][sort_idx],
-                               color=blue_colors[i], linewidth=2.0)
-
-    axes1s_clip[1, 0].set_ylabel("Response", fontsize=18)
-    axes1s_clip[1, 0].set_title("No Adaptation", fontsize=14, fontweight='bold')
-    axes1s_clip[1, 1].set_title("Top-Eigenvalue Clip", fontsize=14, fontweight='bold')
-
-    for c in [0, 1]:
-        ax = axes1s_clip[1, c]
-        ax.set_xlim(-90, 90)
-        ymin, ymax = ax.get_ylim()
-        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax)
-        ax.grid(False)
-        ax.set_xlabel("Stimulus Orientation (°)", fontsize=18)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-
-    fig1s_clip.suptitle("Tuning Curves via Top-Eigenvalue Clip (cf. Figure 2's gain-adapted model)",
-                         fontsize=14, fontweight='bold')
-    plt.tight_layout()
-
-    # NOTE: the eigenvalue-difference diagnostic (biased vs. uniform covariance spectrum
-    # comparison) has moved to figures.py, which now also covers the Poisson-variance and
-    # double-peaked ensemble cases. Run `python analysis/figures.py` for that figure.
-
     plt.show()
+
+   

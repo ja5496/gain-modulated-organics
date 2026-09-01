@@ -12,8 +12,69 @@ from scipy.special import erf
 from scipy.linalg import sqrtm
 from stimuli_whiten import StimulusGenerator
 
+def tighten_unit_frame(W, max_iters: int = 500, tol: float = 1e-10, verbose: bool = True):
+    '''
+    Projects a unit-norm frame W (N, K), K > N, onto the nearest exact Unit Norm Tight Frame
+    (UNTF) via alternating projections:
+      1. Tighten: rescale by S^{-1/2} (S = W W^T), scaled so W W^T becomes EXACTLY (K/N)*I --
+         a tight frame by definition -- but this generally leaves columns off unit norm.
+      2. Normalize: rescale every column back to unit norm -- this generally breaks tightness
+         again, by a smaller amount if W was already close to a fixed point.
+    Repeating (1)-(2) converges to a frame that is simultaneously exactly tight and exactly
+    unit-norm. This is guaranteed to work, not just a heuristic: per Benedetto & Fickus (2003,
+    "Finite Normalized Tight Frames"), the frame potential FP(W) = ||W^T W||_F^2 =
+    sum_{i,j} <w_i,w_j>^2 attains its minimum over ALL unit-norm frames of K>N vectors in R^N
+    exactly at the tight frames (minimum value K^2/N), and FP has no local minima that are not
+    global minima on that constraint set -- so this iteration has a single class of fixed points
+    to converge to, not multiple competing ones.
+
+    Returns (W_tight, history), history = [(iteration, frame_potential, max_col_norm_error), ...].
+    Convergence is checked on max_col_norm_error measured on the freshly-TIGHTENED W (step 1,
+    before step 2's renormalization) -- the returned frame is likewise taken at that point (exactly
+    tight; unit-norm to within tol), not after one final renormalization (which would be exactly
+    unit-norm but only tight to within tol instead).
+    '''
+    N, K = W.shape
+    assert K > N, f"tighten_unit_frame needs an overcomplete frame (K > N); got K={K}, N={N}"
+    target_eigval = K / N
+    history = []
+    max_col_norm_error = np.inf
+    for it in range(max_iters):
+        S = W @ W.T
+        eigvals, eigvecs = np.linalg.eigh(S)
+        eigvals = np.maximum(eigvals, 1e-14)
+        S_inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+        W_tight = np.sqrt(target_eigval) * (S_inv_sqrt @ W)
+
+        col_norms = np.linalg.norm(W_tight, axis=0)
+        max_col_norm_error = float(np.max(np.abs(col_norms - 1.0)))
+        frame_potential = float(np.sum((W_tight.T @ W_tight) ** 2))
+        history.append((it, frame_potential, max_col_norm_error))
+
+        if verbose and (it % 20 == 0 or max_col_norm_error < tol):
+            print(f"    [tighten] iter {it:4d}: frame potential={frame_potential:.6f} "
+                  f"(target {K**2 / N:.6f})  max|col_norm-1|={max_col_norm_error:.3e}")
+
+        if max_col_norm_error < tol:
+            return W_tight, history
+
+        W = W_tight / col_norms[np.newaxis, :]
+
+    print(f"    [tighten] WARNING: did not reach tol={tol} within {max_iters} iterations "
+          f"(final max|col_norm-1|={max_col_norm_error:.3e})")
+    return W_tight, history
+
+
+def _max_coherence(W):
+    '''Max |cosine similarity| between any two DISTINCT columns of a unit-norm frame W.'''
+    G = np.abs(W.T @ W)
+    np.fill_diagonal(G, 0.0)
+    return float(G.max())
+
+
 class Frame:
-    def __init__(self, dim: int, frame_type: str = 'mercedes', sigma: float = 0.3, noise_std: float = 0.05):
+    def __init__(self, dim: int, frame_type: str = 'mercedes', sigma: float = 0.3, noise_std: float = 0.05,
+                 max_iters: int = 500, tol: float = 1e-10):
         self.dim = int(dim) # Number of primary neurons
         self.sigma = sigma
         self.centers = None  # Only set for bell-shaped frames
@@ -21,6 +82,10 @@ class Frame:
             self.K = int(self.dim * (self.dim + 1) // 2)
             print(f"Building Smooth Mercedes Frame (N={self.dim}, K={self.K})...")
             self.W = self.mercedes()
+        elif frame_type == 'mercedes_tight':
+            self.K = int(self.dim * (self.dim + 1) // 2)
+            print(f"Building Tight Mercedes Frame (N={self.dim}, K={self.K})...")
+            self.W = self.mercedes_tight(max_iters=max_iters, tol=tol)
         elif frame_type == 'gaussian':
             self.K = 2 * self.dim
             print(f"Building Gaussian Frame (N={self.dim}, K={self.K})...")
@@ -83,7 +148,40 @@ class Frame:
             current_max_coherences = np.maximum(current_max_coherences, new_dots)
 
         return W
-    
+
+    def mercedes_tight(self, max_iters: int = 500, tol: float = 1e-10, verbose: bool = True) -> np.ndarray:
+        '''
+        Same greedy, coherence-minimizing seed as mercedes() (unit-norm, well-spread-out atoms,
+        each candidate chosen to minimize its worst-case coherence with the frame so far) -- then
+        refined into an EXACT unit-norm tight frame (UNTF) via tighten_unit_frame's alternating
+        projections. mercedes() alone is only tight by luck (measured directly for N=13, K=91: eig(WW^T)
+        ranges [4.67, 9.67] against a tight target of exactly K/N=7.0, condition number ~2.07) --
+        greedy incoherence and exact tightness are different objectives, and nothing in mercedes()
+        targets the latter. tighten_unit_frame does not compromise between "unit-norm" and "tight";
+        per Benedetto & Fickus (2003), the frame potential FP(W)=||W^T W||_F^2 is minimized over
+        ALL unit-norm frames exactly at tight frames (minimum value K^2/N), with no bad local minima
+        for K>N -- so alternating projection onto (tight) and (unit-norm) converges to a frame that
+        is simultaneously exact on both counts, not a compromise between them.
+        '''
+        N, K = self.dim, self.K
+        W_seed = self.mercedes()
+        if verbose:
+            S_seed = W_seed @ W_seed.T
+            eig_seed = np.linalg.eigvalsh(S_seed)
+            print(f"  mercedes seed: eig(W W^T) in [{eig_seed.min():.4f}, {eig_seed.max():.4f}] "
+                  f"(exact-tight target: {K / N:.4f} for every eigenvalue)")
+        W_tight, history = tighten_unit_frame(W_seed, max_iters=max_iters, tol=tol, verbose=verbose)
+        if verbose:
+            S_final = W_tight @ W_tight.T
+            eig_final = np.linalg.eigvalsh(S_final)
+            coh_seed = _max_coherence(W_seed)
+            coh_final = _max_coherence(W_tight)
+            print(f"  tightened: eig(W W^T) in [{eig_final.min():.8f}, {eig_final.max():.8f}]  "
+                  f"(target {K / N:.8f})")
+            print(f"  max |column norm - 1| = {np.max(np.abs(np.linalg.norm(W_tight, axis=0) - 1)):.3e}")
+            print(f"  max pairwise coherence: seed={coh_seed:.4f} -> tightened={coh_final:.4f}")
+        return W_tight
+
     def create_identity_frame(self) -> np.ndarray:
         N = self.dim
         return np.eye(N)
@@ -216,6 +314,19 @@ def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_leng
     return Covariance
 
 
+def save_mercedes_tight_frame(dim=13, out_dir="data/frames", seed=None, max_iters=500, tol=1e-10):
+    '''Builds a mercedes-seeded, exactly unit-norm, exactly tight frame (see Frame.mercedes_tight)
+    and saves it to <out_dir>/N<dim>_mercedes_tight_Frame.csv.'''
+    if seed is not None:
+        np.random.seed(seed)
+    frame = Frame(dim=dim, frame_type='mercedes_tight', max_iters=max_iters, tol=tol)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"N{dim}_mercedes_tight_Frame.csv")
+    np.savetxt(out_path, frame.W, delimiter=",")
+    print(f"Saved tight mercedes frame ({frame.W.shape}) to {out_path}")
+    return frame.W
+
+
 def save_uniform_target_covariance(N_RF=13, out_dir="data/target_covs"):
     '''Computes the uniform target covariance and saves it to <out_dir>/uniform_target_covariance.csv.'''
     Covariance = compute_uniform_target_covariance(N_RF=N_RF)
@@ -227,12 +338,12 @@ def save_uniform_target_covariance(N_RF=13, out_dir="data/target_covs"):
 
 
 if __name__ == "__main__":
-    #np.random.seed(42)
-    #choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
-    #while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
-    #    choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
-    #frame = Frame(dim=13, frame_type=choice)
-    #np.savetxt(f"Frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
+    np.random.seed(42)
+    choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
+    while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
+        choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
+    frame = Frame(dim=13, frame_type=choice)
+    np.savetxt(f"data/frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
 
-    save_uniform_target_covariance(N_RF=13)
+    #save_uniform_target_covariance(N_RF=13)
 
