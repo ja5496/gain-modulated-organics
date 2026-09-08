@@ -47,6 +47,7 @@ FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 
 ENSEMBLE_CONTRAST    = 1.0       # contrast of the adaptation ensembles (baseline & adaptor)
+THETA_T_CONTRAST     = 0.25      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase) 
 TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
@@ -127,14 +128,30 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     exactly zero throughout - guaranteed by theta_t's sentinel value at V1Dynamics_Surround
     construction (see there), not by anything in this function.
 
+    This reference stream is generated at THETA_T_CONTRAST, not ENSEMBLE_CONTRAST - stim_gen's
+    own contrast is temporarily swapped for this one call and restored immediately after, so the
+    calibration measures variance against a fixed internal prior rather than against whatever
+    contrast the actual experiment happens to use for its adaptation ensembles. (Nothing else
+    about the stream changes: same adapt_location/biased/duration/noise as the other conditions.)
+
     For the other three conditions, whichever region does NOT get the biased/adaptor ensemble only
     sees the flat, orientation-less baseline, so its gain feedback is forced to zero too.
     '''
     K, N_RF = dyn.frame.K, dyn.N_RF
 
-    stream, centers = stim_gen.generate_surround_ensembles(
-        ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
-        add_poisson_noise=True, return_angles=True)
+    if cond == 'no adaptation':
+        true_contrast = stim_gen.contrast
+        stim_gen.contrast = THETA_T_CONTRAST
+        try:
+            stream, centers = stim_gen.generate_surround_ensembles(
+                ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
+                add_poisson_noise=True, return_angles=True)
+        finally:
+            stim_gen.contrast = true_contrast
+    else:
+        stream, centers = stim_gen.generate_surround_ensembles(
+            ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
+            add_poisson_noise=True, return_angles=True)
 
     if cond == 'no adaptation':
         (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
