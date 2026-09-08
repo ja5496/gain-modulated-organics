@@ -239,7 +239,9 @@ class V1Dynamics_Surround:
         '''
         Sets self.theta_t (in place) from the EMPIRICAL variance of (v - W.T@mu), pooling
         cRF + surround, over the second half of the given histories (skips the slow
-        mean-tracker mu's own warm-up transient). Returns the new theta_t.
+        mean-tracker mu's own warm-up transient) - then collapses that per-interneuron
+        variance profile to its own mean, so every interneuron shares one isotropic
+        threshold. Returns the new theta_t.
 
         Call this ONCE, on a reference run of the UNBIASED/uniform ensemble. Correctness
         depends on that run having g_cRF/g_surround held at exactly zero for its ENTIRE
@@ -266,6 +268,9 @@ class V1Dynamics_Surround:
         resid_surround = v_surround_hist[:, half:] - self.frame.W.T @ mu_surround_hist[:, half:]
         theta_t_before = self.theta_t.copy()
         self.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
+        # Flatten to one scalar shared by every interneuron (isotropic target, i.e. the implied
+        # target covariance is proportional to identity) instead of the per-interneuron profile.
+        self.theta_t = np.full_like(self.theta_t, self.theta_t.mean())
         if verbose:
             print(f"  theta_t calibrated: mean {theta_t_before.mean():.5g} -> {self.theta_t.mean():.5g} "
                   f"(min {self.theta_t.min():.5g}, max {self.theta_t.max():.5g})")
