@@ -685,10 +685,306 @@ def plot_crf_surround_normalization_schematic(radius=1.0, n_surround=6, gap=0.18
     return fig
 
 
+def _add_first_quadrant_axes(ax, xlim, ylim, lw, xmin=0.0):
+    '''Draws only the positive x- and y-axis (plain lines, no arrowheads), anchored at the
+    (xmin, 0) CORNER of the plot rather than the CENTER -- companion to _add_origin_axes,
+    which instead relocates the spines to a centered zero (appropriate when content
+    straddles the origin). Here content lives entirely in the first quadrant, so the default
+    left/bottom spine position (already sitting at the axes' own left/bottom edge) is
+    exactly right; only the top/right spines are hidden and ticks removed. `xmin` defaults
+    to 0 (the true origin) but can be set to a small positive value for a log-x panel, where
+    an x-axis literally starting at 0 is undefined.'''
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['left'].set_linewidth(lw)
+    ax.spines['bottom'].set_linewidth(lw)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlim(xmin, xlim)
+    ax.set_ylim(0, ylim)
+
+
+def _ellipse_radius_at_angle(a, b, psi, phi):
+    '''Distance from an ellipse's own center to its boundary along the ABSOLUTE-frame
+    direction phi (radians), for an ellipse with local semi-axes a (along its own x'-axis),
+    b (along its own y'-axis), rotated by psi (radians) from the lab x-axis. Standard
+    polar-radius-of-a-rotated-ellipse result: rotate phi into the ellipse's own local frame
+    (phi - psi) and evaluate the textbook axis-aligned polar form r(theta) =
+    1/sqrt((cos(theta)/a)^2 + (sin(theta)/b)^2) there. Used to anchor an arrow exactly on
+    the large ellipse's boundary along whatever direction it is drawn in, regardless of the
+    ellipse's own tilt.'''
+    local = phi - psi
+    return 1.0 / np.sqrt((np.cos(local) / a) ** 2 + (np.sin(local) / b) ** 2)
+
+
+class _AxesTextMeasurer:
+    '''Places mpl Text objects on `ax` in ax.transAxes coordinates and measures their
+    ACTUAL RENDERED extent (via the canvas renderer, converted back into axes-fraction
+    units) -- the workaround this figure's equation needs for two things mpl mathtext
+    cannot do in one string: (1) inline color changes (no \\color primitive), and
+    (2) auto-sized enclosing parentheses around a piece built from separately-placed Text
+    objects (mathtext's \\left(\\right) auto-sizing only sees glyphs *inside its own single
+    mathtext expression*). Must be constructed AFTER the figure's final layout is fixed
+    (e.g. after fig.tight_layout()), since every measurement is taken at the axes' current
+    pixel size -- a layout change afterward would leave the fraction-unit placements here
+    stale.'''
+
+    def __init__(self, fig, ax):
+        self.fig, self.ax = fig, ax
+        self.inv = ax.transAxes.inverted()
+        fig.canvas.draw()
+        self.renderer = fig.canvas.get_renderer()
+
+    def place(self, text, x, y, color, fontsize, fontweight='bold', ha='left', va='center'):
+        return self.ax.text(x, y, text, fontsize=fontsize, color=color, fontweight=fontweight,
+                             ha=ha, va=va, transform=self.ax.transAxes)
+
+    def bbox(self, text_artist):
+        '''(x0, y0, x1, y1) of an already-placed Text artist, in ax.transAxes coordinates.'''
+        self.fig.canvas.draw()
+        bb = text_artist.get_window_extent(renderer=self.renderer)
+        x0, y0 = self.inv.transform((bb.x0, bb.y0))
+        x1, y1 = self.inv.transform((bb.x1, bb.y1))
+        return x0, y0, x1, y1
+
+    def measure(self, text, fontsize, fontweight='bold'):
+        '''Width and height (axes-fraction) `text` would render at, without leaving it in
+        the figure -- place off-screen, measure, remove.'''
+        t = self.place(text, -10.0, -10.0, 'black', fontsize, fontweight=fontweight)
+        x0, y0, x1, y1 = self.bbox(t)
+        t.remove()
+        return x1 - x0, y1 - y0
+
+
+def generate_ellipse_norm_schamatic(save_path=None):
+    '''
+    Manuscript schematic (single-layer V1 model, conceptual only -- no explicit equations
+    drawn from Pal et al. or Morone et al., per this figure's scope): depicts
+    $\\mathcal{F}_{V1}$(LGN Drive) as the SUM of two mechanisms this codebase models,
+    Adaptation (gain-modulated covariance whitening, Duong et al.) and Normalization
+    (divisive normalization, Heeger 2020 / Pal et al.), reproducing the hand sketch
+    supplied with the request.
+
+    Layout, left to right, one row of 4 GridSpec columns (a blank text column, the
+    Adaptation panel, a blank "+" column, the Normalization panel):
+
+      1. "$\\mathcal{f}_{V1}$(LGN / Drive) =" in large bold text -- $\\mathcal{f}_{V1}$
+         (lowercase, curly), the parentheses, and "=" in black at EQ_FONTSIZE (mathtext's
+         \\mathcal gives the "curly" function-name styling without requiring a system LaTeX
+         install via usetex); "LGN" stacked directly above "Drive" in burgundy at
+         WORD_FONTSIZE, the pair horizontally centered between the parentheses (which are
+         rendered at a separately-computed, larger font size so the glyphs are tall enough
+         to visually enclose both stacked lines). Built with _AxesTextMeasurer since mpl
+         mathtext supports neither inline color changes nor auto-sized parentheses around
+         text assembled from separate pieces.
+      2. Adaptation panel: a large, anisotropic covariance ellipse (burgundy, thick border,
+         opaque fill) -- the RAW / overcomplete-frame response covariance -- enclosing a
+         smaller, CONCENTRIC circle (navy, thick border, opaque fill) -- the same
+         covariance after gain-modulated whitening. Both are constructed to sit entirely in
+         the first quadrant (see the ex/ey bounding-radius margin construction below) and
+         share one center, since whitening reshapes covariance without shifting the mean.
+         Three short black arrows, evenly spaced 120 deg apart (90/210/330 deg), run from
+         the ELLIPSE's own boundary to the CIRCLE's boundary along the same radial
+         direction (_ellipse_radius_at_angle), schematically depicting the gain
+         transformation collapsing the excess, non-isotropic variance -- left unlabeled,
+         matching the source sketch. Panel titled "Adaptation" only (no axis labels).
+      3. A large bold "+".
+      4. Normalization panel: a thick green Naka-Rushton-style saturating curve
+         (response = x^n / (x^n + c50^n)) against a LOG-scaled "contrast" x-axis -- the
+         classical divisive-normalization contrast-response nonlinearity, plotted against
+         log contrast per the standard vision-science display convention (e.g. Heeger 2020 /
+         Kohn et al. 2015), which is also what turns the Naka-Rushton hyperbolic-saturating
+         form into the familiar sigmoid. Curve shape is purely qualitative -- no parameters
+         here are fit to or claimed to reproduce any specific equation from Heeger 2020 or
+         Pal et al. Panel titled "Normalization" (same font size/weight as "Adaptation")
+         with x-axis label "contrast" (large, bold, smaller than the titles); no y-axis
+         label, matching the source sketch.
+
+    Both panels sit in equal-width gridspec columns of the same row, so their drawn BOXES
+    are identical in size/placement regardless of what's inside ("axes should match... in
+    terms of length and placement" per the original request). The Adaptation panel uses
+    `aspect='equal', adjustable='datalim'` (equal aspect is substantively required there,
+    since a "whitened" covariance is circular only if x- and y-data units are drawn at the
+    same physical scale; `adjustable='datalim'` keeps its box the same pixel size as its
+    cell -- rather than shrinking/letterboxing the box itself, as `adjustable='box'` would --
+    so its title stays aligned with the Normalization panel's). The Normalization panel is
+    left at the default `aspect='auto'`: with a log x-axis and a linear y-axis, "equal
+    aspect" has no single meaningful physical-unit correspondence to enforce. No overall
+    figure title, per request.
+    '''
+    PASTEL_BLUE = '#8FC1E3'   # large ellipse + "LGN Drive" label
+    NAVY        = '#002060'   # matches this module's COLORS['Double-peaked']
+    CHERRY_RED  = '#D2042D'   # normalization curve
+    AXIS_LW  = 2.5
+
+    # ---- Adaptation-panel geometry: anisotropic ellipse + concentric circle, both fully
+    # inside the first quadrant by construction ----
+    a, b, psi_deg = 3.2, 1.7, 35.0   # ellipse semi-major, semi-minor, tilt (deg)
+    psi = np.radians(psi_deg)
+    # Half-width/height of the rotated ellipse's own axis-aligned bounding box (standard
+    # rotated-ellipse bounding-box formula) -- used to place its center far enough from the
+    # origin that the WHOLE ellipse (not just its center) clears both axes.
+    ex = np.sqrt((a * np.cos(psi)) ** 2 + (b * np.sin(psi)) ** 2)
+    ey = np.sqrt((a * np.sin(psi)) ** 2 + (b * np.cos(psi)) ** 2)
+    margin = 1.25
+    center = (ex * margin, ey * margin)
+    xlim = center[0] + ex * margin
+    ylim = center[1] + ey * margin
+
+    circle_r = 0.84 * b   # strictly less than b (the ellipse's minimum radius, at any
+                           # angle), so the circle stays enclosed for EVERY arrow angle, not
+                           # just the three chosen below -- pulled back a bit from an earlier
+                           # 0.93 so the two shorter arrows keep a visible tail/shaft, not
+                           # just an arrowhead, while the circle still sits close to the
+                           # ellipse boundary
+    # Arrows anchored to the ellipse's OWN major-axis direction (psi_deg), not fixed compass
+    # angles: the ellipse's radius r(phi) is 180-deg periodic, so any three 120-deg-apart
+    # angles sample it at {0, +60, -60} deg from wherever the first one sits (mod 180) --
+    # anchoring at the major axis (r=a, the global max) guarantees the longest possible first
+    # arrow and two equal, still-clearly-visible arrows at +-60 deg from it. Fixed compass
+    # angles (e.g. 90/210/330) have no such guarantee: for THIS ellipse's tilt they landed
+    # close to the minor-axis direction (where r -> b -> circle_r as circle_r grows), which
+    # collapsed two of the three arrows to near-zero length once circle_r was widened.
+    arrow_angles_deg = [psi_deg, psi_deg + 120, psi_deg + 240]
+
+    fig = plt.figure(figsize=(13.5, 4.2))
+    gs = fig.add_gridspec(1, 4, width_ratios=[2.7, 2.0, 0.35, 2.0], wspace=0.1)
+    ax_text  = fig.add_subplot(gs[0, 0]); ax_text.axis('off')
+    ax_adapt = fig.add_subplot(gs[0, 1])
+    ax_plus  = fig.add_subplot(gs[0, 2]); ax_plus.axis('off')
+    ax_norm  = fig.add_subplot(gs[0, 3])
+
+    # ---- Adaptation panel: ellipse -> circle ----
+    big_ellipse = Ellipse(center, 2 * a, 2 * b, angle=psi_deg,
+                           facecolor=to_rgba(PASTEL_BLUE, 0.35), edgecolor=to_rgba(PASTEL_BLUE, 1.0),
+                           linewidth=4.5, zorder=2)
+    ax_adapt.add_patch(big_ellipse)
+
+    small_circle = Circle(center, circle_r, facecolor=to_rgba(NAVY, 0.32),
+                           edgecolor=to_rgba(NAVY, 1.0), linewidth=4.5, zorder=3)
+    ax_adapt.add_patch(small_circle)
+
+    # Arrow tails start this far OUTSIDE the ellipse's own boundary (not exactly on it), so
+    # each arrow visibly originates outside the large ellipse and crosses its border on the
+    # way to the circle. The FIRST angle (psi_deg, the major-axis direction -- the longest
+    # arrow, top-right in the rendered figure) gets a smaller extension than the other two:
+    # at its already-greater length, the same 0.12*b used for the shorter pair read as
+    # starting too far out.
+    TAIL_EXTENSIONS = [0.05 * b, 0.12 * b, 0.12 * b]
+    for ang_deg, tail_ext in zip(arrow_angles_deg, TAIL_EXTENSIONS):
+        phi = np.radians(ang_deg)
+        r_e = _ellipse_radius_at_angle(a, b, psi, phi)
+        u = np.array([np.cos(phi), np.sin(phi)])
+        start = tuple(np.array(center) + (r_e + tail_ext) * u)
+        end = tuple(np.array(center) + circle_r * u)
+        ax_adapt.add_patch(FancyArrowPatch(start, end, arrowstyle='-|>', mutation_scale=16,
+                                            linewidth=2.2, color='black', zorder=4))
+
+    # adjustable='datalim' (not 'box'): keeps this panel's drawn BOX the same pixel size as
+    # its gridspec cell (matching the Normalization panel's box exactly, so their titles
+    # align and neither panel is letterboxed with blank margin) by extending the data
+    # limits outward as needed to hit equal aspect, rather than shrinking the box inward.
+    ax_adapt.set_aspect('equal', adjustable='datalim')
+    _add_first_quadrant_axes(ax_adapt, xlim, ylim, AXIS_LW)
+    ax_adapt.set_title('Adaptation', fontsize=24, fontweight='bold')
+
+    # ---- Normalization panel: generic saturating contrast-response curve, log-x ----
+    # Contrast-response functions are conventionally plotted against LOG contrast (the
+    # standard display convention in the vision-science literature this schematic serves --
+    # e.g. Heeger 2020, Kohn et al. 2015): a Naka-Rushton-style saturating curve against log
+    # contrast reads as the classic sigmoid, flat near threshold and saturating at high
+    # contrast. x_min/x_max/c50 are schematic (no axis numbers are shown -- ticks are off),
+    # chosen only so the curve's rise sits centered in the panel. This panel therefore no
+    # longer shares a numeric xlim with the Adaptation panel or forces aspect='equal' (a
+    # log-x axis has no single linear "data unit" to equate against a linear y-axis) -- it
+    # still matches that panel's BOX size/placement exactly, since both sit in equal-width
+    # gridspec columns of the same row.
+    x_min, x_curve_max, x_axis_max = 0.02, 8.0, 12.0   # curve saturates well before
+                                                        # x_axis_max, leaving right-edge margin
+    x_curve = np.logspace(np.log10(x_min), np.log10(x_curve_max), 300)
+    c50, n_exp = 0.6, 1.6   # n_exp (the Naka-Rushton exponent) sets the sigmoid's steepness
+                             # on this log-x axis -- lowered from an earlier 2.5 for a more
+                             # gradual transition
+    y_curve = (x_curve ** n_exp) / (x_curve ** n_exp + c50 ** n_exp)   # in [0, 1)
+    ax_norm.plot(x_curve, y_curve, color=CHERRY_RED, linewidth=4.5, zorder=2)
+
+    ax_norm.set_xscale('log')
+    _add_first_quadrant_axes(ax_norm, x_axis_max, 1.0 / 0.92, AXIS_LW, xmin=x_min)
+    ax_norm.minorticks_off()   # log-scale axes auto-add minor ticks; set_xticks([]) alone
+                                # only clears the majors, leaving stray tick marks visible
+    ax_norm.set_title('Normalization', fontsize=24, fontweight='bold')
+    ax_norm.set_xlabel('contrast', fontsize=18, fontweight='bold')
+
+    # ---- "+" between the two panels ----
+    ax_plus.text(0.5, 0.5, '+', fontsize=48, fontweight='bold', color='black',
+                 ha='center', va='center', transform=ax_plus.transAxes)
+
+    # ---- layout fixed BEFORE measuring mixed-color text widths (see
+    # _draw_mixed_color_text docstring) ----
+    fig.tight_layout()
+
+    EQ_FONTSIZE = 40     # parentheses (base size before auto-sizing), "="
+    F_FONTSIZE = 56      # f_V1 -- larger than EQ_FONTSIZE, sized on its own
+    WORD_FONTSIZE = 27   # "LGN" / "Drive" -- unchanged from the original single-line size
+    m = _AxesTextMeasurer(fig, ax_text)
+
+    # "LGN" over "Drive": vertical half-gap set from one line's own measured height, so the
+    # two lines sit snugly stacked regardless of font/DPI changes.
+    word_w0, word_h = m.measure('Drive', WORD_FONTSIZE)
+    dy = 0.55 * word_h
+    stack_h = word_h + 2 * dy   # tight vertical extent of the two-line block itself
+
+    # Auto-size the parentheses: parenthesis-glyph height scales ~linearly with fontsize, so
+    # measure one test glyph at EQ_FONTSIZE and rescale to the padded block height below.
+    # VPAD inflates the target height beyond the bare stack_h so the words sit clear of the
+    # parentheses' own curvature near the top/bottom (a paren glyph narrows as it curves in,
+    # so sizing it to the exact bare text height let the curve visually pinch into the text).
+    _, paren_h_at_eq = m.measure('(', EQ_FONTSIZE)
+    VPAD = 1.15
+    paren_fontsize = EQ_FONTSIZE * (stack_h * VPAD / paren_h_at_eq)
+
+    # Horizontal clearance between the parentheses and the word block -- proportional to
+    # word height so it scales sensibly with font size -- so neither word ever touches a
+    # paren glyph regardless of how wide the (independently vertically-scaled) parens end up.
+    pad_x = 0.35 * word_h
+
+    cur_x = 0.0
+    # Plain mathtext italic (no \mathcal wrapper): mpl's \mathcal only defines proper
+    # glyphs for UPPERCASE letters in the default 'cm' fontset, so \mathcal{f} was silently
+    # falling back to a plain-looking lowercase f. Default math-italic "f" is the standard
+    # generic-function glyph (matches LaTeX's own $f$) and already has the curled/hooked
+    # descender at the bottom that \mathcal{f} was missing.
+    t_f = m.place(r'$f_{V1}$', cur_x, 0.5, 'black', F_FONTSIZE)
+    _, _, cur_x, _ = m.bbox(t_f)
+
+    t_open = m.place('(', cur_x, 0.5, 'black', paren_fontsize, fontweight='normal')
+    _, _, cur_x, _ = m.bbox(t_open)
+    cur_x += pad_x
+
+    word_w = max(word_w0, m.measure('LGN', WORD_FONTSIZE)[0])
+    center_x = cur_x + word_w / 2
+    m.place('LGN', center_x, 0.5 + dy, PASTEL_BLUE, WORD_FONTSIZE, ha='center')
+    m.place('Drive', center_x, 0.5 - dy, PASTEL_BLUE, WORD_FONTSIZE, ha='center')
+    cur_x = cur_x + word_w + pad_x
+
+    t_close = m.place(')', cur_x, 0.5, 'black', paren_fontsize, fontweight='normal')
+    _, _, cur_x, _ = m.bbox(t_close)
+
+    m.place(' =', cur_x, 0.5, 'black', EQ_FONTSIZE)
+
+    if save_path is None:
+        save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'ellipse_norm_schematic.png')
+    fig.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"Saved figure to {save_path}")
+    return fig
+
+
 if __name__ == "__main__":
     #plot_eigenvalue_diagnostic()
     #plot_eigenvector_heatmaps()
-    plot_covariance_whitening_frame()
-    plot_crf_surround_schematic()
-    plot_crf_surround_normalization_schematic()
+    #plot_covariance_whitening_frame()
+    #plot_crf_surround_schematic()
+    #plot_crf_surround_normalization_schematic()
+    generate_ellipse_norm_schamatic()
     plt.show()

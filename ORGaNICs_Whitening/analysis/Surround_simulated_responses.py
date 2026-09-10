@@ -46,7 +46,7 @@ FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 
 ENSEMBLE_CONTRAST    = 1.0       # contrast of the adaptation ensembles (baseline & adaptor)
-THETA_T_CONTRAST     = 0.25      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase) 
+THETA_T_CONTRAST     = 0.25      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase)
 TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for

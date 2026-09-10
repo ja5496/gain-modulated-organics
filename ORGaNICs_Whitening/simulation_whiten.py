@@ -188,46 +188,15 @@ class V1Dynamics_Surround:
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
         )
-        # theta_t starts UNCALIBRATED - a large sentinel, not a real target. It used to be
-        # seeded directly from uniform_target_covariance here, but that seeded value was
-        # ALWAYS silently overwritten by calibrate_theta_t() (called from
-        # Surround_simulated_responses.py's run_adaptation_phase) before any real adaptation
-        # run - so setting theta_t here, or in uniform_target_covariance.csv, had no effect on
-        # the live simulation, only a misleading appearance of one.
-        #
-        # That overwrite is NECESSARY, not optional: uniform_target_covariance.csv's value
-        # (diag mean ~0.05) sits ABOVE this model's own achievable (v-mean)^2 ceiling
-        # (~0.01-0.03 in practice, confirmed by direct measurement). With theta_t set that
-        # high, dg/dt = (v-mean)^2 - theta_t is negative for every one of the K interneurons,
-        # for the entire run - gains_nonneg then clips every gain to exactly zero at every
-        # RK4 step, permanently, regardless of tau_g or run length. Bypassing calibration
-        # (e.g. commenting out the overwrite and relying on a fixed theta_t instead)
-        # reproduces this exact collapse - confirmed both by direct measurement and by
-        # independently hitting the same failure while testing this fix.
-        #
-        # The sentinel here guarantees gains stay at EXACTLY zero until calibrate_theta_t()
-        # runs - including during the reference run calibrate_theta_t() itself is measured
-        # from, so that "unadapted" reference is genuinely uncontaminated by any partial
-        # gain feedback. Its magnitude is NOT arbitrary: it must sit safely above the
-        # achievable ceiling (~0.01-0.06 in practice) WITHOUT being needlessly huge. A
-        # too-large sentinel (tried 1e4 first) makes |dg/dt| = |v^2-theta_t|/tau_g large
-        # too - and gains_nonneg only clips g at the END of each full RK4 step, not during
-        # its four intermediate sub-evaluations, so a large |dg/dt| still produces a large
-        # UNCLAMPED excursion in the intermediate g used mid-step, which the gain-feedback
-        # term W@(g*v) then injects into y - large enough, empirically, to push this
-        # model's own near-critical u/a normalization dynamics (a_ss = u+/(1-u+), diverging
-        # as u+ -> 1) into a genuine NaN blowup partway through a real run. Swept
-        # {1e4, 100, 10, 1, 0.5} directly against a fixed adaptation stream: 1e4 reliably
-        # produced NaN, all of {100, 10, 1, 0.5} stayed clean with g provably never leaving
-        # zero. 1.0 keeps a full order-of-magnitude margin on both sides.
-        self.theta_t = np.full(self.frame.K, 1.0)
+        
+        self.theta_t = np.full(self.frame.K, 1.0) # Initial overestimate of target variances (not the values that will be used)
 
         self.tau_y = 0.2       # time constant of primary neuron (fast)
         self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
         self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
         self.tau_g = 2500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
         self.tau_v = 15.0    # time constant of excitatory neurons in normalization pool (medium to fast)
-        self.tau_mu = 2500.0  # time constant of mean-response tracker (very slow, full context window needed)
+        self.tau_mu = 1000.0  # time constant of mean-response tracker (very slow, full context window needed)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
         self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation
@@ -242,23 +211,6 @@ class V1Dynamics_Surround:
         mean-tracker mu's own warm-up transient) - then collapses that per-interneuron
         variance profile to its own mean, so every interneuron shares one isotropic
         threshold. Returns the new theta_t.
-
-        Call this ONCE, on a reference run of the UNBIASED/uniform ensemble. Correctness
-        depends on that run having g_cRF/g_surround held at exactly zero for its ENTIRE
-        duration - guaranteed by theta_t's sentinel value at __init__ (see there), provided
-        this method has not already been called on this instance (a second call calibrates
-        against a run that itself had nonzero, partially-adapted gain feedback, corrupting
-        the "unadapted" reference this is meant to measure).
-
-        This calibration is NECESSARY, not cosmetic: theta_t must sit BELOW at least some
-        interneurons' achievable (v-mean)^2 under a BIASED ensemble, or dg/dt = v^2 - theta_t
-        is negative everywhere and gains_nonneg clips every gain to exactly zero, permanently
-        (see __init__'s comment for the full argument and confirmed numbers). Calibrating
-        theta_t to THIS model's own unbiased-ensemble variance - rather than an offline/
-        idealized value like uniform_target_covariance.csv - is what gives a later biased
-        run's excess variance somewhere to be measured against, matching this codebase's
-        existing "shrink to the ensemble's own mean/reference" convention elsewhere (see
-        Analytic_responses.get_optimal_gains_target).
 
         Prints a summary (theta_t mean, before -> after) unless verbose=False - this
         overwrite is intentionally never a silent side effect.
