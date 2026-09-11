@@ -194,9 +194,9 @@ class V1Dynamics_Surround:
         self.tau_y = 0.2       # time constant of primary neuron (fast)
         self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
         self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
-        self.tau_g = 2500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
+        self.tau_g = 250.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
         self.tau_v = 15.0    # time constant of excitatory neurons in normalization pool (medium to fast)
-        self.tau_mu = 1000.0  # time constant of mean-response tracker (very slow, full context window needed)
+        self.tau_mu = 500.0  # time constant of mean-response tracker (very slow, full context window needed)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
         self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation
@@ -219,10 +219,11 @@ class V1Dynamics_Surround:
         resid_cRF = v_cRF_hist[:, half:] - self.frame.W.T @ mu_cRF_hist[:, half:]
         resid_surround = v_surround_hist[:, half:] - self.frame.W.T @ mu_surround_hist[:, half:]
         theta_t_before = self.theta_t.copy()
-        self.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
+        #self.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
         # Flatten to one scalar shared by every interneuron (isotropic target, i.e. the implied
         # target covariance is proportional to identity) instead of the per-interneuron profile.
-        self.theta_t = np.full_like(self.theta_t, self.theta_t.mean())
+        #self.theta_t = np.full_like(self.theta_t, self.theta_t.mean())
+        self.theta_t = 0.0004
         if verbose:
             print(f"  theta_t calibrated: mean {theta_t_before.mean():.5g} -> {self.theta_t.mean():.5g} "
                   f"(min {self.theta_t.min():.5g}, max {self.theta_t.max():.5g})")
@@ -259,17 +260,28 @@ class V1Dynamics_Surround:
 
         # Slow mean-tracking dynamics:
         dmu_cRF_dt = (-mu_cRF + y[:N_RF]) / self.tau_mu
-        dmu_surround_dt = (-mu_surround + y[N_RF:2*N_RF]) / self.tau_mu
 
         # cRF Adaptation Dynamics
-        dg_cRF_dt = ((v_cRF - self.frame.W.T @ mu_cRF) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
+        dg_cRF_dt = ((v_cRF - self.frame.W.T @ mu_cRF)**2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
         dv_cRF_dt = (-v_cRF + self.frame.W.T @ y[:N_RF]) / self.tau_v # Estimation of variance of cRF neurons
         cRF_gain_feedback = self.frame.W @ (g_cRF * v_cRF) # unchanged: suppression still scales with raw v_cRF, not the mean-corrected version
 
-        # Surround Adaptation Dynamics
-        dg_surround_dt = ((v_surround - self.frame.W.T @ mu_surround) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
-        dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
-        surround_gain_feedback = self.frame.W @ (g_surround * v_surround) # unchanged: suppression still scales with raw v_surround
+        # Surround Adaptation Dynamics - the surround block of y ([N_RF:2*N_RF]) only exists
+        # when N_SETS>=2. At N_SETS=1 (no surround - e.g. convergence_diagnostic.py) hold
+        # mu_surround/g_surround/v_surround's derivatives at zero instead of indexing that
+        # nonexistent block: they stay at their zero-initialized state for the whole run
+        # (and gains_nonneg keeps g_surround clamped at exactly 0), matching "surround
+        # removed" rather than raising a shape error.
+        if N_SETS >= 2:
+            dmu_surround_dt = (-mu_surround + y[N_RF:2*N_RF]) / self.tau_mu
+            dg_surround_dt = ((v_surround - self.frame.W.T @ mu_surround) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
+            dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
+            surround_gain_feedback = self.frame.W @ (g_surround * v_surround) # unchanged: suppression still scales with raw v_surround
+        else:
+            dmu_surround_dt = np.zeros(N_RF)
+            dg_surround_dt = np.zeros(K)
+            dv_surround_dt = np.zeros(K)
+            surround_gain_feedback = np.zeros(N_RF)
 
         # W_yy @ sqrt(y1+), rectified/one-sided per Asit's equation (DC_y1_dynamics) -- the
         # old (sqrt_y_plus - sqrt_y_minus) reduced to y itself (max(y,0)-max(-y,0) = y,

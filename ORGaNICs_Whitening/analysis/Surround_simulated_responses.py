@@ -113,11 +113,15 @@ BIASED_FOR_COND = {
 }
 
 
-def run_adaptation_phase(dyn, stim_gen, cond):
+def run_adaptation_phase(dyn, stim_gen, cond, adapt_location=None, biased=None):
     '''
     Simulates the adaptation state for one condition. Returns (g_cRF, g_surround, v_cRF,
     v_surround, mu_cRF, mu_surround, stream) - stream is cached so later diagnostics can reuse
     this exact run instead of re-simulating.
+
+    adapt_location/biased default to ADAPT_LOCATION_FOR_COND[cond]/BIASED_FOR_COND[cond], but can
+    be overridden to run a condition not registered in those dicts (e.g. Figure 6's extra
+    "adapt CRF only, uniform ensemble" control - same adapt_location as 'adapt CRF only', biased=False).
 
     "no adaptation" runs a real, unbiased ensemble to both regions - needed to calibrate
     theta_t (see dyn.calibrate_theta_t) - but still forces zero gain feedback in the returned
@@ -133,23 +137,25 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     contrast the actual experiment happens to use for its adaptation ensembles. (Nothing else
     about the stream changes: same adapt_location/biased/duration/noise as the other conditions.)
 
-    For the other three conditions, whichever region does NOT get the biased/adaptor ensemble only
+    For the other conditions, whichever region does NOT get the varying/adaptor ensemble only
     sees the flat, orientation-less baseline, so its gain feedback is forced to zero too.
     '''
     K, N_RF = dyn.frame.K, dyn.N_RF
+    adapt_location = ADAPT_LOCATION_FOR_COND[cond] if adapt_location is None else adapt_location
+    biased = BIASED_FOR_COND[cond] if biased is None else biased
 
     if cond == 'no adaptation':
         true_contrast = stim_gen.contrast
         stim_gen.contrast = THETA_T_CONTRAST
         try:
             stream, centers = stim_gen.generate_surround_ensembles(
-                ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
+                adapt_location, biased=biased, duration=DURATION,
                 add_poisson_noise=True, return_angles=True)
         finally:
             stim_gen.contrast = true_contrast
     else:
         stream, centers = stim_gen.generate_surround_ensembles(
-            ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
+            adapt_location, biased=biased, duration=DURATION,
             add_poisson_noise=True, return_angles=True)
 
     if cond == 'no adaptation':
@@ -184,11 +190,11 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     mu_cRF      = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
     mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
 
-    if cond == 'adapt CRF only':
+    if adapt_location == 'adapt CRF only':
         g_surround = np.zeros(K)
         v_surround = np.zeros(K)
         mu_surround = np.zeros(N_RF)
-    elif cond == 'adapt surround only':
+    elif adapt_location == 'adapt surround only':
         g_cRF = np.zeros(K)
         v_cRF = np.zeros(K)
         mu_cRF = np.zeros(N_RF)
@@ -198,7 +204,7 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     # dyn.calibrate_theta_t's docstring). Checked directly here, every run, rather than
     # trusted - a warning below means this condition's stimulus statistics didn't exceed
     # the calibrated target anywhere, not that the calibration itself is broken.
-    g_active = g_cRF if cond != 'adapt surround only' else g_surround
+    g_active = g_cRF if adapt_location != 'adapt surround only' else g_surround
     n_active = int(np.sum(g_active > 1e-3))
     print(f"  [{cond}] gains active (>1e-3): {n_active}/{K} interneurons "
           f"(mean={g_active.mean():.4g}, max={g_active.max():.4g})")
@@ -443,7 +449,7 @@ if __name__ == "__main__":
 
 
     # ==========================================================================
-    # Diagnostic: theoretical optimal g_cRF (Analytic_responses.get_optimal_gains_target),
+    # theoretical optimal g_cRF (Analytic_responses.get_optimal_gains_target),
     # computed from the EXACT SAME stimulus stream the network is about to see and the SAME
     # target covariance the simulation uses for theta_t, vs. the network's actual frozen
     # g_cRF from running that identical stream through the real RK4 dynamics - checking
@@ -466,7 +472,7 @@ if __name__ == "__main__":
         stimuli_for_theory, dyn.frame.W, target_covariance=dyn.uniform_target_covariance) # CHANGED FROM dyn.uniform_target_covariance)
 
     # ==========================================================================
-    # Figure 2: subset of g_cRF gains vs. time step, for one adaptive simulation - checks
+    # Figure 3: subset of g_cRF gains vs. time step, for one adaptive simulation - checks
     # that the interneuron gains actually settle to a steady state during the adaptation
     # phase. Reuses the gain history already captured in SIM_HISTORY by run_adaptation_phase
     # (no new simulation).
@@ -493,7 +499,7 @@ if __name__ == "__main__":
     plt.tight_layout()
 
     # ==========================================================================
-    # Diagnostic: covariance of the actual input stimuli vs. the factorization each
+    # Figure 4: covariance of the actual input stimuli vs. the factorization each
     # gain vector implies. (I + W @ diag(g) @ W.T) is the matrix that maps steady-state
     # input -> the linearized recurrent-plus-gain-feedback response (y* = M^-1 @ z, so
     # M^-1 is what actually gets applied to z) - if g were truly optimal for this
@@ -526,7 +532,7 @@ if __name__ == "__main__":
     plt.tight_layout()
 
     # ==========================================================================
-    # Contrast response functions of the cRF neuron that prefers the adaptor
+    # Figure 5: Contrast response functions of the cRF neuron that prefers the adaptor
     # ==========================================================================
     print("Computing contrast response functions...")
 
@@ -578,15 +584,19 @@ if __name__ == "__main__":
     plt.tight_layout()
 
     # ==========================================================================
-    # Figure 2 (recreated from Surround_Analytic_Responses.py, online adapted state):
-    # cRF tuning curves, no-adaptation vs. cRF-ONLY-adapted (surround left at baseline, so
-    # any tuning-curve change is due entirely to the cRF's own local gain feedback, not
-    # surround-driven suppression). Unlike that script's get_response_moments (assumes v
-    # instantly factorizes the covariance transform) or get_response (assumes v is frozen at
-    # W.T@mu), this uses the SAME get_response as every other figure above: g frozen, v
-    # dynamically settling from W.T@mu over N_SETTLE_STEPS - the actual online model, not
-    # either closed-form extreme.
+    # Figure 6 (Benucci et al.-style control, per Carandini_plots.py): cRF tuning curves,
+    # UNIFORM-ensemble-adapted vs. BIASED-ensemble-adapted, both with adaptation confined to
+    # the cRF only (surround left at baseline). Both conditions engage the identical cRF gain
+    # feedback pathway - only the adaptation ensemble (uniform vs. biased) differs - so this
+    # isolates the effect of biased adaptation statistics, not the presence/absence of gain
+    # feedback. This replaces the old 'no adaptation' (zero gain feedback) control, which was
+    # not how Benucci et al. computed their tuning curves.
     # ==========================================================================
+    print("Running extra adaptation phase: cRF adapted to UNIFORM ensemble (Benucci-style control)...")
+    UNIFORM_CRF_COND = 'adapt CRF only (uniform)'
+    frozen_gains[UNIFORM_CRF_COND] = run_adaptation_phase(
+        dyn, stim_gen, UNIFORM_CRF_COND, adapt_location='adapt CRF only', biased=False)
+
     print("Recreating Figure 2 (cRF tuning curves, online adapted state)...")
     N_BINS = N_RF
     crf_slice = slice(CRF_IDX * N_RF, (CRF_IDX + 1) * N_RF)
@@ -594,9 +604,9 @@ if __name__ == "__main__":
     probe_angles_deg = np.degrees(probe_angles)
     adaptor_deg = np.degrees(adaptor_rad)
 
-    _, _, _, _, _, _, (_, centers_none) = frozen_gains['no adaptation']
-    _, _, _, _, _, _, (_, centers_crf)  = frozen_gains['adapt CRF only']
-    uni_angles_deg  = np.degrees(centers_none)   # stimulus centers actually shown during that run
+    _, _, _, _, _, _, (_, centers_crf_uniform) = frozen_gains[UNIFORM_CRF_COND]
+    _, _, _, _, _, _, (_, centers_crf)         = frozen_gains['adapt CRF only']
+    uni_angles_deg  = np.degrees(centers_crf_uniform)   # stimulus centers actually shown during that run
     bias_angles_deg = np.degrees(centers_crf)
 
     def crf_tuning_curves(cond):
@@ -611,8 +621,9 @@ if __name__ == "__main__":
             resp[:, i] = y[crf_slice]
         return resp
 
-    tc_none = crf_tuning_curves('no adaptation')
-    tc_crf  = crf_tuning_curves('adapt CRF only')
+    tc_none = crf_tuning_curves('no adaptation')          # still needed by Figure 7 below
+    tc_crf  = crf_tuning_curves('adapt CRF only')          # biased-ensemble adapted; Figures 6 & 7
+    tc_crf_uniform = crf_tuning_curves(UNIFORM_CRF_COND)   # uniform-ensemble adapted; Figure 6 only
 
     def bin_by_preference(response, neuron_preferences, n_bins=N_BINS):
         '''Matches Surround_Analytic_Responses.py's bin_by_preference.'''
@@ -626,15 +637,17 @@ if __name__ == "__main__":
                 binned[b, :] = np.mean(response[mask, :], axis=0)
         return binned
 
-    binned_none = bin_by_preference(tc_none, tunings.theta)
-    binned_crf  = bin_by_preference(tc_crf,  tunings.theta)
+    binned_crf_uniform = bin_by_preference(tc_crf_uniform, tunings.theta)
+    binned_crf         = bin_by_preference(tc_crf,         tunings.theta)
 
-    # Normalize each neuron's curve (both panels) to ITS OWN non-adapted peak response, not a
-    # min/max rescale - preserves the true (non-forced-to-0) floor and makes both panels directly
-    # comparable as "fraction of that neuron's unadapted peak firing rate."
-    peak_none = np.max(binned_none, axis=1, keepdims=True)
-    norm_none = binned_none / (peak_none + 1e-12)
-    norm_crf  = binned_crf  / (peak_none + 1e-12)
+    # Min/max rescale to the UNIFORM-adapted curve's own range (matches Carandini_plots.py's
+    # process_pair) - not a peak-only rescale. Applying the SAME uniform-derived min/max to both
+    # panels means the uniform panel normalizes to itself (=> flat/uniform by construction) while
+    # the biased panel shows how far adaptation statistics push it away from that reference.
+    bin_max = np.max(binned_crf_uniform, axis=1, keepdims=True)
+    bin_min = np.min(binned_crf_uniform, axis=1, keepdims=True)
+    norm_uniform = (binned_crf_uniform - bin_min) / (bin_max - bin_min + 1e-9)
+    norm_bias    = (binned_crf         - bin_min) / (bin_max - bin_min + 1e-9)
 
     discrete_step_hist = 180 / N_RF
     bins_hist = np.linspace(0, 180, N_BINS + 1) - (discrete_step_hist / 2)
@@ -664,8 +677,8 @@ if __name__ == "__main__":
         ax.spines['right'].set_visible(False)
 
     for i in range(N_BINS):
-        axes_tc[1, 0].plot(x_axis_sorted, norm_none[i][sort_idx], color=blue_colors[i], linewidth=2.0)
-        axes_tc[1, 1].plot(x_axis_sorted, norm_crf[i][sort_idx],  color=blue_colors[i], linewidth=2.0)
+        axes_tc[1, 0].plot(x_axis_sorted, norm_uniform[i][sort_idx], color=blue_colors[i], linewidth=2.0)
+        axes_tc[1, 1].plot(x_axis_sorted, norm_bias[i][sort_idx],    color=blue_colors[i], linewidth=2.0)
 
     axes_tc[1, 0].set_ylabel("Response", fontsize=18)
     for c in [0, 1]:
@@ -681,7 +694,7 @@ if __name__ == "__main__":
     plt.tight_layout()
 
     # ==========================================================================
-    # Figure 6: Tuning curve of the flank neuron (adjacent to the adaptor-preferring
+    # Figure 7: Tuning curve of the flank neuron (adjacent to the adaptor-preferring
     # neuron), matching the style of Surround_Analytic_Responses.py's "Tuning Curve (Flank
     # Neuron)" plot exactly - only the response computation differs (here: settled RK4
     # dynamics via get_response/crf_tuning_curves; there: closed-form get_response). Reuses
@@ -750,7 +763,7 @@ if __name__ == "__main__":
     plt.tight_layout()
 
     # ==========================================================================
-    # Figure 7: covariance matrices of the cRF-only stimulus ensemble vs. the network's own
+    # Figure 8: covariance matrices of the cRF-only stimulus ensemble vs. the network's own
     # adapted steady-state responses to it, over the SAME (N_RF, N_RF) cRF-only block.
     # Panel 1: Cov(stimulus), panel 2: Cov(response) -- both computed over the LAST HALF of
     # the 'adapt CRF only' adaptation stream (tau_g=2500, ADAPT_STREAM_LENGTH=100000 -> ~40
