@@ -91,7 +91,8 @@ sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse, FancyArrowPatch, Circle
+from matplotlib.patches import Ellipse, FancyArrowPatch, Circle, Arc
+from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgba
 from stimuli_whiten import StimulusGenerator
 from frame_whiten import Frame
@@ -486,82 +487,257 @@ def plot_covariance_whitening_frame(n_points=300, theta_t=1.0, std_major=2.0, st
     return fig
 
 
-def _circle_patch(center, radius, color, lw, fill_alpha, zorder):
-    '''A Circle patch with a fully-opaque border and a lightly-shaded interior of the SAME
-    color -- same face/edge-alpha decoupling trick as _cov_ellipse_patch, so the thick
-    border reads at full color while the interior stays light.'''
+def _circle_patch(center, radius, color, lw, fill_alpha, zorder, edge_color=None):
+    '''A Circle patch with a fully-opaque border and a lightly-shaded interior -- same
+    face/edge-alpha decoupling trick as _cov_ellipse_patch, so the thick border reads at
+    full color while the interior stays light. By default the border is the SAME `color` as
+    the fill (at full alpha); pass `edge_color` to use a different, independent border color
+    (e.g. plot_crf_surround_schematic's all-black RF borders around a grey fill).'''
     return Circle(center, radius, facecolor=to_rgba(color, fill_alpha),
-                  edgecolor=to_rgba(color, 1.0), linewidth=lw, zorder=zorder)
+                  edgecolor=to_rgba(edge_color if edge_color is not None else color, 1.0),
+                  linewidth=lw, zorder=zorder)
 
 
-def _crf_surround_centers(radius, n_surround, gap):
+def _crf_surround_centers(radius, n_surround, gap, start_angle_deg=90.0):
     '''Shared layout math for the cRF + surround flower (see plot_crf_surround_schematic's
     docstring for the tangent-packing derivation): surround centers sit on a ring of radius
-    2*radius + gap, evenly spaced (360/n_surround apart, first one straight up). Factored out
-    so every figure built on this flower (e.g. plot_crf_surround_normalization_schematic)
-    uses IDENTICAL geometry to plot_crf_surround_schematic, rather than a second copy that
-    could drift out of sync with it.'''
+    2*radius + gap, evenly spaced (360/n_surround apart, first one at start_angle_deg -- 90
+    (straight up) by default). Factored out so every figure built on this flower (e.g.
+    plot_crf_surround_normalization_schematic) uses IDENTICAL geometry to
+    plot_crf_surround_schematic, rather than a second copy that could drift out of sync with
+    it. `start_angle_deg` only rotates the ring: plot_crf_surround_schematic passes 0 for a
+    "flat-top" hexagon (two circles at the top/bottom, none straight up/down) matching its
+    reference sketch, while callers that want the original "one circle straight up" layout
+    (e.g. plot_crf_surround_normalization_schematic, whose pooling-hub geometry below relies
+    on it) keep the default.'''
     ring_r = 2 * radius + gap
-    angles = 90 + np.arange(n_surround) * (360.0 / n_surround)
+    angles = start_angle_deg + np.arange(n_surround) * (360.0 / n_surround)
     surround_centers = [(ring_r * np.cos(np.radians(a)), ring_r * np.sin(np.radians(a)))
                          for a in angles]
     return surround_centers, ring_r
 
 
-def plot_crf_surround_schematic(radius=1.0, n_surround=6, gap=0.18, save_path=None):
+def _edge_segment(c1, r1, c2, r2):
+    '''Returns the short (start, end) segment lying strictly in the GAP between two circles
+    of radii r1, r2 centered at c1, c2 -- i.e. the piece of the center-to-center line that is
+    outside both circles, not the full line between the centers. Used to draw
+    plot_crf_surround_schematic's normalization bars so each one reads as connecting the two
+    circles' edges (as in the reference sketch) rather than running underneath their
+    (semi-transparent) fills.'''
+    c1, c2 = np.asarray(c1, dtype=float), np.asarray(c2, dtype=float)
+    u = c2 - c1
+    u = u / np.linalg.norm(u)
+    return tuple(c1 + r1 * u), tuple(c2 - r2 * u)
+
+
+def _self_loop_arrow(ax, center, obj_radius, direction_deg, loop_radius, color, lw=4.5,
+                      gap_deg=45.0, mutation_scale=26, standoff=0.0, zorder=6):
+    '''Draws one near-circular "feeds back on itself" self-loop just outside a circle: a
+    small loop of radius `loop_radius`, whose own center sits `direction_deg` degrees
+    outward from `center` (0 = +x/east, counterclockwise) at distance
+    obj_radius + standoff + loop_radius -- i.e. just past that circle's boundary in the given
+    direction, with an extra `standoff` gap so the loop doesn't crowd the circle -- matching
+    the reference sketch's self-arrows sitting on the outside of each RF, on the side away
+    from the cRF. Drawn as an Arc spanning (360 - gap_deg) degrees, with a short
+    FancyArrowPatch closing the last few degrees of that span so the loop reads as "almost
+    circular" but directed, rather than a plain closed ring or a full loop with two competing
+    arrowheads.
+
+    The missing `gap_deg` wedge is centered on the side of the loop FACING the object: since
+    `loop_center` sits at ABSOLUTE angle `direction_deg` from `center`, the object itself
+    sits at absolute angle `direction_deg + 180` as seen FROM loop_center (not a fixed
+    constant -- Arc's theta1/theta2 are absolute-frame angles, so this must rotate with
+    `direction_deg`, otherwise only a loop with direction_deg=0 would actually face its own
+    circle) -- each of the 7 loops (one per RF, each at its own direction_deg) gets its own
+    correctly-rotated orientation instead of sharing one.
+
+    The arrowhead itself is NOT just the tangential tail end of the arc (a point on the loop's
+    own circumference only ever points perpendicular to the loop's radius there, i.e. never
+    truly "at" the object, no matter which point on the circle you pick): its start point
+    `pre_pt` is on the arc as usual, but its end point is pulled inward, onto the OBJECT's own
+    boundary (`center + obj_radius*dvec`, i.e. the near point of the circle the loop belongs
+    to) -- steering the little connecting segment off the circular path and angling it
+    radially in, so the drawn arrowhead visibly points into the RF instead of skimming past
+    it tangentially.'''
+    dvec = np.array([np.cos(np.radians(direction_deg)), np.sin(np.radians(direction_deg))])
+    center = np.asarray(center, dtype=float)
+    loop_center = center + (obj_radius + standoff + loop_radius) * dvec
+    facing_deg = direction_deg + 180.0   # absolute angle, from loop_center, back toward center
+    theta1, theta2 = facing_deg + gap_deg / 2.0, facing_deg + 360.0 - gap_deg / 2.0
+    ax.add_patch(Arc(tuple(loop_center), 2 * loop_radius, 2 * loop_radius, angle=0,
+                      theta1=theta1, theta2=theta2, color=color, linewidth=lw, zorder=zorder))
+    pre_rad = np.radians(theta2 - 14.0)
+    pre_pt  = loop_center + loop_radius * np.array([np.cos(pre_rad), np.sin(pre_rad)])
+    end_pt  = center + obj_radius * dvec   # on the RF's own boundary -- see docstring
+    ax.add_patch(FancyArrowPatch(tuple(pre_pt), tuple(end_pt), arrowstyle='-|>',
+                                  mutation_scale=mutation_scale, linewidth=lw, color=color,
+                                  zorder=zorder))
+
+
+def plot_crf_surround_schematic(radius=1.0, n_surround=6, gap=0.55, save_path=None):
     '''
     Figure -- schematic of the classical receptive field (cRF) model used throughout this
-    codebase: one central cRF surrounded by n_surround (default 6) same-size surround RFs.
+    codebase: one central cRF surrounded by n_surround (default 6) same-size surround RFs,
+    additionally depicting WHERE two mechanisms act (reproducing the hand sketch supplied
+    with the request):
+      - Global normalization: a thick bar, in the SAME color as the normalization
+        contrast-response curve in generate_ellipse_norm_schamatic (its CHERRY_RED), joining
+        every pair of circles that are actually adjacent in the flower -- the cRF-to-surround
+        spokes and the ring of surround-to-surround neighbors -- drawn via _edge_segment so
+        each bar sits exactly in the gap between two circles' edges. `gap` is deliberately
+        generous (0.55*radius, vs. plot_crf_surround_normalization_schematic's tight 0.18) so
+        these bars read clearly rather than being crowded out by near-touching circles.
+      - Local adaptation: one near-circular self-loop arrow (_self_loop_arrow) per circle,
+        including the cRF, in the SAME dark navy as the small whitened-covariance circle in
+        generate_ellipse_norm_schamatic (its NAVY) -- "this color = adaptation" thus reads
+        consistently across figures, the same way NORM_COLOR does for normalization. Each
+        loop sits OUTSIDE its own circle, on the side away from the cRF (radially outward for
+        the surrounds), with its gap/arrowhead facing back toward that circle (see
+        _self_loop_arrow's docstring) so the arrowhead visibly points into the RF it belongs
+        to rather than away from it.
 
     Layout: all n_surround+1 circles share one radius. Surround centers sit on a ring of
-    radius 2*radius + gap, evenly spaced (360/n_surround apart, first one straight up) --
-    starting from the "seven equal circles" packing (ring radius 2*radius, where every
-    surround circle is EXACTLY tangent to the cRF circle AND to its two ring neighbors: for
-    n_surround=6, two circles of radius r whose centers are both at distance 2r from the
-    origin and 60 degrees apart are themselves exactly 2r apart center-to-center) and then
-    inflating the ring radius by `gap`. At 60-degree spacing the chord between ring
-    neighbors equals the ring radius itself (2*r*sin(30 deg) = r), so this single `gap` term
-    opens an IDENTICAL, exact gap both between the cRF and every surround circle and between
-    each pair of neighboring surround circles -- not two separately-tuned spacings.
+    radius 2*radius + gap, evenly spaced 360/n_surround apart -- starting from the "seven
+    equal circles" packing (ring radius 2*radius, where every surround circle is EXACTLY
+    tangent to the cRF circle AND to its two ring neighbors: for n_surround=6, two circles of
+    radius r whose centers are both at distance 2r from the origin and 60 degrees apart are
+    themselves exactly 2r apart center-to-center) and then inflating the ring radius by
+    `gap`. At 60-degree spacing the chord between ring neighbors equals the ring radius
+    itself (2*r*sin(30 deg) = r), so this single `gap` term opens an IDENTICAL, exact gap
+    both between the cRF and every surround circle and between each pair of neighboring
+    surround circles -- not two separately-tuned spacings.
 
-    Colors: cRF dark blue (matches this module's COLORS['Double-peaked']); surround light
-    blue (matches plot_covariance_whitening_frame's ORIG_COLOR) -- reusing both across the
-    module's figures rather than inventing new ones. A white "+" marks the center of the
-    cRF (the fixation point / center of gaze), and both the cRF and one representative
-    surround circle carry a text label (all six surrounds are identical by construction, so
-    labeling one is labeling all of them). Pure schematic -- no axes, ticks, or grid.
+    Unlike plot_crf_surround_normalization_schematic (which keeps _crf_surround_centers'
+    default "one circle straight up" ring), this figure rotates the ring to start_angle_deg=0
+    -- a "flat-top" hexagon with TWO circles at the top and two at the bottom, matching the
+    sketch: it puts a pair of surround circles side by side under one shared "Surround"
+    label (with a slightly-curved arrow diverging to each), and leaves the
+    straight-up/straight-down directions free of any cRF-to-surround spoke, so the cRF's own
+    self-loop -- placed straight down -- sits clearly between its two nearest normalization
+    bars rather than on top of one.
+
+    Colors: every RF circle (cRF and surrounds alike) has a BLACK border -- all seven are the
+    same kind of unit, so borders no longer encode cRF-vs-surround identity. Fill is a single
+    neutral grey, at low opacity for the surrounds and higher opacity for the cRF, so the cRF
+    still reads as visually "heavier"/foregrounded without a separate hue. A large-font
+    legend at the right names both mechanisms by color (text colored to match its own line).
+    Pure schematic -- no axes, ticks, or grid.
     '''
-    CRF_COLOR  = '#002060'   # dark blue (COLORS['Double-peaked'])
-    SURR_COLOR = '#5B9BD5'   # light blue (plot_covariance_whitening_frame's ORIG_COLOR)
-    BORDER_LW  = 5.0
+    RF_EDGE_COLOR    = 'black'    # all seven RF borders -- circle identity no longer color-coded
+    SURR_FILL_COLOR  = '#808080'  # neutral grey fill for the surrounds
+    SURR_FILL_ALPHA  = 0.60       # low(er) opacity -- surrounds read as the "background" units
+    # cRF fill is already at alpha=1.0 (fully opaque -- can't go higher), so "more opaque"
+    # for it instead means a darker base grey than the surrounds', so it reads as solid/
+    # foregrounded rather than merely alpha=1.0 of the same light grey.
+    CRF_FILL_COLOR   = '#404040'
+    CRF_FILL_ALPHA   = 1.0
+    LABEL_COLOR      = 'black'    # "Surround"/"cRF" text + the "Surround" pointer arrows
+    NORM_COLOR  = '#D2042D'   # cherry red -- SAME color as the normalization contrast-
+                              # response curve in generate_ellipse_norm_schamatic (its
+                              # CHERRY_RED), so "this color = normalization" reads
+                              # consistently across figures
+    ADAPT_COLOR = '#2E4E8C'  # lightened navy -- SAME color as the small whitened-covariance
+                              # circle (NAVY) in generate_ellipse_norm_schamatic, so "this
+                              # color = adaptation" reads consistently across figures
+    BORDER_LW   = 7.5
+    BAR_LW      = 11.0
+    LOOP_LW     = 4.5    # self-loop line thickness (also bumped: their mutation_scale, via
+                          # _self_loop_arrow's own higher default)
+    SURR_ARROW_LW = 3.2  # "Surround" pointer-arrow line thickness
+    SURR_ARROW_SCALE = 30   # "Surround" pointer-arrowhead size
 
-    fig, ax = plt.subplots(figsize=(6.5, 6.5))
+    fig, ax = plt.subplots(figsize=(9.5, 7.8))
     ax.set_aspect('equal', adjustable='box')
     ax.axis('off')
 
-    surround_centers, ring_r = _crf_surround_centers(radius, n_surround, gap)
+    surround_centers, ring_r = _crf_surround_centers(radius, n_surround, gap,
+                                                       start_angle_deg=0.0)
+    surround_angles = [i * (360.0 / n_surround) for i in range(n_surround)]
 
+    # ---- global-normalization bars (thick red), drawn first (low zorder) so the circles
+    # drawn afterward sit cleanly on top of their ends ----
+    for c in surround_centers:   # cRF <-> each surround (the "spokes")
+        start, end = _edge_segment((0.0, 0.0), radius, c, radius)
+        ax.plot(*zip(start, end), color=NORM_COLOR, linewidth=BAR_LW,
+                solid_capstyle='butt', zorder=1)
+    for i in range(n_surround):   # surround <-> surround (the ring)
+        c1, c2 = surround_centers[i], surround_centers[(i + 1) % n_surround]
+        start, end = _edge_segment(c1, radius, c2, radius)
+        ax.plot(*zip(start, end), color=NORM_COLOR, linewidth=BAR_LW,
+                solid_capstyle='butt', zorder=1)
+
+    # ---- local-adaptation self-loops (navy): one per surround circle, on the outside of
+    # the flower, plus one for the cRF straight down -- a direction with no spoke at
+    # start_angle_deg=0, so it sits visibly between the two nearest bars ----
+    loop_r = 0.34 * radius
+    loop_standoff = 0.22 * radius       # extra gap between each surround and its self-loop
+    crf_loop_standoff = 0.05 * radius   # the cRF's own loop sits closer to its border
+    for c, ang in zip(surround_centers, surround_angles):
+        _self_loop_arrow(ax, c, radius, ang, loop_r, ADAPT_COLOR, lw=LOOP_LW,
+                          standoff=loop_standoff, zorder=6)
+    _self_loop_arrow(ax, (0.0, 0.0), radius, 270.0, loop_r, ADAPT_COLOR, lw=LOOP_LW,
+                      standoff=crf_loop_standoff, zorder=6)
+
+    # ---- the flower itself: black borders throughout, grey fill distinguished only by
+    # opacity (surrounds low, cRF higher) ----
     for c in surround_centers:
-        ax.add_patch(_circle_patch(c, radius, SURR_COLOR, lw=BORDER_LW, fill_alpha=0.35, zorder=2))
-    # cRF fill is near-solid (not the same light 0.35 alpha as the surrounds): at low alpha
-    # over white, the dark-navy CRF_COLOR washes out to a gray-lavender instead of reading
-    # as "dark blue" -- it needs much less mixing with the white background to hold its color.
-    ax.add_patch(_circle_patch((0, 0), radius, CRF_COLOR, lw=BORDER_LW, fill_alpha=0.88, zorder=3))
-
-    # ---- fixation-point "+" at the very center of the cRF ----
-    arm = 0.28 * radius
-    ax.plot([-arm, arm], [0, 0], color='white', linewidth=3.5, solid_capstyle='round', zorder=4)
-    ax.plot([0, 0], [-arm, arm], color='white', linewidth=3.5, solid_capstyle='round', zorder=4)
+        ax.add_patch(_circle_patch(c, radius, SURR_FILL_COLOR, lw=BORDER_LW,
+                                    fill_alpha=SURR_FILL_ALPHA, zorder=2,
+                                    edge_color=RF_EDGE_COLOR))
+    ax.add_patch(_circle_patch((0, 0), radius, CRF_FILL_COLOR, lw=BORDER_LW,
+                                fill_alpha=CRF_FILL_ALPHA, zorder=3, edge_color=RF_EDGE_COLOR))
 
     # ---- labels ----
-    ax.text(0, -0.55 * radius, 'cRF', color='white', fontsize=20, fontweight='bold',
+    # White text: with CRF_FILL_ALPHA now ~1.0, the cRF fill is dark enough again (near the
+    # solid base SURR_FILL_COLOR grey) for white to read clearly against it.
+    ax.text(0, 0, 'cRF', color='white', fontsize=20, fontweight='bold',
             ha='center', va='center', zorder=5)
-    ax.text(surround_centers[0][0], surround_centers[0][1], 'Surround', color=CRF_COLOR,
-            fontsize=19, fontweight='bold', ha='center', va='center', zorder=5)
 
-    lim = 1.15 * (ring_r + radius)
+    # "Surround" label centered above the two top circles (60/120 deg), with a slightly
+    # curved arrow (concave-down, like a shallow eyebrow) diverging down to each -- both are
+    # identical by construction, so one label with two arrows names them together rather
+    # than labeling either circle individually.
+    upper_right, upper_left = surround_centers[1], surround_centers[2]   # 60 deg, 120 deg
+    circles_top_y = upper_left[1] + radius   # both top circles share this y (same radius/ring)
+    label_xy = (0.0, circles_top_y + 0.65 * radius)   # well above the circles, so the two
+                                                        # arrows below have real vertical drop
+                                                        # instead of reading as sideways ticks
+    ax.text(*label_xy, 'Surround', color=LABEL_COLOR, fontsize=19, fontweight='bold',
+            ha='center', va='bottom', zorder=7)
+    # Arrows land on each circle's own TOP point (center + (0, radius)), not the point
+    # nearest the label -- that keeps the two arrows visibly diverging toward each circle
+    # individually, instead of both converging on the shared gap between them. Curvature
+    # (arc3, rad) is mirrored left/right and signed so each arrow bows slightly UPWARD
+    # (concave down, like a shallow cap "⌢") rather than sagging toward the flower. The two
+    # start points are offset apart (not one shared point) for visible space between the two
+    # arrows near the label, and each ends with a margin above its circle rather than landing
+    # exactly on its boundary, so the arrowhead doesn't crowd the RF it points to.
+    start_spread = 0.22 * radius
+    target_gap = 0.22 * radius
+    arrow_starts = {upper_left:  (label_xy[0] - start_spread, label_xy[1] - 0.08 * radius),
+                    upper_right: (label_xy[0] + start_spread, label_xy[1] - 0.08 * radius)}
+    for target, rad in ((upper_left, 0.25), (upper_right, -0.25)):
+        arrow_end = (target[0], circles_top_y + target_gap)
+        ax.annotate('', xy=arrow_end, xytext=arrow_starts[target],
+                    arrowprops=dict(arrowstyle='-|>', color=LABEL_COLOR,
+                                     linewidth=SURR_ARROW_LW, mutation_scale=SURR_ARROW_SCALE,
+                                     connectionstyle=f'arc3,rad={rad}'),
+                    zorder=7)
+
+    # ---- legend: which color represents which mechanism (text colored to match its line) ----
+    legend_handles = [
+        Line2D([0], [0], color=ADAPT_COLOR, linewidth=LOOP_LW + 1, label='Local Adaptation'),
+        Line2D([0], [0], color=NORM_COLOR, linewidth=BAR_LW * 0.6, label='Global Normalization'),
+    ]
+    legend = ax.legend(handles=legend_handles, loc='center left', bbox_to_anchor=(1.03, 0.5),
+                        fontsize=19, frameon=False, handlelength=2.2, labelspacing=1.6,
+                        borderaxespad=0.0)
+    for text, handle in zip(legend.get_texts(), legend_handles):
+        text.set_color(handle.get_color())
+
+    lim = 1.35 * (ring_r + radius)
     ax.set_xlim(-lim, lim)
-    ax.set_ylim(-lim, lim)
+    ax.set_ylim(-lim, lim + 0.55 * radius)
 
     plt.tight_layout()
     if save_path is not None:
@@ -813,7 +989,11 @@ def generate_ellipse_norm_schamatic(save_path=None):
     figure title, per request.
     '''
     PASTEL_BLUE = '#8FC1E3'   # large ellipse + "LGN Drive" label
-    NAVY        = '#002060'   # matches this module's COLORS['Double-peaked']
+    NAVY        = '#2E4E8C'   # "adaptation" blue -- lightened from an earlier '#002060'
+                              # (this module's COLORS['Double-peaked']) by request; kept in
+                              # sync with plot_crf_surround_schematic's ADAPT_COLOR, which
+                              # reuses this exact hex so "adaptation" reads as one consistent
+                              # color across figures
     CHERRY_RED  = '#D2042D'   # normalization curve
     AXIS_LW  = 2.5
 
@@ -984,7 +1164,7 @@ if __name__ == "__main__":
     #plot_eigenvalue_diagnostic()
     #plot_eigenvector_heatmaps()
     #plot_covariance_whitening_frame()
-    #plot_crf_surround_schematic()
+    plot_crf_surround_schematic()
     #plot_crf_surround_normalization_schematic()
     generate_ellipse_norm_schamatic()
     plt.show()
