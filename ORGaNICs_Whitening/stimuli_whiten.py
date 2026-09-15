@@ -25,6 +25,7 @@ class StimulusGenerator:
         # Preferred orientations of the N_RF receptive-field neurons. 
         self.theta_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
 
+        
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
                                  von_mises_kappa=4.0, return_angles=False, duration=20,
@@ -103,15 +104,20 @@ class StimulusGenerator:
             return profiles, centers
         return profiles
     
-    def generate_surround_ensembles(self, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
-                                 biased=False, return_angles=False, mean_center=False,
+    def generate_surround_ensembles(self, adapt_location: Literal['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
+                                 biased=False, von_mises=False, von_mises_center=0.0, von_mises_kappa=4.0,
+                                 return_angles=False, mean_center=False,
                                  duration=20, add_poisson_noise=False, poisson_fano=0.2):
         '''
-        Generate uniform or biased ensemble of raised cosine input profiles
+        Generate uniform, biased, or von Mises ensemble of raised cosine input profiles
         centered at random orientations, projected onto the N_RF receptive-field
-        neurons' tuning curves to form their drive.
+        neurons' tuning curves to form their drive. Routed into adapt_location exactly as
+        for the discrete-index ensembles (biased/von Mises region vs. flat baseline elsewhere).
 
         Args:
+            von_mises (bool): if True, draw stimulus centers from a von Mises distribution
+                (mean von_mises_center degrees, concentration von_mises_kappa) instead of the
+                discrete biased/uniform index sampling below - matches generate_input_ensembles.
             poisson_fano (float): Fano factor (Var/mean) of the injected noise, only used
                 when add_poisson_noise=True. 1.0 (default) is true Poisson noise. Scale this
                 up/down to make neurons noisier/quieter relative to their firing rate. Note that
@@ -125,32 +131,38 @@ class StimulusGenerator:
             If return_angles=True, returns (profiles, centers) where centers is
             the per-timestep stimulus angle array of shape (stream_length,).
         '''
+        num_inputs = int(self.stream_length / duration) # number of stimuli shown
 
-        # Generate the indices of all the distinct stimuli
-        base_indices = np.arange(self.num_angles)
-        
-        # Append it on itself until it reaches self.stream_length
-        num_inputs = int(self.stream_length / duration) # number of stimuli shown 
-        n_full  = num_inputs // self.num_angles
-        n_extra = num_inputs % self.num_angles
-        full_indices  = np.tile(base_indices, n_full)
-        extra_indices = np.random.choice(base_indices, size=n_extra, replace=False)
-        indices = np.concatenate([full_indices, extra_indices])
+        if von_mises:
+            mu = np.deg2rad(von_mises_center)
+            centers_raw = np.random.vonmises(mu, von_mises_kappa, num_inputs)
+            centers_raw = ((centers_raw % np.pi) + np.pi) % np.pi  # wrap to [0, π)
+            centers = np.repeat(centers_raw, duration)  # shape: (stream_length,)
+        else:
+            # Generate the indices of all the distinct stimuli
+            base_indices = np.arange(self.num_angles)
 
-        # Optionally overwrite roughly 33% of the indices with the adaptor index
-        if biased:
-            one_third_split = len(indices) // 3 # Calculate the index representing the first third
-            adaptor_idx = self.num_angles // 2 # Define the adaptor index
-            indices[:one_third_split] = adaptor_idx # Apply the mask to the first third of the array
+            # Append it on itself until it reaches self.stream_length
+            n_full  = num_inputs // self.num_angles
+            n_extra = num_inputs % self.num_angles
+            full_indices  = np.tile(base_indices, n_full)
+            extra_indices = np.random.choice(base_indices, size=n_extra, replace=False)
+            indices = np.concatenate([full_indices, extra_indices])
 
-        # Randomly shuffle the indices array in-place
-        np.random.shuffle(indices) 
+            # Optionally overwrite roughly 33% of the indices with the adaptor index
+            if biased:
+                one_third_split = len(indices) // 3 # Calculate the index representing the first third
+                adaptor_idx = self.num_angles // 2 # Define the adaptor index
+                indices[:one_third_split] = adaptor_idx # Apply the mask to the first third of the array
 
-        # Adding the duration of the inputs in so it doesn't flash a new one every time step. 
-        indices = np.repeat(indices, duration)
+            # Randomly shuffle the indices array in-place
+            np.random.shuffle(indices)
 
-        # Convert indices to actual orientation centers; shape: (stream_length,)
-        centers = self.theta_inputs[indices]
+            # Adding the duration of the inputs in so it doesn't flash a new one every time step.
+            indices = np.repeat(indices, duration)
+
+            # Convert indices to actual orientation centers; shape: (stream_length,)
+            centers = self.theta_inputs[indices]
 
         # Project the (num_angles-resolution) stimulus angle at each timestep onto the
         # N_RF receptive-field neurons' own tuning curves - matrix of shape (N_RF, stream_length).
@@ -206,8 +218,9 @@ class StimulusGenerator:
         
 
         return profiles
+    
 
-    def generate_contrast_stream(self, peak_ln_contrast, contrast_sigma=1.0,
+    def generate_contrast_stream(self, peak_ln_contrast, adapt_location, contrast_sigma=1.0,
                                  return_metadata=False, **kwargs):
         '''
         Generates a stimulus stream scaled by contrasts drawn from a truncated
@@ -215,24 +228,26 @@ class StimulusGenerator:
 
         Args:
             peak_ln_contrast (float): ln(contrast) at which the distribution peaks (mode in log-space).
+            adapt_location: passed through to generate_surround_ensembles - which region(s) receive
+                the (contrast-modulated) stimulus vs. the flat baseline.
             contrast_sigma (float): Standard deviation of the underlying normal distribution.
             return_metadata (bool): If True, return (stream, angles_per_pres, contrasts_per_pres)
                 where angles_per_pres and contrasts_per_pres are per-stimulus-presentation arrays.
-            **kwargs: Arguments to pass to generate_input_ensembles.
+            **kwargs: Arguments to pass to generate_surround_ensembles (e.g. biased, von_mises).
 
         Returns:
             np.ndarray or tuple: Contrast-scaled stream, or 3-tuple if return_metadata=True.
         '''
-        # 1. Generate base normalized profiles from existing function
+        # 1. Generate base normalized profiles from generate_surround_ensembles
         if return_metadata:
-            profiles, centers = self.generate_input_ensembles(return_angles=True, **kwargs)
+            profiles, centers = self.generate_surround_ensembles(adapt_location, return_angles=True, **kwargs)
         else:
-            profiles = self.generate_input_ensembles(**kwargs)
+            profiles = self.generate_surround_ensembles(adapt_location, **kwargs)
 
         # 2. Determine number of distinct stimulus presentations from the actual
         #    profile length (uniform path truncates to complete cycles, so
         #    profiles.shape[1] may be shorter than self.stream_length)
-        duration = 20  # Matches the duration in generate_input_ensembles
+        duration = 20  # Matches generate_surround_ensembles's own default
         num_inputs = profiles.shape[1] // duration
 
         # 3. peak_ln_contrast is the mean of the underlying normal (mode in log-space)
