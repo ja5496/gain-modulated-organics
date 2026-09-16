@@ -17,6 +17,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
+import numpy.typing as npt
 import matplotlib.pyplot as plt
 from simulation_whiten import V1Dynamics, Frame
 from tunings_whiten import V1Tunings
@@ -226,8 +227,47 @@ def get_response_simple(stimulus, mu, M, Beta=0.5):
     z_normalized = stimulus / np.sqrt(sigma**2 + N_matrix @ (stimulus**2))
     y = z_normalized - gain_feedback
 
-    rectified_y = y 
+    rectified_y = y
     return rectified_y
+
+def compute_error(
+        M: npt.NDArray[np.float64],
+        Cxx: npt.NDArray[np.float64],
+        clamp: bool,
+        target_covariance: npt.NDArray[np.float64] = None,
+        error_type: str = 'fro'
+    ) -> float:
+    '''
+    Lyndon's whitening-error metric, generalized to measure how far Cyy = M @ Cxx @ M.T is
+    from an arbitrary target_covariance (e.g. uniform_target_covariance) instead of always
+    identity. target_covariance=None recovers the original identity-target behavior exactly.
+
+    Generalizes via diff = Cyy - target_covariance: for 'spectral'/'operator' this uses
+    eigvalsh(diff) directly rather than eigvalsh(Cyy) - 1, which is the same thing when
+    target_covariance is (a multiple of) identity - eig(Cyy - c*I) = eig(Cyy) - c exactly -
+    but is the correct generalization when the target isn't a multiple of identity (its
+    eigenvectors need not align with Cyy's, so shifting Cyy's own eigenvalues by the target's
+    diagonal is not equivalent to the eigenvalues of the true difference matrix).
+    '''
+    assert error_type in ['fro', 'spectral', 'operator']
+    Cyy = M @ Cxx @ M.T
+    N = Cxx.shape[0]
+    target = np.eye(Cyy.shape[0]) if target_covariance is None else target_covariance
+    diff = Cyy - target
+
+    if error_type == 'fro':
+        err_diag = np.diag(diff)
+        err_off_diag = diff[np.triu_indices_from(diff, k=1)]
+        error = 1/(N**2) * (np.sum(err_diag ** 2) + 2 * np.sum(err_off_diag ** 2))
+    elif error_type == 'spectral':
+        eigvals = np.linalg.eigvalsh(diff)
+        eigvals = np.clip(eigvals, 0, np.inf) if clamp else eigvals
+        error = 1/N * np.sum(eigvals**2)
+    else:  # operator norm
+        eigvals = np.linalg.eigvalsh(diff)
+        error = np.max(eigvals)
+
+    return error
 
 if __name__ == "__main__":
 

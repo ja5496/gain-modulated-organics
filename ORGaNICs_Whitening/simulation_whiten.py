@@ -271,9 +271,19 @@ class V1Dynamics_Surround:
 
         theta_t = self.theta_t
 
+        # At N_SETS=1 there is no surround block at all (y only holds the cRF's own N_RF
+        # entries) - y[N_RF:2*N_RF] would otherwise silently come back empty and break every
+        # broadcast below against the (always N_RF/K-sized) mu_surround/v_surround/g_surround
+        # state. Treat the nonexistent surround as driven by zero input instead: mu_surround
+        # and v_surround then just decay toward 0 from their (zero) initial state and stay
+        # there, and g_surround's target term becomes the constant -theta_t/tau_g, clamped to
+        # 0 by run_simulation's gains_nonneg floor - i.e. surround adaptation is genuinely inert,
+        # matching the single-RF (no surround) model this represents.
+        y_surround = y[N_RF:2*N_RF] if N_SETS >= 2 else np.zeros(N_RF)
+
         # Slow mean-tracking dynamics:
         dmu_cRF_dt = (-mu_cRF + y[:N_RF]) / self.tau_mu
-        dmu_surround_dt = (-mu_surround + y[N_RF:2*N_RF]) / self.tau_mu
+        dmu_surround_dt = (-mu_surround + y_surround) / self.tau_mu
 
         # cRF Adaptation Dynamics
         dg_cRF_dt = ((v_cRF - self.frame.W.T @ mu_cRF) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
@@ -282,7 +292,7 @@ class V1Dynamics_Surround:
 
         # Surround Adaptation Dynamics
         dg_surround_dt = ((v_surround - self.frame.W.T @ mu_surround) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
-        dv_surround_dt = (-v_surround + self.frame.W.T @ y[N_RF:2*N_RF]) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
+        dv_surround_dt = (-v_surround + self.frame.W.T @ y_surround) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
         surround_gain_feedback = self.frame.W @ (g_surround * v_surround) # unchanged: suppression still scales with raw v_surround
 
         # W_yy @ sqrt(y1+), rectified/one-sided per Asit's equation (DC_y1_dynamics) -- the

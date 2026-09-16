@@ -74,18 +74,24 @@ def _max_coherence(W):
 
 class Frame:
     def __init__(self, dim: int, frame_type: str = 'mercedes', sigma: float = 0.3, noise_std: float = 0.05,
-                 max_iters: int = 500, tol: float = 1e-10):
+                 max_iters: int = 500, tol: float = 1e-10, K: int = None,
+                 target_covariance: np.ndarray = None):
         self.dim = int(dim) # Number of primary neurons
         self.sigma = sigma
         self.centers = None  # Only set for bell-shaped frames
         if frame_type == 'mercedes':
-            self.K = int(self.dim * (self.dim + 1) // 2)
+            self.K = int(K) if K is not None else int(self.dim * (self.dim + 1) // 2)
             print(f"Building Smooth Mercedes Frame (N={self.dim}, K={self.K})...")
             self.W = self.mercedes()
         elif frame_type == 'mercedes_tight':
-            self.K = int(self.dim * (self.dim + 1) // 2)
+            self.K = int(K) if K is not None else int(self.dim * (self.dim + 1) // 2)
             print(f"Building Tight Mercedes Frame (N={self.dim}, K={self.K})...")
             self.W = self.mercedes_tight(max_iters=max_iters, tol=tol)
+        elif frame_type == 'spectral':
+            self.K = self.dim
+            print(f"Building Spectral (eigenbasis) Frame (N={self.dim}, K={self.K})...")
+            assert target_covariance is not None, "frame_type='spectral' requires target_covariance"
+            self.W = self.spectral_frame(target_covariance)
         elif frame_type == 'gaussian':
             self.K = 2 * self.dim
             print(f"Building Gaussian Frame (N={self.dim}, K={self.K})...")
@@ -181,6 +187,17 @@ class Frame:
             print(f"  max |column norm - 1| = {np.max(np.abs(np.linalg.norm(W_tight, axis=0) - 1)):.3e}")
             print(f"  max pairwise coherence: seed={coh_seed:.4f} -> tightened={coh_final:.4f}")
         return W_tight
+
+    def spectral_frame(self, target_covariance: np.ndarray) -> np.ndarray:
+        '''
+        Orthonormal (K=N, not overcomplete) frame whose columns are the eigenvectors of
+        target_covariance, i.e. the ensemble's own principal axes rather than a generic
+        (mercedes/gaussian) basis. Sorted by descending eigenvalue for readability (arbitrary
+        for the dynamics - W W^T = I regardless of column order).
+        '''
+        eigenvalues, eigenvectors = np.linalg.eigh(target_covariance)
+        order = np.argsort(eigenvalues)[::-1]
+        return eigenvectors[:, order]
 
     def create_identity_frame(self) -> np.ndarray:
         N = self.dim
