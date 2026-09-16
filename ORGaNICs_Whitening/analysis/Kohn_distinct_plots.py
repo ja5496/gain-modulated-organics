@@ -66,7 +66,8 @@ def run_adaptation_phase(dyn, stim_gen, cond):
         assert np.all(g_cRF_hist == 0) and np.all(g_surround_hist == 0), (
             "calibration run's gains moved away from zero - theta_t sentinel no longer holds."
         )
-        dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist)
+        dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist,
+                              circular_target=True)
         zeros_K = np.zeros(dyn.frame.K)
         return zeros_K, zeros_K, mu_cRF_hist[:, -1], mu_surround_hist[:, -1]
 

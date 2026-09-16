@@ -33,6 +33,7 @@ sys.path.insert(0, REPO_ROOT)
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from scipy.linalg import block_diag
 from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
@@ -41,9 +42,10 @@ import Analytic_responses as AR
 
 N_RF       = 13                    # Number of primary neurons per receptive field
 N_SETS     = 5                     # 1 classical RF (cRF) + 6 surround sets
+N_TOTAL = N_RF * N_SETS
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 
 ENSEMBLE_CONTRAST    = 1.0       # contrast of the adaptation ensembles (baseline & adaptor)
 THETA_T_CONTRAST     = 0.25      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase)
@@ -51,6 +53,12 @@ TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
 N_SETTLE_STEPS       = 1500     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
+
+# If True, every probe response (contrast-response + tuning-curve figures) is computed by
+# settling the full RK4 dynamics (get_response_online, N_SETTLE_STEPS per probe - slow, exact).
+# If False (default), probes instead use get_response_offline: the closed-form fixed point
+# with g frozen and v at its fast-dynamics limit (much faster, an approximation).
+online = False
 
 N_CONTRASTS    = 20
 CRF_CONTRASTS  = np.logspace(-2, 0, N_CONTRASTS)
@@ -67,7 +75,6 @@ COLOR_BOTH   = 'darkorange'
 # condition - populated by run_adaptation_phase below, reused by Figures 2 and 7 without any
 # additional simulation runs.
 SIM_HISTORY = {}
-
 
 def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     '''
@@ -113,7 +120,7 @@ BIASED_FOR_COND = {
 }
 
 
-def run_adaptation_phase(dyn, stim_gen, cond):
+def run_adaptation_phase(dyn, stim_gen, cond, cov_target=None):
     '''
     Simulates the adaptation state for one condition. Returns (g_cRF, g_surround, v_cRF,
     v_surround, mu_cRF, mu_surround, stream) - stream is cached so later diagnostics can reuse
@@ -164,7 +171,8 @@ def run_adaptation_phase(dyn, stim_gen, cond):
             "already called on this dyn instance. The calibration below would be measuring a "
             "partially-adapted reference, not a genuinely unbiased one."
         )
-        dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist)
+        dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist, 
+                              C_zz_uniform=cov_target, uniform_target=True, circular_target=False)
 
         zeros_K = np.zeros(K)
         return (zeros_K, zeros_K, v_cRF_hist[:, -1], v_surround_hist[:, -1],
@@ -260,7 +268,17 @@ def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
 
     return np.concatenate([dy_dt, du_dt, da_dt, dv_cRF_dt, dv_surround_dt])
 
-def get_response(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=N_SETTLE_STEPS):
+def get_response_offline(dyn, stimulus, M, Beta=0.5):
+    ''' Calculation of fixed point with fast v dynamics. Response is consistent with normalized,
+    whitened inputs.'''
+
+    z_prime = np.linalg.inv(np.eye(N_TOTAL) + M) @ stimulus
+    y = z_prime / np.sqrt(dyn.sigma**2 + dyn.N_matrix @ (z_prime**2))
+    rectified_y = dyn.half_wave_rectify(y)
+
+    return rectified_y
+
+def get_response_online(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=N_SETTLE_STEPS):
     '''
     Settles the system (y, u, a) to steady state given a fixed probe stimulus, with g_cRF/g_surround
     frozen. v is initialized to W.T @ mu_{cRF,surround}.
@@ -362,85 +380,7 @@ if __name__ == "__main__":
     frozen_gains = {}
     for cond in ACTIVE_CONDITIONS:
         print(f"  Adapting: {CONDITION_LABEL[cond]}")
-        frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond)
-
-    # ==========================================================================
-    # Figure 1: Gain Feedback matrices (feedback depends on stimuli orientation + neuron
-    # preference). One panel per biased condition. In 'adapt CRF only'/'adapt surround only'
-    # the non-adapted region has g=0 (its matrix is exactly zero), so the adapted region's
-    # matrix is shown. In 'adapt CRF and surround' both regions see the identical biased
-    # ensemble through the identical joint normalization pool, so cRF_matrix and
-    # surround_matrix come out numerically equal - either one alone is the right thing to
-    # plot (summing them would double-count and mismatch the color scale against the other
-    # two panels).
-    # ==========================================================================
-    print("Computing gain-feedback matrices (probe orientation x neuron index)...")
-    theta_RF_deg = np.degrees(stim_gen.theta_RF)
-
-    N_GAIN_PROBES = N_RF   # 13 evenly spaced probes
-    gain_probe_thetas = np.linspace(0, np.pi, N_GAIN_PROBES, endpoint=False)
-    gain_probe_deg = np.degrees(gain_probe_thetas)
-
-    def gain_feedback_matrix(cond):
-        '''Row i = settled gain feedback on every neuron (columns) when probed with a stimulus
-        centered at gain_probe_thetas[i]. Sign convention matches the old plot: negated, so
-        a positive entry means suppressive.'''
-        g_cRF, g_surround, _, _, mu_cRF, mu_surround, _ = frozen_gains[cond]
-        cRF_matrix = np.zeros((N_GAIN_PROBES, N_RF))
-        surround_matrix = np.zeros((N_GAIN_PROBES, N_RF))
-        for i, theta in enumerate(tqdm(gain_probe_thetas, desc=f"    {cond}", leave=False)):
-            probe = probe_input_drive(theta, PROBE_CONTRAST)
-            _, v_cRF_settled, v_surround_settled = get_response(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
-            cRF_matrix[i, :] = - dyn.frame.W @ (g_cRF * v_cRF_settled)
-            surround_matrix[i, :] = - dyn.frame.W @ (g_surround * v_surround_settled)
-        return cRF_matrix, surround_matrix
-
-    FIG1_CONDITIONS = ['adapt CRF only', 'adapt surround only', 'adapt CRF and surround']
-    FIG1_TITLE = {
-        'adapt CRF only':         'Classical RF Adapted',
-        'adapt surround only':    'Surround Adapted',
-        'adapt CRF and surround': 'cRF and Surround Adapted',
-    }
-    gain_matrices = {}
-    for cond in FIG1_CONDITIONS:
-        cRF_matrix, surround_matrix = gain_feedback_matrix(cond)
-        # Pick the region that's actually adapted; for 'adapt CRF and surround' both matrices
-        # are equal by symmetry, so cRF_matrix is as good a choice as surround_matrix.
-        gain_matrices[cond] = surround_matrix if cond == 'adapt surround only' else cRF_matrix
-
-    # Shared, zero-centered color scale across all 3 panels so magnitudes/signs are comparable.
-    all_gain_vals = np.concatenate([m.ravel() for m in gain_matrices.values()])
-    gain_vmax = np.max(np.abs(all_gain_vals)) if all_gain_vals.size else 1.0
-    gain_vmin = -gain_vmax
-
-    fig1_tick_pos = np.linspace(0, 180, 4)
-
-    fig_gain, axes_gain = plt.subplots(1, len(FIG1_CONDITIONS),
-                                        figsize=(5.5 * len(FIG1_CONDITIONS), 6),
-                                        sharex=True, sharey=True)
-    im = None
-    for col, cond in enumerate(FIG1_CONDITIONS):
-        ax = axes_gain[col]
-        im = ax.imshow(gain_matrices[cond], cmap='RdBu_r', vmin=gain_vmin, vmax=gain_vmax,
-                        aspect='auto', origin='lower', extent=[0, 180, 0, 180])
-        ax.axhline(np.degrees(adaptor_rad), color='gray', linestyle=':', linewidth=1.2)
-        ax.axvline(np.degrees(adaptor_rad), color='gray', linestyle=':', linewidth=1.2)
-        ax.set_title(FIG1_TITLE[cond], fontsize=18, fontweight='bold')
-        ax.set_xticks(fig1_tick_pos)
-        ax.set_yticks(fig1_tick_pos)
-        ax.tick_params(labelsize=14, width=2.0, length=6)
-        ax.set_xlabel("Neuron Preference", fontsize=16, fontweight='bold')
-        if col == 0:
-            ax.set_ylabel("Stimulus Orientation", fontsize=16, fontweight='bold')
-        for spine in ax.spines.values():
-            spine.set_edgecolor('black')
-            spine.set_linewidth(1.5)
-
-    cbar = fig_gain.colorbar(im, ax=axes_gain.ravel().tolist(), fraction=0.03, pad=0.02)
-    cbar.set_label("Gain Feedback", fontsize=16, fontweight='bold')
-    cbar.ax.tick_params(labelsize=13)
-    fig_gain.suptitle("Gain Feedback Matrices", fontsize=22, fontweight='bold')
-
+        frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond, dyn.uniform_target_covariance)
 
     # ==========================================================================
     # Diagnostic: theoretical optimal g_cRF (Analytic_responses.get_optimal_gains_target),
@@ -530,12 +470,26 @@ if __name__ == "__main__":
     # ==========================================================================
     print("Computing contrast response functions...")
 
+    def offline_gain_operator(g_cRF, g_surround):
+        '''(N_TOTAL, N_TOTAL) block-diagonal M = W diag(g) W.T feeding get_response_offline's
+        (I+M)^-1 fixed point - same cRF/surround block layout as frozen_derivatives'
+        full_gain_feedback: the cRF block uses g_cRF, every surround block reuses g_surround.'''
+        W = dyn.frame.W
+        M_cRF = W @ np.diag(g_cRF) @ W.T
+        M_surround = W @ np.diag(g_surround) @ W.T
+        return block_diag(M_cRF, *([M_surround] * (N_SETS - 1)))
+
     def crf_curve(cond):
         g_cRF, g_surround, _, _, mu_cRF, mu_surround, _ = frozen_gains[cond]
+        if not online:
+            M = offline_gain_operator(g_cRF, g_surround)
         resp = np.zeros(N_CONTRASTS)
         for i, c in enumerate(tqdm(CRF_CONTRASTS, desc=f"    {cond}", leave=False)):
             probe = probe_input_drive(adaptor_rad, c)
-            y, _, _ = get_response(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
+            if online:
+                y, _, _ = get_response_online(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
+            else:
+                y = get_response_offline(dyn, probe, M)
             resp[i] = y[crf_target_idx]
         return resp
 
@@ -601,13 +555,19 @@ if __name__ == "__main__":
 
     def crf_tuning_curves(cond):
         g_cRF, g_surround, _, _, mu_cRF, mu_surround, _ = frozen_gains[cond]
+        if not online:
+            M = offline_gain_operator(g_cRF, g_surround)
         resp = np.zeros((N_RF, N_PROBES))
         for i, ang in enumerate(tqdm(probe_angles, desc=f"    {cond}", leave=False)):
             probe = probe_input_drive(ang, PROBE_CONTRAST)
-            y, _, _ = get_response(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
-            # get_response only half-wave-rectifies (max(y,0)); square to get the firing-rate
-            # estimate, matching half_wave_rectify(y, alpha=2.0) used everywhere else (y is
-            # already >=0 here, so squaring is equivalent and needs no re-clipping).
+            if online:
+                y, _, _ = get_response_online(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
+            else:
+                y = get_response_offline(dyn, probe, M)
+            # get_response_online only half-wave-rectifies (max(y,0)) then squares
+            # (half_wave_rectify(y, alpha=2.0)); get_response_offline applies the same
+            # rectify-then-square via dyn.half_wave_rectify's own default alpha=2.0, so both
+            # paths return the same rectified/squared firing-rate quantity here.
             resp[:, i] = y[crf_slice]
         return resp
 

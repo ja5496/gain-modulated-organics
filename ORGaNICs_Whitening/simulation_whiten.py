@@ -158,7 +158,7 @@ class V1Dynamics:
 
 class V1Dynamics_Surround:
     def __init__(self, v1_model, frame, dt=0.1, N_RF = 13, N_SETS = 7,
-                 target_covariance_path="data/target_covs/uniform_target_covariance.csv",
+                 target_covariance_path="data/target_covs/uniform_target_covariance_low_c.csv",
                  gains_nonneg=False):
         self.v1 = v1_model     # Refers to tunings_whiten.py
         self.frame = frame     # Overcomplete frame (W)
@@ -204,28 +204,42 @@ class V1Dynamics_Surround:
     def half_wave_rectify(self, y, alpha=2.0):  # Used to estimate firing rates from membrane potential
         return (np.maximum(y,0)) ** alpha       # Rectify and raise to the power Beta (NOT input gain)
 
-    def calibrate_theta_t(self, v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist, verbose=True):
+    def calibrate_theta_t(self, v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist, C_zz_uniform=None,  
+                          verbose=True, circular_target=False, uniform_target=False):
         '''
-        Sets self.theta_t (in place) from the EMPIRICAL variance of (v - W.T@mu), pooling
-        cRF + surround, over the second half of the given histories (skips the slow
-        mean-tracker mu's own warm-up transient) - then collapses that per-interneuron
-        variance profile to its own mean, so every interneuron shares one isotropic
-        threshold. Returns the new theta_t.
+        `circular` covariance target:
+            Sets self.theta_t as the mean of the empirical variance of (v - W.T@mu) over the second half 
+            histories so every interneuron shares one isotropic threshold. Returns the new theta_t. 
+
+        `uniform` covariance target:
+            Sets self.theta_t from the covariance of the uniform ensemble with no noise (C_zz_uniform). 
+            theta_t = diag(W)
 
         Prints a summary (theta_t mean, before -> after) unless verbose=False - this
         overwrite is intentionally never a silent side effect.
         '''
-        half = v_cRF_hist.shape[1] // 2
-        resid_cRF = v_cRF_hist[:, half:] - self.frame.W.T @ mu_cRF_hist[:, half:]
-        resid_surround = v_surround_hist[:, half:] - self.frame.W.T @ mu_surround_hist[:, half:]
-        theta_t_before = self.theta_t.copy()
-        self.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
-        # Flatten to one scalar shared by every interneuron (isotropic target, i.e. the implied
-        # target covariance is proportional to identity) instead of the per-interneuron profile.
-        self.theta_t = np.full_like(self.theta_t, self.theta_t.mean())
-        if verbose:
-            print(f"  theta_t calibrated: mean {theta_t_before.mean():.5g} -> {self.theta_t.mean():.5g} "
-                  f"(min {self.theta_t.min():.5g}, max {self.theta_t.max():.5g})")
+        if circular_target:
+            half = v_cRF_hist.shape[1] // 2
+            resid_cRF = v_cRF_hist[:, half:] - self.frame.W.T @ mu_cRF_hist[:, half:]
+            resid_surround = v_surround_hist[:, half:] - self.frame.W.T @ mu_surround_hist[:, half:]
+            theta_t_before = self.theta_t.copy()
+            self.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
+            # Flatten to one scalar shared by every interneuron (isotropic target, i.e. the implied
+            # target covariance is proportional to identity) instead of the per-interneuron profile.
+            self.theta_t = np.full_like(self.theta_t, self.theta_t.mean())
+            if verbose:
+                print(f"  theta_t calibrated: mean {theta_t_before.mean():.5g} -> {self.theta_t.mean():.5g} "
+                    f"(min {self.theta_t.min():.5g}, max {self.theta_t.max():.5g})")
+
+        elif uniform_target:
+            self.theta_t = np.diag(self.frame.W.T @ C_zz_uniform @ self.frame.W)
+            if verbose:
+                print(f"  theta_t calculated: mean {self.theta_t.mean():.5g} "
+                    f"(min {self.theta_t.min():.5g}, max {self.theta_t.max():.5g})")
+
+        else:
+            raise ValueError("No target covariance was set --> cannot compute marginal variance targets (theta_t). " \
+            "Please set either 'cicular_target' or 'uniform_target' to 'True' when calling calibrate_theta_t.")
         return self.theta_t
 
     def _derivatives(self, state, z_t):

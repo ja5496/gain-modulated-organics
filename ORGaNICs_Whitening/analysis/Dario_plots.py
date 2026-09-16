@@ -314,7 +314,8 @@ if __name__ == "__main__":
         "calibration run's gains moved away from zero - theta_t sentinel no longer holds "
         "(see V1Dynamics_Surround.__init__)."
     )
-    dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist)
+    dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist,
+                          circular_target=True)
 
     Dario_fig1(dyn, stim_gen)
     Dario_fig3(dyn, stim_gen)

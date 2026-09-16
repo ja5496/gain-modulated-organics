@@ -168,8 +168,7 @@ class StimulusGenerator:
         # N_RF receptive-field neurons' own tuning curves - matrix of shape (N_RF, stream_length).
         delta_theta = self.theta_RF[:, np.newaxis] - centers[np.newaxis, :]
         delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
-        #profile = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
-        profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
+        profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) 
 
         # Extend each individual profile from N_RF neurons to the full N_RF * N_SETS population:
         baseline = np.full((self.N_RF, profile.shape[1]), 0.20)
