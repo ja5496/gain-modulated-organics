@@ -17,17 +17,18 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
+from scipy.linalg import block_diag
 from simulation_whiten import Frame, V1Dynamics_Surround
-from Surround_simulated_responses import get_response
+from Surround_simulated_responses import get_response_offline
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 N_RF, N_SETS = 13, 5
-FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
+FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 TUNING_WIDTH = 0.75
 THETA_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
 
-ADAPTOR_THETA = 0.0             # radians
+ADAPTOR_THETA = np.pi / 2       # radians (centered in the [0, pi) probe sweep -> mid-plot on x-axis)
 ADAPTOR_CONTRAST = 1.0
 PROBE_CONTRAST = 0.8
 N_PROBES = 90
@@ -35,7 +36,7 @@ THETA_T_CONTRAST = 0.25         # fixed low contrast used only to calibrate thet
 
 # Step indices along the ONE adaptation trajectory to checkpoint, labeled per spec - dt=0.1
 # makes these labels nominal (short/medium/long), not dimensionally exact.
-CHECKPOINTS = {'0.4s': 400, '4s': 4000, '40s': 40000}
+CHECKPOINTS = {'0.4s': 1000, '4s': 10000, '40s': 100000}
 N_STEPS = max(CHECKPOINTS.values()) + 1
 
 CONDITIONS = ['adapt CRF only', 'adapt CRF and surround']
@@ -100,12 +101,22 @@ if __name__ == "__main__":
     flank_idx = (adaptor_idx + 1) % N_RF
     probe_angles = np.linspace(0, np.pi, N_PROBES, endpoint=False)
 
+    def offline_gain_operator(g_cRF, g_surround):
+        '''(N_TOTAL, N_TOTAL) block-diagonal M = W diag(g) W.T feeding get_response_offline's
+        (I+M)^-1 fixed point - same cRF/surround block layout as frozen_derivatives'
+        full_gain_feedback: the cRF block uses g_cRF, every surround block reuses g_surround.'''
+        W = dyn.frame.W
+        M_cRF = W @ np.diag(g_cRF) @ W.T
+        M_surround = W @ np.diag(g_surround) @ W.T
+        return block_diag(M_cRF, *([M_surround] * (N_SETS - 1)))
+
     def flank_tuning_curve(cond, g_cRF, g_surround, mu_cRF, mu_surround, desc):
         '''Flank-neuron response swept over probe_angles, probe shape matching cond.'''
         curve = np.zeros(N_PROBES)
         for i, theta in enumerate(tqdm(probe_angles, desc=desc, leave=False)):
             probe = oriented_drive(theta, PROBE_CONTRAST, cond)
-            y, _, _ = get_response(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
+            M = offline_gain_operator(g_cRF, g_surround)
+            y = get_response_offline(dyn, probe, M)
             curve[i] = y[flank_idx]
         return curve
 
