@@ -41,13 +41,13 @@ from typing import Literal
 import Analytic_responses as AR
 
 N_RF       = 13                    # Number of primary neurons per receptive field
-N_SETS     = 5                     # 1 classical RF (cRF) + 6 surround sets
+N_SETS     = 6                     # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL = N_RF * N_SETS
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
-FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
+FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 
-ENSEMBLE_CONTRAST    = 1.0       # contrast of the adaptation ensembles (baseline & adaptor)
+ENSEMBLE_CONTRAST    = 0.4       # contrast of the adaptation ensembles (baseline & adaptor)
 THETA_T_CONTRAST     = 0.25      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase)
 TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
@@ -62,7 +62,7 @@ online = False
 
 N_CONTRASTS    = 20
 CRF_CONTRASTS  = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 0.8
+PROBE_CONTRAST = 0.6
 N_PROBES       = 180
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
