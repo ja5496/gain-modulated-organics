@@ -22,7 +22,7 @@ from simulation_whiten import Frame, V1Dynamics_Surround
 from Surround_simulated_responses import get_response_offline
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-N_RF, N_SETS = 13, 5
+N_RF, N_SETS = 13, 6
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 TUNING_WIDTH = 0.75

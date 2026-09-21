@@ -48,7 +48,7 @@ FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 
 ENSEMBLE_CONTRAST    = 0.4       # contrast of the adaptation ensembles (baseline & adaptor)
-THETA_T_CONTRAST     = 0.25      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase)
+THETA_T_CONTRAST     = 0.4      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase)
 TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
@@ -94,9 +94,9 @@ CONDITIONS = ['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt C
 ACTIVE_CONDITIONS = CONDITIONS
 CONDITION_LABEL = {
     'no adaptation':          'No adaptation',
-    'adapt CRF only':         'Classical RF adapted',
+    'adapt CRF only':         'cRF adapted',
     'adapt surround only':    'Surround adapted',
-    'adapt CRF and surround': 'RF + surround adapted',
+    'adapt CRF and surround': 'cRF + surround adapted',
 }
 CONDITION_COLOR = {
     'no adaptation':          COLOR_NONE,
@@ -123,8 +123,7 @@ BIASED_FOR_COND = {
 def run_adaptation_phase(dyn, stim_gen, cond, cov_target=None):
     '''
     Simulates the adaptation state for one condition. Returns (g_cRF, g_surround, v_cRF,
-    v_surround, mu_cRF, mu_surround, stream) - stream is cached so later diagnostics can reuse
-    this exact run instead of re-simulating.
+    v_surround, mu_cRF, mu_surround, stream).
 
     "no adaptation" runs a real, unbiased ensemble to both regions - needed to calibrate
     theta_t (see dyn.calibrate_theta_t) - but still forces zero gain feedback in the returned
@@ -495,41 +494,22 @@ if __name__ == "__main__":
 
     curves_by_condition = {cond: crf_curve(cond) for cond in ACTIVE_CONDITIONS}
 
-    fig_crf, ax_crf = plt.subplots(figsize=(7, 5.5))
+    fig_combined, (ax_crf, ax_flank) = plt.subplots(1, 2, figsize=(8, 3.5))
+
     for cond in ACTIVE_CONDITIONS:
         ax_crf.plot(CRF_CONTRASTS, curves_by_condition[cond], color=CONDITION_COLOR[cond],
                     linewidth=3.5, label=CONDITION_LABEL[cond])
 
-    # Half-saturation contrast of the unadapted (control) cRF curve -- interpolated
-    # in log-contrast space between the two samples straddling half of its max.
-    control_curve = curves_by_condition['no adaptation']
-    half_max = control_curve.max() / 2.0
-    idx = np.argmax(control_curve >= half_max)
-    if idx == 0:
-        c50 = CRF_CONTRASTS[0]
-    else:
-        log_c_lo, log_c_hi = np.log10(CRF_CONTRASTS[idx - 1]), np.log10(CRF_CONTRASTS[idx])
-        r_lo, r_hi = control_curve[idx - 1], control_curve[idx]
-        log_c50 = log_c_lo + (half_max - r_lo) * (log_c_hi - log_c_lo) / (r_hi - r_lo)
-        c50 = 10 ** log_c50
-
-    ax_crf.axvline(c50, color=COLOR_NONE, linestyle='--', linewidth=1.5, alpha=0.8)
-    ax_crf.plot(c50, half_max, 'o', color=COLOR_NONE, markersize=8, zorder=5)
-    ax_crf.text(c50, 0.95, f"c50 = {c50:.3g}", transform=ax_crf.get_xaxis_transform(),
-                fontsize=11, fontweight='bold', color=COLOR_NONE, ha='center', va='top')
-
     ax_crf.set_xscale('log')
-    ax_crf.set_title("Contrast Response Functions", fontsize=16, fontweight='bold')
-    ax_crf.set_xlabel("Contrast", fontsize=14, fontweight='bold')
+    ax_crf.set_xlabel("Contrast", fontsize=20)
     ax_crf.set_yticks([])
     ax_crf.grid(False)
     ax_crf.spines['top'].set_visible(False)
     ax_crf.spines['right'].set_visible(False)
     ax_crf.spines['left'].set_visible(False)
     ax_crf.spines['bottom'].set_linewidth(2.5)
-    ax_crf.tick_params(axis='x', width=2.5, length=6, labelsize=12)
+    ax_crf.tick_params(axis='x', width=2.5, length=6, labelsize=18)
     ax_crf.legend(fontsize=10, frameon=False)
-    plt.tight_layout()
 
     # ==========================================================================
     # Figure 2 (recreated from Surround_Analytic_Responses.py, online adapted state):
@@ -681,33 +661,34 @@ if __name__ == "__main__":
     peak_shift_deg = {cond: ((peak_deg[cond] - control_peak + 90) % 180) - 90 for cond in FLANK_CONDITIONS}
 
     FLANK_LEGEND_LABEL = {
-        'no adaptation':       'No adaptation',
-        'adapt surround only': f"Surround: {peak_shift_deg['adapt surround only']:+.2f}°",
-        'adapt CRF only':      f"cRF: {peak_shift_deg['adapt CRF only']:+.2f}°",
+        'no adaptation':       None,   # redundant: this is the zero-shift reference curve
+        'adapt surround only': fr"$\Delta\theta$ = {peak_shift_deg['adapt surround only']:+.2f}°",
+        'adapt CRF only':      fr"$\Delta\theta$ = {peak_shift_deg['adapt CRF only']:+.2f}°",
     }
 
-    fig_flank, ax_flank = plt.subplots(figsize=(7, 5.5))
     for cond in FLANK_CONDITIONS:
-        ax_flank.plot(probe_angles_deg, flank_curves[cond], color=CONDITION_COLOR[cond],
-                      linewidth=3.5, label=FLANK_LEGEND_LABEL[cond])
+        plot_kwargs = dict(color=CONDITION_COLOR[cond], linewidth=3.5)
+        if FLANK_LEGEND_LABEL[cond] is not None:
+            plot_kwargs['label'] = FLANK_LEGEND_LABEL[cond]
+        ax_flank.plot(probe_angles_deg, flank_curves[cond], **plot_kwargs)
 
     ax_flank.annotate('', xy=(adaptor_deg, 0.80), xytext=(adaptor_deg, 0.94),
                        xycoords=('data', 'axes fraction'), textcoords=('data', 'axes fraction'),
                        arrowprops=dict(arrowstyle='-|>', color='black', linewidth=2.5, mutation_scale=18))
-    ax_flank.text(adaptor_deg, 0.96, "adaptor", transform=ax_flank.get_xaxis_transform(),
-                  fontsize=10, fontweight='bold', color='black', ha='center', va='bottom')
 
-    ax_flank.set_title("Tuning Curve (Flank Neuron)", fontsize=16, fontweight='bold', pad=16)
-    ax_flank.set_xlabel("stimulus orientation (deg)", fontsize=14, fontweight='bold')
+    ax_flank.set_xlabel("Stimulus Orientation", fontsize=20)
+    ax_flank.set_xlim(0, 180)
+    ax_flank.set_xticks([0, 90, 180])
+    ax_flank.set_xticklabels(['0', '90', '180'], fontsize=18)
     ax_flank.set_yticks([])
     ax_flank.grid(False)
     ax_flank.spines['top'].set_visible(False)
     ax_flank.spines['right'].set_visible(False)
     ax_flank.spines['left'].set_visible(False)
     ax_flank.spines['bottom'].set_linewidth(2.5)
-    ax_flank.tick_params(axis='x', width=2.5, length=6, labelsize=12)
-    ax_flank.legend(fontsize=15, frameon=False)
-    plt.tight_layout()
+    ax_flank.tick_params(axis='x', width=2.5, length=8)
+    ax_flank.legend(fontsize=12, frameon=False, handlelength=1.0)
+    fig_combined.tight_layout()
 
     # ==========================================================================
     # Figure 7: covariance matrices of the cRF-only stimulus ensemble vs. the network's own

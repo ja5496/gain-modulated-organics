@@ -195,7 +195,7 @@ class V1Dynamics_Surround:
         self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
         self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
         self.tau_g = 750.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
-        self.tau_v = 15.0    # time constant of excitatory neurons in normalization pool (medium to fast)
+        self.tau_v = 5.0    # time constant of excitatory neurons in normalization pool (medium to fast)
         self.tau_mu = 1000.0  # time constant of mean-response tracker (very slow, full context window needed)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)

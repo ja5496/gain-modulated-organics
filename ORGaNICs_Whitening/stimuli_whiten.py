@@ -29,7 +29,7 @@ class StimulusGenerator:
     def generate_input_ensembles(self, biased=False, mean_center=False,
                                  von_mises=False, von_mises_center=0.0,
                                  von_mises_kappa=4.0, return_angles=False, duration=20,
-                                 add_poisson_noise=False, poisson_fano=1.0):
+                                 add_poisson_noise=False, poisson_fano=0.6):
         '''
         Generate uniform or biased ensemble of input profiles
         centered at random orientations.
@@ -86,7 +86,7 @@ class StimulusGenerator:
         delta_theta = self.theta_inputs[:, np.newaxis] - centers[np.newaxis, :]
         delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
         #profiles = np.exp(self.tuning_width * np.cos(2 * delta_theta)) # RAISED COSINE PROFILE
-        profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) #+ 0.3 # GAUSSIAN PROFILE
+        profiles = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) # GAUSSIAN PROFILE
         
         # 5. Normalize, then (optionally) mean-center across the ensemble
         profiles = self.contrast * profiles / np.linalg.norm(profiles, keepdims=True, axis=0)
@@ -107,7 +107,7 @@ class StimulusGenerator:
     def generate_surround_ensembles(self, adapt_location: Literal['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
                                  biased=False, von_mises=False, von_mises_center=0.0, von_mises_kappa=4.0,
                                  return_angles=False, mean_center=False,
-                                 duration=20, add_poisson_noise=False, poisson_fano=0.2):
+                                 duration=20, add_poisson_noise=False, poisson_fano=0.6):
         '''
         Generate uniform, biased, or von Mises ensemble of raised cosine input profiles
         centered at random orientations, projected onto the N_RF receptive-field

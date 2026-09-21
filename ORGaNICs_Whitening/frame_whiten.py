@@ -362,5 +362,6 @@ if __name__ == "__main__":
     #frame = Frame(dim=13, frame_type=choice)
     #np.savetxt(f"data/frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
 
-    save_uniform_target_covariance(N_RF=13)
+    compute_uniform_target_covariance()
+    #save_uniform_target_covariance(N_RF=13)
 
