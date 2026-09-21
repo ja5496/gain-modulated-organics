@@ -351,21 +351,30 @@ if __name__ == "__main__":
     # all the same (N_RF, N_RF) shape regardless of the frame's K, since J and A both live in
     # primary-neuron space.
     # ==========================================================================
-    all_vals = np.concatenate([results[name]['Cyy_final'].ravel() for name in frame_paths])
-    vmin, vmax = all_vals.min(), all_vals.max()
+    # Each panel gets its own colorbar, auto-scaled to its own min/max - Cxx_raw and the three
+    # Cyy_final variants can differ by orders of magnitude, and a shared scale flattens whichever
+    # matrix is smaller down to a single visible color.
+    fig3, axes3 = plt.subplots(1, 4, figsize=(19, 5))
+    ax_in, *axes_out = axes3
+    im_in = ax_in.imshow(Cxx_raw, cmap='viridis', aspect='auto')
+    fig3.colorbar(im_in, ax=ax_in, fraction=0.046, pad=0.04)
+    ax_in.set_title("Input ($C_{xx}$)", fontsize=13, fontweight='bold')
+    ax_in.set_xlabel("Neuron index", fontsize=11, fontweight='bold')
+    ax_in.set_ylabel("Neuron index", fontsize=11, fontweight='bold')
+    for spine in ax_in.spines.values():
+        spine.set_edgecolor('black')
+        spine.set_linewidth(1.5)
 
-    fig3, axes3 = plt.subplots(1, 3, figsize=(15, 5))
-    im3 = None
-    for ax, name in zip(axes3, frame_paths):
-        im3 = ax.imshow(results[name]['Cyy_final'], cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
+    for ax, name in zip(axes_out, frame_paths):
+        im = ax.imshow(results[name]['Cyy_final'], cmap='viridis', aspect='auto')
+        fig3.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         ax.set_title(VARIANT_LABEL[name], fontsize=13, fontweight='bold')
         ax.set_xlabel("Neuron index", fontsize=11, fontweight='bold')
         ax.set_ylabel("Neuron index", fontsize=11, fontweight='bold')
         for spine in ax.spines.values():
             spine.set_edgecolor('black')
             spine.set_linewidth(1.5)
-    fig3.colorbar(im3, ax=axes3.ravel().tolist(), fraction=0.03, pad=0.02)
-    fig3.suptitle("Final Transformed Response Covariance ($C_{yy}$)", fontsize=15, fontweight='bold')
+    fig3.suptitle("Input vs. Final Transformed Response Covariance ($C_{xx}$ vs. $C_{yy}$)", fontsize=15, fontweight='bold')
 
     plt.show()
 

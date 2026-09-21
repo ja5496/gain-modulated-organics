@@ -24,15 +24,15 @@ from Surround_simulated_responses import get_response_offline
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 N_RF, N_SETS = 13, 6
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 TUNING_WIDTH = 0.75
 THETA_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
 
 ADAPTOR_THETA = np.pi / 2       # radians (centered in the [0, pi) probe sweep -> mid-plot on x-axis)
 ADAPTOR_CONTRAST = 1.0
-PROBE_CONTRAST = 0.8
+PROBE_CONTRAST = 0.6
 N_PROBES = 90
-THETA_T_CONTRAST = 0.25         # fixed low contrast used only to calibrate theta_t
+THETA_T_CONTRAST = 0.6         # fixed low contrast used only to calibrate theta_t
 
 # Step indices along the ONE adaptation trajectory to checkpoint, labeled per spec - dt=0.1
 # makes these labels nominal (short/medium/long), not dimensionally exact.
@@ -61,7 +61,7 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     (stim_gen is only ever used for this) and returns the (zero-gain, baseline-mu) reference
     state for the non-adapted control curve: (g_cRF, g_surround, mu_cRF, mu_surround).'''
     if cond == 'no adaptation':
-        stream = stim_gen.generate_surround_ensembles('no adaptation', add_poisson_noise=True)
+        stream = stim_gen.generate_surround_ensembles('no adaptation', add_poisson_noise=False)
         (_, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
          mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
         assert np.all(g_cRF_hist == 0) and np.all(g_surround_hist == 0), (

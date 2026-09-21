@@ -45,12 +45,11 @@ N_SETS     = 6                     # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL = N_RF * N_SETS
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_high_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 
-ENSEMBLE_CONTRAST    = 0.4       # contrast of the adaptation ensembles (baseline & adaptor)
-THETA_T_CONTRAST     = 0.4      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase)
+ENSEMBLE_CONTRAST    = 1.0       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 500000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
+ADAPT_STREAM_LENGTH  = 200000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
 N_SETTLE_STEPS       = 1500     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
@@ -97,6 +96,7 @@ CONDITION_LABEL = {
     'adapt CRF only':         'cRF adapted',
     'adapt surround only':    'Surround adapted',
     'adapt CRF and surround': 'cRF + surround adapted',
+    'uniform adaptation':     'Uniform adaptation',   # Figure 2 only - see run_adaptation_phase
 }
 CONDITION_COLOR = {
     'no adaptation':          COLOR_NONE,
@@ -104,71 +104,63 @@ CONDITION_COLOR = {
     'adapt surround only':    COLOR_NONCRF,
     'adapt CRF and surround': COLOR_BOTH,
 }
-# "no adaptation" -> unbiased ensemble to both regions: the zero-gain-feedback control condition,
-# and also what run_adaptation_phase uses to calibrate theta_t (see below).
+# "no adaptation" -> unbiased ensemble to both regions: the zero-gain-feedback control
+# condition, used everywhere except Figure 2. Its gains are analytically known to be zero, so
+# run_adaptation_phase skips simulating it entirely (see below).
+#
+# "uniform adaptation" -> the same unbiased ensemble, but genuinely adapted (real, non-zero
+# gain feedback) - used ONLY by Figure 2's tuning-curve normalization in place of the zero-gain
+# reference (not part of ACTIVE_CONDITIONS, so it doesn't touch any other figure).
 ADAPT_LOCATION_FOR_COND = {
     'no adaptation':          'adapt CRF and surround',
     'adapt CRF only':         'adapt CRF only',
     'adapt surround only':   'adapt surround only',
     'adapt CRF and surround': 'adapt CRF and surround',
+    'uniform adaptation':     'adapt CRF only',
 }
 BIASED_FOR_COND = {
     'no adaptation':          False,
     'adapt CRF only':         True,
     'adapt surround only':    True,
     'adapt CRF and surround': True,
+    'uniform adaptation':     False,
 }
 
 
-def run_adaptation_phase(dyn, stim_gen, cond, cov_target=None):
+def run_adaptation_phase(dyn, stim_gen, cond):
     '''
     Simulates the adaptation state for one condition. Returns (g_cRF, g_surround, v_cRF,
     v_surround, mu_cRF, mu_surround, stream).
 
-    "no adaptation" runs a real, unbiased ensemble to both regions - needed to calibrate
-    theta_t (see dyn.calibrate_theta_t) - but still forces zero gain feedback in the returned
-    values: it's the pure-normalization control condition, not genuine adaptation. Runs before
-    the other 3 conditions (first in CONDITIONS), so they adapt against the calibrated target.
-    Correctness of the calibration depends on THIS run's own g_cRF/g_surround having stayed at
-    exactly zero throughout - guaranteed by theta_t's sentinel value at V1Dynamics_Surround
-    construction (see there), not by anything in this function.
+    "no adaptation" is the zero-gain-feedback control condition: an unbiased ensemble drives no
+    adaptation by construction, so its steady state (all gains at zero) is already known
+    analytically - no adaptation-phase simulation is run for it at all. crf_curve/
+    crf_tuning_curves below still probe it exactly like any other condition, via
+    get_response_offline/online at g=0.
 
-    This reference stream is generated at THETA_T_CONTRAST, not ENSEMBLE_CONTRAST - stim_gen's
-    own contrast is temporarily swapped for this one call and restored immediately after, so the
-    calibration measures variance against a fixed internal prior rather than against whatever
-    contrast the actual experiment happens to use for its adaptation ensembles. (Nothing else
-    about the stream changes: same adapt_location/biased/duration/noise as the other conditions.)
+    "uniform adaptation" is the genuinely-adapted counterpart of that same unbiased ensemble
+    (real, non-zero gain feedback) - used only by Figure 2, not part of ACTIVE_CONDITIONS, so
+    it's only ever requested there.
 
-    For the other three conditions, whichever region does NOT get the biased/adaptor ensemble only
-    sees the flat, orientation-less baseline, so its gain feedback is forced to zero too.
+    theta_t must already be calibrated (see dyn.calibrate_theta_t, called once in __main__
+    before any condition runs) since dg/dt depends on it from the very first time step -
+    calibrate_theta_t's uniform_target branch depends only on the target covariance, not on any
+    run's data, so it no longer needs a dedicated calibration run.
+
+    For 'adapt CRF only' / 'adapt surround only', whichever region does NOT get the
+    biased/adaptor ensemble only sees the flat, orientation-less baseline, so its gain
+    feedback is forced to zero too.
     '''
     K, N_RF = dyn.frame.K, dyn.N_RF
 
     if cond == 'no adaptation':
-        true_contrast = stim_gen.contrast
-        stim_gen.contrast = THETA_T_CONTRAST
-        try:
-            stream, centers = stim_gen.generate_surround_ensembles(
-                ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
-                add_poisson_noise=True, return_angles=True)
-        finally:
-            stim_gen.contrast = true_contrast
-    else:
-        stream, centers = stim_gen.generate_surround_ensembles(
-            ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
-            add_poisson_noise=True, return_angles=True)
-
-    if cond == 'no adaptation':
-        (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-         mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
-        SIM_HISTORY[cond] = dict(y_hist=y_hist, g_cRF_hist=g_cRF_hist,
-                                  g_surround_hist=g_surround_hist, stream=stream)
-
-        dyn.calibrate_theta_t(C_zz_uniform=cov_target, uniform_target=True)
-
         zeros_K = np.zeros(K)
-        return (zeros_K, zeros_K, v_cRF_hist[:, -1], v_surround_hist[:, -1],
-                mu_cRF_hist[:, -1], mu_surround_hist[:, -1], (stream, centers))
+        zeros_N = np.zeros(N_RF)
+        return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N, (None, None)
+
+    stream, centers = stim_gen.generate_surround_ensembles(
+        ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
+        add_poisson_noise=False, return_angles=True)
 
     (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
      mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
@@ -368,11 +360,14 @@ if __name__ == "__main__":
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
     crf_target_idx = CRF_IDX * N_RF + adaptor_idx   # num_angles == N_RF, so this is an exact match
 
+    print("Calibrating theta_t from the uniform target covariance...")
+    dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
+
     print("Running adaptation phase for each condition...")
     frozen_gains = {}
     for cond in ACTIVE_CONDITIONS:
         print(f"  Adapting: {CONDITION_LABEL[cond]}")
-        frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond, dyn.uniform_target_covariance)
+        frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond)
 
     # ==========================================================================
     # Diagnostic: theoretical optimal g_cRF (Analytic_responses.get_optimal_gains_target),
@@ -508,7 +503,7 @@ if __name__ == "__main__":
 
     # ==========================================================================
     # Figure 2 (recreated from Surround_Analytic_Responses.py, online adapted state):
-    # cRF tuning curves, no-adaptation vs. cRF-ONLY-adapted (surround left at baseline, so
+    # cRF tuning curves, uniform-adapted vs. cRF-ONLY-adapted (surround left at baseline, so
     # any tuning-curve change is due entirely to the cRF's own local gain feedback, not
     # surround-driven suppression). Unlike that script's get_response_moments (assumes v
     # instantly factorizes the covariance transform) or get_response (assumes v is frozen at
@@ -523,9 +518,15 @@ if __name__ == "__main__":
     probe_angles_deg = np.degrees(probe_angles)
     adaptor_deg = np.degrees(adaptor_rad)
 
-    _, _, _, _, _, _, (_, centers_none) = frozen_gains['no adaptation']
+    # Only Figure 2 needs the genuinely-adapted "uniform adaptation" state (real gain feedback
+    # to the unbiased ensemble) - run once here, not in the main ACTIVE_CONDITIONS loop above,
+    # so it never touches the contrast-response or flank-neuron figures.
+    print(f"  Adapting: {CONDITION_LABEL['uniform adaptation']}")
+    frozen_gains['uniform adaptation'] = run_adaptation_phase(dyn, stim_gen, 'uniform adaptation')
+
+    _, _, _, _, _, _, (_, centers_uniform) = frozen_gains['uniform adaptation']
     _, _, _, _, _, _, (_, centers_crf)  = frozen_gains['adapt CRF only']
-    uni_angles_deg  = np.degrees(centers_none)   # stimulus centers actually shown during that run
+    uni_angles_deg  = np.degrees(centers_uniform)   # stimulus centers actually shown during that run
     bias_angles_deg = np.degrees(centers_crf)
 
     def crf_tuning_curves(cond):
@@ -546,8 +547,9 @@ if __name__ == "__main__":
             resp[:, i] = y[crf_slice]
         return resp
 
-    tc_none = crf_tuning_curves('no adaptation')
-    tc_crf  = crf_tuning_curves('adapt CRF only')
+    tc_uniform = crf_tuning_curves('uniform adaptation')
+    tc_crf_only     = crf_tuning_curves('adapt CRF only')
+    tc_crf_surround = crf_tuning_curves('adapt CRF and surround')
 
     def bin_by_preference(response, neuron_preferences, n_bins=N_BINS):
         '''Matches Surround_Analytic_Responses.py's bin_by_preference.'''
@@ -561,15 +563,15 @@ if __name__ == "__main__":
                 binned[b, :] = np.mean(response[mask, :], axis=0)
         return binned
 
-    binned_none = bin_by_preference(tc_none, tunings.theta)
-    binned_crf  = bin_by_preference(tc_crf,  tunings.theta)
+    binned_uniform = bin_by_preference(tc_uniform, tunings.theta)
+    binned_crf     = bin_by_preference(tc_crf_only,     tunings.theta)
 
-    # Normalize each neuron's curve (both panels) to ITS OWN non-adapted peak response, not a
-    # min/max rescale - preserves the true (non-forced-to-0) floor and makes both panels directly
-    # comparable as "fraction of that neuron's unadapted peak firing rate."
-    peak_none = np.max(binned_none, axis=1, keepdims=True)
-    norm_none = binned_none / (peak_none + 1e-12)
-    norm_crf  = binned_crf  / (peak_none + 1e-12)
+    # Normalize each neuron's curve (both panels) to ITS OWN uniform-adapted peak response, not
+    # a min/max rescale - preserves the true (non-forced-to-0) floor and makes both panels
+    # directly comparable as "fraction of that neuron's uniform-adapted peak firing rate."
+    peak_uniform = np.max(binned_uniform, axis=1, keepdims=True)
+    norm_uniform = binned_uniform / (peak_uniform + 1e-12)
+    norm_crf     = binned_crf     / (peak_uniform + 1e-12)
 
     discrete_step_hist = 180 / N_RF
     bins_hist = np.linspace(0, 180, N_BINS + 1) - (discrete_step_hist / 2)
@@ -587,19 +589,19 @@ if __name__ == "__main__":
 
     axes_tc[0, 0].hist(uni_angles_deg, bins=bins_hist, weights=weights_uni, color='black', rwidth=0.9)
     axes_tc[0, 0].set_title("Uniform Ensemble", fontweight='bold', fontsize=18)
-    axes_tc[0, 0].set_ylabel("Probability", fontsize=18)
 
     axes_tc[0, 1].hist(bias_angles_deg, bins=bins_hist, weights=weights_bias, color='black', rwidth=0.9)
     axes_tc[0, 1].set_title("Biased Ensemble", fontweight='bold', fontsize=18)
 
     for ax in axes_tc[0]:
         ax.set_xlim(bins_hist[0], bins_hist[-1])
-        ax.tick_params(labelbottom=False)
+        ax.set_xticks([])
+        ax.set_yticks([])
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
     for i in range(N_BINS):
-        axes_tc[1, 0].plot(x_axis_sorted, norm_none[i][sort_idx], color=blue_colors[i], linewidth=2.0)
+        axes_tc[1, 0].plot(x_axis_sorted, norm_uniform[i][sort_idx], color=blue_colors[i], linewidth=2.0)
         axes_tc[1, 1].plot(x_axis_sorted, norm_crf[i][sort_idx],  color=blue_colors[i], linewidth=2.0)
 
     axes_tc[1, 0].set_ylabel("Response", fontsize=18)
@@ -612,6 +614,9 @@ if __name__ == "__main__":
         ax.set_xlabel("Stimulus Orientation (°)", fontsize=18)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        ax.set_xticks([-90, -45, 0, 45, 90])
+        ax.set_yticks([0, 1])
+        ax.tick_params(axis='both', labelsize=16)
 
     plt.tight_layout()
 
@@ -620,19 +625,22 @@ if __name__ == "__main__":
     # neuron), matching the style of Surround_Analytic_Responses.py's "Tuning Curve (Flank
     # Neuron)" plot exactly - only the response computation differs (here: settled RK4
     # dynamics via get_response/crf_tuning_curves; there: closed-form get_response). Reuses
-    # tc_none and tc_crf ('adapt CRF only', now identical to Figure 5's own condition) from
-    # Figure 5; only the surround-only curve is newly computed here, from an adaptation state
-    # already produced in the adaptation-phase loop above (no new simulation).
+    # tc_crf ('adapt CRF only', now identical to Figure 5's own condition) from Figure 5; the
+    # zero-gain 'no adaptation' curve costs nothing extra (crf_tuning_curves just evaluates
+    # get_response at g=0, no adaptation-phase simulation - see run_adaptation_phase), and only
+    # the surround-only curve reuses an adaptation state already produced in the
+    # adaptation-phase loop above (no new simulation).
     # ==========================================================================
     print("Computing flank-neuron tuning curves (simulated)...")
     flank_idx = (adaptor_idx - 1) % N_RF
     FLANK_CONDITIONS = ['no adaptation', 'adapt surround only', 'adapt CRF only']
 
+    tc_none = crf_tuning_curves('no adaptation')
     tc_surround_only = crf_tuning_curves('adapt surround only')
     tc_by_flank_cond = {
         'no adaptation':       tc_none,
         'adapt surround only': tc_surround_only,
-        'adapt CRF only':      tc_crf,
+        'adapt CRF only':      tc_crf_only,
     }
     flank_curves = {cond: tc_by_flank_cond[cond][flank_idx, :] for cond in FLANK_CONDITIONS}
 

@@ -80,7 +80,7 @@ class Frame:
         self.sigma = sigma
         self.centers = None  # Only set for bell-shaped frames
         if frame_type == 'mercedes':
-            self.K = int(K) if K is not None else int(self.dim * (self.dim + 1) // 2)
+            self.K = int(K) if K is not None else 4*int(self.dim * (self.dim + 1) // 2)
             print(f"Building Smooth Mercedes Frame (N={self.dim}, K={self.K})...")
             self.W = self.mercedes()
         elif frame_type == 'mercedes_tight':
@@ -302,7 +302,7 @@ def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_leng
 
     plot (bool): if True (default), shows a heatmap of the resulting covariance matrix.
     '''
-    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=1, stream_length=stream_length, contrast=0.15)
+    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=1, stream_length=stream_length, contrast=0.8)
     profiles = stim_gen.generate_surround_ensembles('adapt CRF only', biased=False, add_poisson_noise=False)  # (N_RF, T)
 
     uniform_stimuli = profiles.T  # (T, N_RF): rows = timesteps, columns = neurons, matching np.cov(rowvar=False)
@@ -348,7 +348,7 @@ def save_uniform_target_covariance(N_RF=13, out_dir="data/target_covs"):
     '''Computes the uniform target covariance and saves it to <out_dir>/uniform_target_covariance.csv.'''
     Covariance = compute_uniform_target_covariance(N_RF=N_RF)
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "uniform_target_covariance_sigma_c.csv")
+    out_path = os.path.join(out_dir, "uniform_target_covariance_high_c.csv")
     np.savetxt(out_path, Covariance, delimiter=",")
     print(f"Saved uniform target covariance ({Covariance.shape}) to {out_path}")
     return Covariance
@@ -356,12 +356,12 @@ def save_uniform_target_covariance(N_RF=13, out_dir="data/target_covs"):
 
 if __name__ == "__main__":
     np.random.seed(42)
-    #choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
-    #while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
-    #    choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
-    #frame = Frame(dim=13, frame_type=choice)
-    #np.savetxt(f"data/frames/N13_{choice}_Frame.csv", frame.W, delimiter=",")
+    choice = input("Choose frame type [mercedes/gaussian/optimal/identity]: ").strip().lower()
+    while choice not in ('mercedes', 'gaussian', 'optimal', 'identity'):
+        choice = input("Invalid choice. Enter mercedes, gaussian, identity, or optimal: ").strip().lower()
+    frame = Frame(dim=13, frame_type=choice)
+    np.savetxt(f"data/frames/N13_{choice}_K364_Frame.csv", frame.W, delimiter=",")
 
-    compute_uniform_target_covariance()
+    #compute_uniform_target_covariance()
     #save_uniform_target_covariance(N_RF=13)
 

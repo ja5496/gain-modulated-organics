@@ -158,7 +158,7 @@ class V1Dynamics:
 
 class V1Dynamics_Surround:
     def __init__(self, v1_model, frame, dt=0.1, N_RF = 13, N_SETS = 7,
-                 target_covariance_path="data/target_covs/uniform_target_covariance_high_c.csv",
+                 target_covariance_path="data/target_covs/uniform_target_covariance_mid_c.csv",
                  gains_nonneg=False):
         self.v1 = v1_model     # Refers to tunings_whiten.py
         self.frame = frame     # Overcomplete frame (W)
@@ -195,8 +195,8 @@ class V1Dynamics_Surround:
         self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
         self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
         self.tau_g = 5000.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
-        self.tau_v = 0.2    # time constant of excitatory neurons in normalization pool (medium to fast)
-        self.tau_mu = 1000.0  # time constant of mean-response tracker (very slow, full context window needed)
+        self.tau_v = 20.0    # time constant of excitatory neurons in normalization pool (medium to fast)
+        self.tau_mu = 100000.0  # time constant of mean-response tracker (very slow, full context window needed)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
         self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation
