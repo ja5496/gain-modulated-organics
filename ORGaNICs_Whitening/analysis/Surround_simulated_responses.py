@@ -45,12 +45,12 @@ N_SETS     = 6                     # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL = N_RF * N_SETS
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_high_c.csv")
 
 ENSEMBLE_CONTRAST    = 0.4       # contrast of the adaptation ensembles (baseline & adaptor)
 THETA_T_CONTRAST     = 0.4      # contrast used ONLY to calibrate theta_t (see run_adaptation_phase)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
+ADAPT_STREAM_LENGTH  = 500000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
 N_SETTLE_STEPS       = 1500     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
@@ -164,14 +164,7 @@ def run_adaptation_phase(dyn, stim_gen, cond, cov_target=None):
         SIM_HISTORY[cond] = dict(y_hist=y_hist, g_cRF_hist=g_cRF_hist,
                                   g_surround_hist=g_surround_hist, stream=stream)
 
-        assert np.all(g_cRF_hist == 0) and np.all(g_surround_hist == 0), (
-            "'no adaptation' run's own gains moved away from zero - theta_t's sentinel "
-            "(see V1Dynamics_Surround.__init__) no longer holds, or calibrate_theta_t was "
-            "already called on this dyn instance. The calibration below would be measuring a "
-            "partially-adapted reference, not a genuinely unbiased one."
-        )
-        dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist, 
-                              C_zz_uniform=cov_target, uniform_target=True, circular_target=False)
+        dyn.calibrate_theta_t(C_zz_uniform=cov_target, uniform_target=True)
 
         zeros_K = np.zeros(K)
         return (zeros_K, zeros_K, v_cRF_hist[:, -1], v_surround_hist[:, -1],
@@ -445,14 +438,16 @@ if __name__ == "__main__":
     M_opt_inv = np.linalg.inv(I_N + dyn.frame.W @ np.diag(g_optimal_cRF) @ dyn.frame.W.T)
     M_frozen_inv = np.linalg.inv(I_N + dyn.frame.W @ np.diag(frozen_g_cRF) @ dyn.frame.W.T)
 
-    vmin, vmax = stimulus_covariance.min(), stimulus_covariance.max()
     fig_fact, axes_fact = plt.subplots(1, 3, figsize=(15, 5))
     for ax, mat, title in zip(axes_fact,
                                [stimulus_covariance, M_opt_inv, M_frozen_inv],
                                ["Cov(input stimuli)",
                                 r"$(I + W\,\mathrm{diag}(g_{opt,target})\,W^T)^{-1}$",
                                 r"$(I + W\,\mathrm{diag}(g_{frozen})\,W^T)^{-1}$"]):
-        im = ax.imshow(mat, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
+        # Each panel auto-scaled to its own min/max (not a shared scale) - stimulus_covariance
+        # and the two gain-implied factorizations can differ by orders of magnitude, and a
+        # shared scale flattens whichever matrix is smaller down to a single visible color.
+        im = ax.imshow(mat, cmap='viridis', aspect='auto')
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         ax.set_title(title, fontsize=13, fontweight='bold')
         ax.set_xlabel("cRF neuron index", fontsize=11, fontweight='bold')
