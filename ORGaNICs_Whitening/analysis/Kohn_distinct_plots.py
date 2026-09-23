@@ -24,7 +24,7 @@ from Surround_simulated_responses import get_response_offline
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 N_RF, N_SETS = 13, 6
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 TUNING_WIDTH = 0.75
 THETA_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
 
@@ -34,9 +34,13 @@ PROBE_CONTRAST = 0.6
 N_PROBES = 90
 THETA_T_CONTRAST = 0.6         # fixed low contrast used only to calibrate theta_t
 
+# Conduction delay (seconds) on the surround's contribution to the cRF's normalization pool -
+# see V1Dynamics_Surround.set_surround_delay. 0.0 reproduces the pre-delay model exactly.
+SURROUND_DELAY = 4000.0
+
 # Step indices along the ONE adaptation trajectory to checkpoint, labeled per spec - dt=0.1
 # makes these labels nominal (short/medium/long), not dimensionally exact.
-CHECKPOINTS = {'0.4s': 1000, '4s': 10000, '40s': 100000}
+CHECKPOINTS = {'Short': 4000, 'Medium': 40000, 'Long': 100000}
 N_STEPS = max(CHECKPOINTS.values()) + 1
 
 CONDITIONS = ['adapt CRF only', 'adapt CRF and surround']
@@ -55,27 +59,30 @@ def oriented_drive(theta, contrast, adapt_location, baseline=0.20):
     return contrast * full / np.linalg.norm(full)
 
 
-def run_adaptation_phase(dyn, stim_gen, cond):
+def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
     '''Adapts for N_STEPS and returns {label: (g_cRF, g_surround, mu_cRF, mu_surround)} at each
     CHECKPOINT. 'no adaptation' instead calibrates theta_t from a genuinely unbiased stream
     (stim_gen is only ever used for this) and returns the (zero-gain, baseline-mu) reference
-    state for the non-adapted control curve: (g_cRF, g_surround, mu_cRF, mu_surround).'''
+    state for the non-adapted control curve: (g_cRF, g_surround, mu_cRF, mu_surround). The
+    'no adaptation' pass always runs with whatever delay dyn currently has (the caller is
+    expected to run it before calling dyn.set_surround_delay, so it establishes a clean,
+    delay-free baseline - see __main__). surround_msg_baseline is only consulted by
+    run_simulation while surround_delay>0 (see V1Dynamics_Surround.run_simulation).'''
     if cond == 'no adaptation':
         stream = stim_gen.generate_surround_ensembles('no adaptation', add_poisson_noise=False)
-        (_, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-         mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
+        (_, _, _, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+         mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream)
         assert np.all(g_cRF_hist == 0) and np.all(g_surround_hist == 0), (
             "calibration run's gains moved away from zero - theta_t sentinel no longer holds."
         )
-        dyn.calibrate_theta_t(v_cRF_hist, v_surround_hist, mu_cRF_hist, mu_surround_hist,
-                              circular_target=True)
+        dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
         zeros_K = np.zeros(dyn.frame.K)
         return zeros_K, zeros_K, mu_cRF_hist[:, -1], mu_surround_hist[:, -1]
 
     stimulus = oriented_drive(ADAPTOR_THETA, ADAPTOR_CONTRAST, cond)
     stream = np.tile(stimulus[:, None], N_STEPS)   # sustained: same stimulus every timestep
-    (_, _, _, g_cRF_hist, g_surround_hist, _, _,
-     mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
+    (_, _, _, _, _, g_cRF_hist, g_surround_hist, _, _,
+     mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream, surround_msg_baseline=surround_msg_baseline)
 
     return {label: (g_cRF_hist[:, t], g_surround_hist[:, t], mu_cRF_hist[:, t], mu_surround_hist[:, t])
             for label, t in CHECKPOINTS.items()}
@@ -91,10 +98,18 @@ if __name__ == "__main__":
                                target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
 
     print("Calibrating theta_t...")
-    baseline_state = run_adaptation_phase(dyn, stim_gen, 'no adaptation')
+    baseline_state = run_adaptation_phase(dyn, stim_gen, 'no adaptation')  # runs at surround_delay=0
 
-    print("Running adaptation phase (sustained adaptor, cRF-only and cRF+surround)...")
-    frozen_states = {cond: run_adaptation_phase(dyn, stim_gen, cond) for cond in CONDITIONS}
+    # Surround's settled non-adapting contribution, used to hold the delay buffer during the
+    # first surround_delay seconds of the adaptation runs below (see run_simulation's
+    # surround_msg_baseline docstring) - not zero, since the surround is never actually silent.
+    surround_msg_baseline = dyn._surround_msg(dyn.last_state)
+    dyn.set_surround_delay(SURROUND_DELAY)
+
+    print(f"Running adaptation phase (sustained adaptor, cRF-only and cRF+surround, "
+          f"surround_delay={SURROUND_DELAY}s)...")
+    frozen_states = {cond: run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=surround_msg_baseline)
+                      for cond in CONDITIONS}
 
     # Flank neuron: positive-angle neighbor of the adaptor (right of it on a tuning plot).
     adaptor_idx = int(np.argmin(np.abs(THETA_RF - ADAPTOR_THETA)))
@@ -129,22 +144,26 @@ if __name__ == "__main__":
                         for cond in CONDITIONS}
 
     probe_deg = np.degrees(probe_angles)
-    fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharex=True, sharey='row')
+    fig, axes = plt.subplots(2, 3, figsize=(10, 6), sharex=True, sharey='row')
     for row, cond in enumerate(CONDITIONS):
         for col, label in enumerate(CHECKPOINTS):
             ax = axes[row, col]
-            ax.plot(probe_deg, baseline_curves[cond], color='gray', ls='--', lw=1.8, label='No adaptation')
-            ax.plot(probe_deg, tuning_curves[(cond, label)], color='#36454F', lw=2.5, label='Adapted')
+            ax.plot(probe_deg, baseline_curves[cond], color='gray', ls='--', lw=3.0, label='No adaptation')
+            ax.plot(probe_deg, tuning_curves[(cond, label)], color="#89021D", lw=3.5, label='Adapted')
             ax.axvline(np.degrees(ADAPTOR_THETA), color='gray', ls=':', lw=1.2)
             if row == 0:
-                ax.set_title(label, fontsize=14, fontweight='bold')
+                ax.set_title(label, fontsize=20, fontweight='bold')
             if col == 0:
-                ax.set_ylabel(COND_LABEL[cond], fontsize=13, fontweight='bold')
-            if row == 1:
-                ax.set_xlabel('Probe orientation (deg)', fontsize=12)
+                ax.set_ylabel(COND_LABEL[cond], fontsize=20, fontweight='bold')
+            for spine in ax.spines.values():
+                spine.set_edgecolor('black')
+                spine.set_linewidth(2.0)
             ax.spines[['top', 'right']].set_visible(False)
-    axes[0, 0].legend(fontsize=10, frameon=False)
+            ax.set_xticks([0, 90, 180])
+            ax.tick_params(axis='x', labelsize=16)
+            ax.tick_params(axis='y', left=False, labelleft=False)
+    #axes[0, 0].legend(fontsize=10, frameon=False)
 
-    fig.suptitle('Flank-Neuron Tuning Curves: Adaptation Duration x Extent', fontsize=15, fontweight='bold')
+    fig.supxlabel('Stimulus Orientation (deg)', fontsize=20, fontweight='bold')
     plt.tight_layout()
     plt.show()

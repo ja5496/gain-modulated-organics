@@ -94,7 +94,7 @@ def run_adaptation(dyn, stim_gen, cond, adapt_location=None, biased=None):
     For the other conditions, whichever region does NOT get the varying/adaptor ensemble only
     sees the flat, orientation-less baseline, so its gain feedback is forced to zero too.
     '''
-    K, N_RF = dyn.frame.K, dyn.N_RF
+    K = dyn.frame.K
     adapt_location = ADAPT_LOCATION_FOR_COND[cond] if adapt_location is None else adapt_location
     biased = BIASED_FOR_COND[cond] if biased is None else biased
 
@@ -113,8 +113,8 @@ def run_adaptation(dyn, stim_gen, cond, adapt_location=None, biased=None):
             add_poisson_noise=True, return_angles=True)
 
     if cond == 'no adaptation':
-        (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-         mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
+        (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+         mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream)
         SIM_HISTORY[cond] = dict(y_hist=y_hist, g_cRF_hist=g_cRF_hist,
                                   g_surround_hist=g_surround_hist, stream=stream)
 
@@ -131,19 +131,18 @@ def run_adaptation(dyn, stim_gen, cond, adapt_location=None, biased=None):
         return (zeros_K, zeros_K, v_cRF_hist[:, -1], v_surround_hist[:, -1],
                 mu_cRF_hist[:, -1], mu_surround_hist[:, -1], (stream, centers))
 
-    (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-     mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
+    (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+     mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream)
     SIM_HISTORY[cond] = dict(y_hist=y_hist, g_cRF_hist=g_cRF_hist,
                               g_surround_hist=g_surround_hist, stream=stream)
 
-    N_TOT = dyn.N_RF * dyn.N_SETS
-    state = dyn.last_state
-    g_cRF       = state[3*N_TOT:3*N_TOT+K]
-    g_surround  = state[3*N_TOT+K:3*N_TOT+2*K]
-    v_cRF       = state[3*N_TOT+2*K:3*N_TOT+3*K]
-    v_surround  = state[3*N_TOT+3*K:3*N_TOT+4*K]
-    mu_cRF      = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
-    mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
+    unpacked = dyn.unpack_state(dyn.last_state)
+    g_cRF       = unpacked['g_cRF']
+    g_surround  = unpacked['g_surround']
+    v_cRF       = unpacked['v_cRF']
+    v_surround  = unpacked['v_surround']
+    mu_cRF      = unpacked['mu_cRF']
+    mu_surround = unpacked['mu_surround']
 
     # Confirm the fix actually holds for this condition: theta_t must sit below at least
     # SOME interneurons' achieved variance, or every gain is clipped to zero (see
@@ -299,8 +298,8 @@ if __name__ == "__main__":
         dyn.calibrate_theta_t(None, None, None, None, C_zz_uniform=C_zz_uniform,
                               uniform_target=True, circular_target=False)
 
-        (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-         mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(shared_stream)
+        (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+         mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(shared_stream)
 
         gain_steps, gain_avg = gain_subset_average(g_cRF_hist)
         error_steps, errors = whitening_error_trace(dyn, g_cRF_hist, Cxx_raw, z0)

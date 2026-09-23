@@ -26,7 +26,7 @@ from tqdm import tqdm
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics_Surround
-from Surround_simulated_responses import get_response, probe_input_drive
+from Surround_simulated_responses import get_response_offline, probe_input_drive
 
 # ---- Parameters ----
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -221,17 +221,10 @@ def Dario_fig3(dyn, stim_gen):
     dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-3, adapt_location=ADAPT_LOC))
     state_lo = dyn.last_state
 
-    K = dyn.frame.K
-    N_TOT = dyn.N_RF * dyn.N_SETS
-
     def frozen_gains_mu(state):
-        '''g_cRF, g_surround, mu_cRF, mu_surround sliced from a full V1Dynamics_Surround state
-        (layout: y,u,a | g_cRF,g_surround,v_cRF,v_surround | mu_cRF,mu_surround).'''
-        g_cRF       = state[3*N_TOT:3*N_TOT+K]
-        g_surround  = state[3*N_TOT+K:3*N_TOT+2*K]
-        mu_cRF      = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
-        mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
-        return g_cRF, g_surround, mu_cRF, mu_surround
+        '''g_cRF, g_surround, mu_cRF, mu_surround sliced from a full V1Dynamics_Surround state.'''
+        unpacked = dyn.unpack_state(state)
+        return unpacked['g_cRF'], unpacked['g_surround'], unpacked['mu_cRF'], unpacked['mu_surround']
 
     probe_contrasts   = np.logspace(np.log10(0.04), np.log10(1.0), 20)
     probe_angles_fig3 = np.linspace(0, np.pi, PROBE_RES)
@@ -252,7 +245,7 @@ def Dario_fig3(dyn, stim_gen):
         for c in tqdm(probe_contrasts, desc=f"{label} contrast sweep", leave=True):
             resp = np.zeros((N_RF, PROBE_RES))
             for i, angle in enumerate(probe_angles_fig3):
-                y, _, _ = get_response(dyn, probe_input_drive(angle, c), g_cRF, g_surround, mu_cRF, mu_surround)
+                y, _, _ = get_response_offline(dyn, probe_input_drive(angle, c), g_cRF, g_surround, mu_cRF, mu_surround)
                 resp[:, i] = y[:N_RF]
             _, mu_c, var_c = calc_moments(resp)
             mus.append(np.nanmean(mu_c))
@@ -308,8 +301,8 @@ if __name__ == "__main__":
         calib_stream = stim_gen.generate_surround_ensembles(ADAPT_LOC, add_poisson_noise=True)
     finally:
         stim_gen.contrast = true_contrast
-    (_, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-     mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(calib_stream)
+    (_, _, _, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+     mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(calib_stream)
     assert np.all(g_cRF_hist == 0) and np.all(g_surround_hist == 0), (
         "calibration run's gains moved away from zero - theta_t sentinel no longer holds "
         "(see V1Dynamics_Surround.__init__)."

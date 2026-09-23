@@ -45,11 +45,11 @@ N_SETS     = 6                     # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL = N_RF * N_SETS
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 
 ENSEMBLE_CONTRAST    = 1.0       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 200000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
+ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
 DURATION             = 200     # timesteps each individual adaptation stimulus is held for
 N_SETTLE_STEPS       = 1500     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
@@ -162,19 +162,18 @@ def run_adaptation_phase(dyn, stim_gen, cond):
         ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
         add_poisson_noise=False, return_angles=True)
 
-    (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-     mu_cRF_hist, mu_surround_hist) = dyn.run_simulation(stream)
+    (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+     mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream)
     SIM_HISTORY[cond] = dict(y_hist=y_hist, g_cRF_hist=g_cRF_hist,
                               g_surround_hist=g_surround_hist, stream=stream)
 
-    N_TOT = dyn.N_RF * dyn.N_SETS
-    state = dyn.last_state
-    g_cRF       = state[3*N_TOT:3*N_TOT+K]
-    g_surround  = state[3*N_TOT+K:3*N_TOT+2*K]
-    v_cRF       = state[3*N_TOT+2*K:3*N_TOT+3*K]
-    v_surround  = state[3*N_TOT+3*K:3*N_TOT+4*K]
-    mu_cRF      = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
-    mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
+    unpacked = dyn.unpack_state(dyn.last_state)
+    g_cRF       = unpacked['g_cRF']
+    g_surround  = unpacked['g_surround']
+    v_cRF       = unpacked['v_cRF']
+    v_surround  = unpacked['v_surround']
+    mu_cRF      = unpacked['mu_cRF']
+    mu_surround = unpacked['mu_surround']
 
     if cond == 'adapt CRF only':
         g_surround = np.zeros(K)

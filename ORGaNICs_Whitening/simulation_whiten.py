@@ -159,7 +159,7 @@ class V1Dynamics:
 class V1Dynamics_Surround:
     def __init__(self, v1_model, frame, dt=0.1, N_RF = 13, N_SETS = 7,
                  target_covariance_path="data/target_covs/uniform_target_covariance_mid_c.csv",
-                 gains_nonneg=False):
+                 gains_nonneg=False, surround_delay=0.0):
         self.v1 = v1_model     # Refers to tunings_whiten.py
         self.frame = frame     # Overcomplete frame (W)
         self.dt = dt           # Time step of simulation
@@ -178,7 +178,11 @@ class V1Dynamics_Surround:
             f"construct V1Tunings with N=N_RF (got shape {v1_model.W_yy.shape})."
         )
         self.W_yy = block_diag(*[v1_model.W_yy] * N_SETS)
-        # Normalization pool spans cRF and surround: every one of the N_TOT neurons pools together
+        # Normalization pool spans cRF and surround: every one of the N_TOT neurons pools together.
+        # Kept as a public attribute for callers that read it directly (e.g.
+        # Surround_simulated_responses.py's get_response_offline/frozen_derivatives,
+        # convergence_tests.py's analytic_response_operator) even though _derivatives itself now
+        # builds pool_cRF/pool_surround explicitly instead of matrix-multiplying by this.
         self.N_matrix = np.ones((N_TOT, N_TOT))
 
         # Target covariance of one RF's responses to a uniform ensemble (see
@@ -188,18 +192,69 @@ class V1Dynamics_Surround:
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
         )
-        
+
         self.theta_t = np.full(self.frame.K, 1.0) # Initial overestimate of target variances (not the values that will be used)
 
         self.tau_y = 0.2       # time constant of primary neuron (fast)
         self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
         self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
-        self.tau_g = 5000.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
+        self.tau_g = 2000.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
         self.tau_v = 20.0    # time constant of excitatory neurons in normalization pool (medium to fast)
         self.tau_mu = 100000.0  # time constant of mean-response tracker (very slow, full context window needed)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
         self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation
+
+        # Surround -> cRF communication delay (opt-in; surround_delay=0.0 reproduces the
+        # pre-delay model exactly - see _derivatives' n_lag==0 branch). Sampled once per outer
+        # RK4 step in run_simulation, not interpolated across substeps - matches how z_t is
+        # already held constant across k1..k4.
+        self.set_surround_delay(surround_delay)
+
+        # State-vector layout offsets - single source of truth (also used by unpack_state, so
+        # callers never need to hand-derive these themselves). u/a are split into cRF/surround
+        # pairs (see _derivatives), each N_RF-length like mu_cRF/mu_surround already are - "one
+        # shared representative copy, broadcast/tiled across N_SETS-1 surround blocks" is the
+        # same convention g_surround/v_surround/mu_surround already use.
+        K = self.frame.K
+        self._off_u_cRF = N_TOT
+        self._off_u_surround = N_TOT + N_RF
+        self._off_a_cRF = N_TOT + 2*N_RF
+        self._off_a_surround = N_TOT + 3*N_RF
+        self._off_g_cRF = N_TOT + 4*N_RF
+        self._off_g_surround = self._off_g_cRF + K
+        self._off_v_cRF = self._off_g_surround + K
+        self._off_v_surround = self._off_v_cRF + K
+        self._off_mu_cRF = self._off_v_surround + K
+        self._off_mu_surround = self._off_mu_cRF + N_RF
+        self.state_size = self._off_mu_surround + N_RF
+
+    def set_surround_delay(self, surround_delay):
+        '''Set (or change) the surround->cRF communication delay, in seconds. 0.0 (default)
+        reproduces the model's pre-delay behavior exactly. Callable after construction so a
+        caller can compare multiple delays without reconstructing/recalibrating theta_t.'''
+        assert surround_delay >= 0, f"surround_delay must be >= 0 (got {surround_delay})"
+        self.surround_delay = surround_delay
+        self.n_lag = int(round(surround_delay / self.dt))
+
+    def unpack_state(self, state):
+        '''Single source of truth for slicing a raw V1Dynamics_Surround state vector by name.
+        Prefer this over hand-deriving offsets (e.g. from dyn.last_state) - that pattern breaks
+        silently whenever the state layout changes.'''
+        N_RF, K = self.N_RF, self.frame.K
+        return dict(
+            y=state[0:self._off_u_cRF],
+            u_cRF=state[self._off_u_cRF:self._off_u_cRF+N_RF],
+            u_surround=state[self._off_u_surround:self._off_u_surround+N_RF],
+            a_cRF=state[self._off_a_cRF:self._off_a_cRF+N_RF],
+            a_surround=state[self._off_a_surround:self._off_a_surround+N_RF],
+            g_cRF=state[self._off_g_cRF:self._off_g_cRF+K],
+            g_surround=state[self._off_g_surround:self._off_g_surround+K],
+            v_cRF=state[self._off_v_cRF:self._off_v_cRF+K],
+            v_surround=state[self._off_v_surround:self._off_v_surround+K],
+            mu_cRF=state[self._off_mu_cRF:self._off_mu_cRF+N_RF],
+            mu_surround=state[self._off_mu_surround:self._off_mu_surround+N_RF],
+        )
 
     def half_wave_rectify(self, y, alpha=2.0):  # Used to estimate firing rates from membrane potential
         return (np.maximum(y,0)) ** alpha       # Rectify and raise to the power Beta (NOT input gain)
@@ -242,32 +297,63 @@ class V1Dynamics_Surround:
             "Please set either 'cicular_target' or 'uniform_target' to 'True' when calling calibrate_theta_t.")
         return self.theta_t
 
-    def _derivatives(self, state, z_t):
+    def _surround_msg(self, state):
+        '''Surround's total instantaneous local pooling contribution, Sum_surround(y_plus *
+        u_plus**2), extracted from a raw (finalized) state vector. This is the "message" that
+        surround_delay clocks between the surround and the cRF (see _derivatives). Same formula
+        as _derivatives' surround_msg_now, kept in sync manually since this runs on a finalized
+        post-RK4-step state while that one runs on a live sub-step state. 0.0 at N_SETS==1 (no
+        surround blocks exist).'''
+        N_RF, N_SETS = self.N_RF, self.N_SETS
+        if N_SETS < 2:
+            return 0.0
+        y_plus_surround = self.half_wave_rectify(state[N_RF:N_RF*N_SETS], 2.0)
+        u_plus_surround = self.half_wave_rectify(
+            state[self._off_u_surround:self._off_u_surround+N_RF], 0.5)
+        return float(np.sum(y_plus_surround * (np.tile(u_plus_surround, N_SETS - 1) ** 2)))
+
+    def _derivatives(self, state, z_t, surround_msg_delayed):
         K = self.frame.K
         N_SETS = self.N_SETS
         N_RF = self.N_RF
         N_TOT = N_RF * N_SETS
 
-        # Global variables 
-        y = state[0:N_TOT]              # Primary responses across all RFs
-        u = state[N_TOT:2*N_TOT]        # Normalization pool spanning cRF and surround
-        a = state[2*N_TOT:3*N_TOT]      # Normalization pool spanning cRF and surround
+        # Primary responses across all RFs
+        y = state[0:N_TOT]
 
-        # Local variables 
-        g_cRF = state[3*N_TOT:3*N_TOT+K]
-        g_surround = state[3*N_TOT+K:3*N_TOT+2*K]
-        v_cRF = state[3*N_TOT+2*K:3*N_TOT+3*K]
-        v_surround = state[3*N_TOT+3*K:3*N_TOT+4*K]
+        # Normalization pool, split into a cRF-gating copy and a surround-gating copy (see
+        # set_surround_delay/_surround_msg): each N_RF-length, "one shared representative copy,
+        # broadcast/tiled across N_SETS-1 surround blocks" - the same convention already used
+        # for g_surround/v_surround/mu_surround below, not a true scalar (the old single `a`'s
+        # all-entries-identical behavior was an emergent consequence of the all-ones N_matrix,
+        # not a structural guarantee worth hardcoding).
+        u_cRF = state[self._off_u_cRF:self._off_u_cRF+N_RF]
+        u_surround = state[self._off_u_surround:self._off_u_surround+N_RF]
+        a_cRF = state[self._off_a_cRF:self._off_a_cRF+N_RF]
+        a_surround = state[self._off_a_surround:self._off_a_surround+N_RF]
+
+        # Local variables
+        g_cRF = state[self._off_g_cRF:self._off_g_cRF+K]
+        g_surround = state[self._off_g_surround:self._off_g_surround+K]
+        v_cRF = state[self._off_v_cRF:self._off_v_cRF+K]
+        v_surround = state[self._off_v_surround:self._off_v_surround+K]
 
         # Slow mean trackers:
-        mu_cRF = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
-        mu_surround = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
+        mu_cRF = state[self._off_mu_cRF:self._off_mu_cRF+N_RF]
+        mu_surround = state[self._off_mu_surround:self._off_mu_surround+N_RF]
 
         # Rectifications consistent with Asit's 'Heirarchical ORGaNICs' paper
-        u_plus = self.half_wave_rectify(u, 0.5)
+        u_plus_cRF = self.half_wave_rectify(u_cRF, 0.5)
+        u_plus_surround = self.half_wave_rectify(u_surround, 0.5)
         y_plus = self.half_wave_rectify(y, 2.0)
-        a_plus = self.half_wave_rectify(a, 1.0)
+        a_plus_cRF = self.half_wave_rectify(a_cRF, 1.0)
+        a_plus_surround = self.half_wave_rectify(a_surround, 1.0)
         sqrt_y_plus = np.sqrt(y_plus)
+
+        # Full N_TOT-length view needed for the population-wide recurrent/gain-feedback terms
+        # below - built from the split blocks exactly like full_gain_feedback already
+        # concatenates cRF_gain_feedback/surround_gain_feedback further down.
+        a_plus_full = np.concatenate([a_plus_cRF] + [a_plus_surround] * (N_SETS - 1))
 
         theta_t = self.theta_t
 
@@ -299,31 +385,68 @@ class V1Dynamics_Surround:
         # old (sqrt_y_plus - sqrt_y_minus) reduced to y itself (max(y,0)-max(-y,0) = y,
         # identically), silently cancelling the rectification. Matches V1Dynamics's own
         # (already-correct) recurrent_drive line above.
-        recurrent_drive = (1.0 / (1.0 + a_plus)) * (self.W_yy @ sqrt_y_plus)
+        recurrent_drive = (1.0 / (1.0 + a_plus_full)) * (self.W_yy @ sqrt_y_plus)
         input_drive = self.beta * z_t
 
         # Local gain feedback matrix that can be applied to the full y dynamics
-        full_gain_feedback = (a_plus / (1 + a_plus)) * np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
+        full_gain_feedback = (a_plus_full / (1 + a_plus_full)) * np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
 
         sigma_term = (self.sigma / 2) ** 2
-        pool_term = self.N_matrix @ (y_plus * (u_plus ** 2))
+
+        # --- Surround-delay pooling split ---
+        # cRF's own instantaneous contribution to the shared pool - both pathways below use this
+        # fresh, at whichever state _derivatives is evaluated at (k1..k4 alike).
+        own_cRF_term = np.sum(y_plus[:N_RF] * (u_plus_cRF ** 2))
+        # Surround's total instantaneous contribution: sum over ALL N_SETS-1 surround blocks'
+        # own y_plus*u_plus**2 (shared representative u_plus_surround, tiled). 0 at N_SETS==1.
+        surround_msg_now = (np.sum(y_plus[N_RF:] * (np.tile(u_plus_surround, N_SETS - 1) ** 2))
+                             if N_SETS >= 2 else 0.0)
+
+        # Surround pathway: computed as normal, no delay - identical in value to the old single
+        # global pool_term, regardless of surround_delay/n_lag.
+        pool_surround = own_cRF_term + surround_msg_now
+
+        # cRF pathway: the surround's contribution arrives surround_delay seconds late. At
+        # n_lag==0 (the default), reuse surround_msg_now directly instead of run_simulation's
+        # once-per-step buffer sample - otherwise pool_cRF would only agree with pool_surround at
+        # the k1 evaluation point and silently diverge at k2/k3/k4 (the buffer is frozen for the
+        # whole outer step, this live value isn't), which would make surround_delay=0.0 NOT be an
+        # exact reproduction of the pre-delay model. For n_lag>0 there is no live "delayed" value
+        # to sample mid-substep, so the buffer is used as designed.
+        surround_term_for_cRF = surround_msg_now if self.n_lag == 0 else surround_msg_delayed
+        pool_cRF = own_cRF_term + surround_term_for_cRF
 
         # ORGaNICs equations taken from Asit's Heirarchical Model (with gain feedback)
         dy_dt = (-y + input_drive + recurrent_drive - full_gain_feedback) / self.tau_y
-        du_dt = (-u + sigma_term + pool_term) / self.tau_u
+        du_cRF_dt = (-u_cRF + sigma_term + pool_cRF) / self.tau_u
+        du_surround_dt = (-u_surround + sigma_term + pool_surround) / self.tau_u
         # -a + u+ + a*u+ per Asit's equation (DC_a_dynamics: -a + u+ + a⊙u+ + alpha*du/dt) --
         # raw a, not a_plus, in the multiplicative term (CHANGED FROM (1+a_plus)*u_plus).
         # Asit's own alpha=0, so the additive alpha*du/dt term is correctly absent here, not
         # a missing term.
-        da_dt = (-a + (1 + a) * u_plus) / self.tau_a
+        da_cRF_dt = (-a_cRF + (1 + a_cRF) * u_plus_cRF) / self.tau_a
+        da_surround_dt = (-a_surround + (1 + a_surround) * u_plus_surround) / self.tau_a
 
-        return np.concatenate([dy_dt, du_dt, da_dt, dg_cRF_dt, dg_surround_dt, dv_cRF_dt, dv_surround_dt, dmu_cRF_dt, dmu_surround_dt])
+        return np.concatenate([dy_dt, du_cRF_dt, du_surround_dt, da_cRF_dt, da_surround_dt,
+                                dg_cRF_dt, dg_surround_dt, dv_cRF_dt, dv_surround_dt,
+                                dmu_cRF_dt, dmu_surround_dt])
 
-    def run_simulation(self, stimulus_stream, initial_state=None):
+    def run_simulation(self, stimulus_stream, initial_state=None, surround_msg_baseline=0.0):
+        '''surround_msg_baseline: value to use for the delayed surround->cRF pooling signal
+        (see _surround_msg) for as long as fewer than n_lag steps have elapsed - i.e. before
+        there has been time for a real delayed reading to exist. Defaults to 0.0, which is only
+        exercised when surround_delay>0 (irrelevant otherwise, since n_lag==0 never reads this
+        buffer - see _derivatives). 0.0 means "surround contributes nothing yet"; callers that
+        care about physical realism should instead pass the surround's baseline (non-adapting)
+        steady-state contribution - e.g. dyn._surround_msg(dyn.last_state) after a calibration
+        run driven by a flat/non-adapting stimulus - so the pre-arrival window is continuous
+        with the actual pre-adaptor operating regime instead of an artificial "surround absent"
+        transient.'''
         N, n_steps = stimulus_stream.shape
         N_TOT = self.N_RF * self.N_SETS
         K = self.frame.K
         N_RF = self.N_RF
+        n_lag = self.n_lag
 
         assert N == N_TOT, (
             f"stimulus_stream has {N} rows but N_RF*N_SETS={N_TOT} - "
@@ -333,18 +456,25 @@ class V1Dynamics_Surround:
         if initial_state is not None:
             state = initial_state.copy()
         else:
-            state = np.zeros(3*N_TOT + 4*K + 2*N_RF)
+            state = np.zeros(self.state_size)
 
         # Tracking histories for later analysis + figures
         y_hist = np.zeros((N_TOT, n_steps))
+        u_cRF_hist = np.zeros((N_RF, n_steps))
+        u_surround_hist = np.zeros((N_RF, n_steps))
+        a_cRF_hist = np.zeros((N_RF, n_steps))
+        a_surround_hist = np.zeros((N_RF, n_steps))
         g_cRF_hist = np.zeros((K, n_steps))
         g_surround_hist = np.zeros((K, n_steps))
-        u_hist = np.zeros((N_TOT, n_steps))
-        a_hist = np.zeros((N_TOT, n_steps))
         v_cRF_hist = np.zeros((K, n_steps))
         v_surround_hist = np.zeros((K, n_steps))
         mu_cRF_hist = np.zeros((N_RF, n_steps))
         mu_surround_hist = np.zeros((N_RF, n_steps))
+
+        # Delayed-surround-message buffer (see _derivatives/_surround_msg). surround_msg_hist[t]
+        # holds the surround's total pooling contribution computed from the state AFTER step t's
+        # RK4 update - read back n_lag steps later, held at surround_msg_baseline before that.
+        surround_msg_hist = np.zeros(n_steps)
 
         mode_str = "Adaptive"
         print(f"Running {mode_str} Simulation ({n_steps} steps)...")
@@ -352,31 +482,38 @@ class V1Dynamics_Surround:
 
         for t in tqdm(range(n_steps)):
             z_t = stimulus_stream[:, t]
+            lag_idx = t - n_lag
+            surround_msg_delayed = surround_msg_hist[lag_idx] if lag_idx >= 0 else surround_msg_baseline
+
             # RK4 Simulation
-            k1 = self._derivatives(state, z_t)
-            k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t)
-            k3 = self._derivatives(state + 0.5 * self.dt * k2, z_t)
-            k4 = self._derivatives(state + self.dt * k3, z_t)
+            k1 = self._derivatives(state, z_t, surround_msg_delayed)
+            k2 = self._derivatives(state + 0.5 * self.dt * k1, z_t, surround_msg_delayed)
+            k3 = self._derivatives(state + 0.5 * self.dt * k2, z_t, surround_msg_delayed)
+            k4 = self._derivatives(state + self.dt * k3, z_t, surround_msg_delayed)
 
             state += (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
             if self.gains_nonneg:
                 # g_cRF and g_surround are contiguous in the state layout - clamp both in one call.
-                state[3*N_TOT:3*N_TOT+2*K] = np.maximum(state[3*N_TOT:3*N_TOT+2*K], 0)
+                state[self._off_g_cRF:self._off_g_cRF+2*K] = np.maximum(state[self._off_g_cRF:self._off_g_cRF+2*K], 0)
 
             y_hist[:, t] = np.maximum(state[0:N_TOT], 0)
-            u_hist[:, t] = state[N_TOT:2*N_TOT]
-            a_hist[:, t] = state[2*N_TOT:3*N_TOT]
-            g_cRF_hist[:, t] = state[3*N_TOT:3*N_TOT+K]
-            g_surround_hist[:, t] = state[3*N_TOT+K:3*N_TOT+2*K]
-            v_cRF_hist[:, t] = state[3*N_TOT+2*K:3*N_TOT+3*K]
-            v_surround_hist[:, t] = state[3*N_TOT+3*K:3*N_TOT+4*K]
-            mu_cRF_hist[:, t] = state[3*N_TOT+4*K:3*N_TOT+4*K+N_RF]
-            mu_surround_hist[:, t] = state[3*N_TOT+4*K+N_RF:3*N_TOT+4*K+2*N_RF]
+            u_cRF_hist[:, t] = state[self._off_u_cRF:self._off_u_cRF+N_RF]
+            u_surround_hist[:, t] = state[self._off_u_surround:self._off_u_surround+N_RF]
+            a_cRF_hist[:, t] = state[self._off_a_cRF:self._off_a_cRF+N_RF]
+            a_surround_hist[:, t] = state[self._off_a_surround:self._off_a_surround+N_RF]
+            g_cRF_hist[:, t] = state[self._off_g_cRF:self._off_g_cRF+K]
+            g_surround_hist[:, t] = state[self._off_g_surround:self._off_g_surround+K]
+            v_cRF_hist[:, t] = state[self._off_v_cRF:self._off_v_cRF+K]
+            v_surround_hist[:, t] = state[self._off_v_surround:self._off_v_surround+K]
+            mu_cRF_hist[:, t] = state[self._off_mu_cRF:self._off_mu_cRF+N_RF]
+            mu_surround_hist[:, t] = state[self._off_mu_surround:self._off_mu_surround+N_RF]
 
+            surround_msg_hist[t] = self._surround_msg(state)
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         self.last_state = state.copy()
-        return (y_hist, u_hist, a_hist, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-                mu_cRF_hist, mu_surround_hist)
+        return (y_hist, u_cRF_hist, u_surround_hist, a_cRF_hist, a_surround_hist,
+                g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
+                mu_cRF_hist, mu_surround_hist, surround_msg_hist)
 
