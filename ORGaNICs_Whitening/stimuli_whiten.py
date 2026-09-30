@@ -370,8 +370,9 @@ class StimulusGenerator:
         plt.tight_layout()
         plt.show()
 
-    def plot_von_mises_distributions(self, von_mises_kappa=4.0, num_samples=5000):
-        '''Plot KDE curves for von Mises @ 0°, von Mises @ 90°, and uniform.'''
+    def plot_von_mises_distributions(self, von_mises_kappa=4.0, num_samples=5000, ax=None):
+        '''Plot KDE curves for von Mises @ 0°, von Mises @ 90°, and uniform. Draws into ax if
+        given (e.g. one panel of a larger figure); otherwise makes and shows its own figure.'''
         from scipy.stats import gaussian_kde
         n = num_samples
 
@@ -398,7 +399,9 @@ class StimulusGenerator:
             aug = np.concatenate([data - 180, data, data + 180])
             return gaussian_kde(aug)(theta_deg) * 3
 
-        fig, ax = plt.subplots(figsize=(8, 4))
+        standalone = ax is None
+        if standalone:
+            fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(theta_deg, circular_kde(centers_uniform),
                 color='#CC5500',   lw=3, label='Uniform')
         ax.plot(theta_deg, circular_kde(centers_vm0),
@@ -412,8 +415,9 @@ class StimulusGenerator:
         ax.set_xlim(0, 180)
         ax.tick_params(labelsize=13)
         ax.legend(fontsize=13)
-        plt.tight_layout()
-        plt.show()
+        if standalone:
+            plt.tight_layout()
+            plt.show()
 
     def plot_contrast_distributions(self, peak_ln_contrasts=(0, -1.5, -3),
                                      contrast_sigma=1.0,
