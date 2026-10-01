@@ -47,10 +47,10 @@ CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 
-ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
+ENSEMBLE_CONTRAST    = 0.6       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 100000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
-DURATION             = 200     # timesteps each individual adaptation stimulus is held for
+ADAPT_STREAM_LENGTH  = 150000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
+DURATION             = 20     # timesteps each individual adaptation stimulus is held for
 N_SETTLE_STEPS       = 1500     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
 # If True, every probe response (contrast-response + tuning-curve figures) is computed by
@@ -61,7 +61,7 @@ online = False
 
 N_CONTRASTS    = 20
 CRF_CONTRASTS  = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 0.6
+PROBE_CONTRAST = 0.4
 N_PROBES       = 180
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
@@ -644,17 +644,16 @@ if __name__ == "__main__":
     flank_curves = {cond: tc_by_flank_cond[cond][flank_idx, :] for cond in FLANK_CONDITIONS}
 
     # Peak location per curve (parabolic interpolation around the argmax sample for
-    # sub-resolution precision - matches Surround_Analytic_Responses.py's curve_peak_deg),
-    # then the shift of each adapted condition's peak relative to the no-adaptation control,
-    # wrapped to the nearest equivalent orientation (+-90 deg).
+    # sub-resolution precision - matches Surround_Analytic_Responses.py's curve_peak_deg,
+    # except that neighbors wrap: probe_angles spans [0, 180) with endpoint=False, so the sweep
+    # is periodic and a peak at the 0/180 edge is interpolated too, which Figure 8 needs for
+    # the 0-deg neuron), then the shift of each adapted condition's peak relative to the
+    # no-adaptation control, wrapped to the nearest equivalent orientation (+-90 deg).
     def curve_peak_deg(curve):
         i = int(np.argmax(curve))
-        if 0 < i < len(curve) - 1:
-            y0, y1, y2 = curve[i - 1], curve[i], curve[i + 1]
-            denom = (y0 - 2 * y1 + y2)
-            frac = 0.5 * (y0 - y2) / denom if denom != 0 else 0.0
-        else:
-            frac = 0.0
+        y0, y1, y2 = curve[i - 1], curve[i], curve[(i + 1) % len(curve)]
+        denom = (y0 - 2 * y1 + y2)
+        frac = 0.5 * (y0 - y2) / denom if denom != 0 else 0.0
         step = probe_angles_deg[1] - probe_angles_deg[0]
         return probe_angles_deg[i] + frac * step
 
@@ -727,5 +726,81 @@ if __name__ == "__main__":
     fig_cov.suptitle(f"cRF Covariance: Stimulus vs. Adapted Response ({CONDITION_LABEL[COV_COND]})",
                       fontsize=15, fontweight='bold')
     plt.tight_layout()
+
+    # ==========================================================================
+    # Figure 8: equalization and tuning shifts, uniform-adapted vs. biased-adapted (cRF only,
+    # the same pair of conditions as Figure 2).
+    # Left: average cRF response to the biased ensemble, i.e. the 'adapt CRF only' adaptation
+    # stimuli themselves (cRF profile + surround baseline at ENSEMBLE_CONTRAST, not
+    # probe_input_drive), with gains frozen from each adapted state (get_response_offline).
+    # Each curve is normalized to mean 1, so only shape is compared - a flatter red curve than
+    # blue curve is a tendency toward equalization (population homeostasis).
+    # Right: preferred-orientation shift of each cRF neuron from the uniform-adapted to the
+    # biased-adapted state, from Figure 2's tuning curves (tc_uniform, tc_crf_only).
+    # ==========================================================================
+    print("Computing biased-ensemble average responses and tuning shifts...")
+    EQUALIZATION_UNIFORM_COND = 'uniform adaptation'
+    EQUALIZATION_BIASED_COND  = 'adapt CRF only'
+
+    def minimal_ensemble(cond):
+        '''Smallest stimulus set whose distribution equals cond's adaptation ensemble exactly,
+        built by generate_surround_ensembles itself (same routing, baseline and contrast) with
+        duration=1. Uniform: one of each of the n = num_angles angles. Biased: the generator
+        tiles every angle and then overwrites the first third of the presentations with the
+        adaptor, so P(adaptor) = 1/3 + 2/(3n) and P(other) = 2/(3n). With 3n presentations
+        that is exactly n+2 adaptors + 2 of each other angle (15 + 2*12 = 39 for n = 13),
+        which can't be reduced further when n is odd.'''
+        n = stim_gen.num_angles
+        n_stimuli = 3 * n if BIASED_FOR_COND[cond] else n
+        ensemble_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=n,
+                                         stream_length=n_stimuli, tuning_width=TUNING_WIDTH,
+                                         contrast=ENSEMBLE_CONTRAST)
+        return ensemble_gen.generate_surround_ensembles(
+            ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=1)
+
+    def ensemble_avg_response(cond, stimuli):
+        '''Average cRF response across the columns of stimuli, gains frozen from cond,
+        normalized to mean 1.'''
+        g_cRF, g_surround, _, _, _, _, _ = frozen_gains[cond]
+        M = offline_gain_operator(g_cRF, g_surround)
+        resp = np.mean([get_response_offline(dyn, s, M)[crf_slice] for s in stimuli.T], axis=0)
+        return resp / np.mean(resp)
+
+    biased_ensemble = minimal_ensemble(EQUALIZATION_BIASED_COND)   # (N_TOTAL, 3 * N_RF)
+    avg_resp_uniform_gains = ensemble_avg_response(EQUALIZATION_UNIFORM_COND, biased_ensemble)
+    avg_resp_biased_gains  = ensemble_avg_response(EQUALIZATION_BIASED_COND, biased_ensemble)
+
+    neuron_pref_rel = (np.degrees(tunings.theta) - adaptor_deg + 90) % 180 - 90
+    sort_pref = np.argsort(neuron_pref_rel)
+
+    # "Original" preference = tuning-curve peak in the uniform-adapted state; the shift is the
+    # biased-adapted peak minus it, wrapped to +-90 deg.
+    pref_uniform_deg = np.array([curve_peak_deg(tc) for tc in tc_uniform])
+    pref_biased_deg  = np.array([curve_peak_deg(tc) for tc in tc_crf_only])
+    tuning_shift_deg = (pref_biased_deg - pref_uniform_deg + 90) % 180 - 90
+    pref_uniform_rel = (pref_uniform_deg - adaptor_deg + 90) % 180 - 90
+    sort_shift = np.argsort(pref_uniform_rel)
+
+    fig_eq, (ax_eq, ax_shift) = plt.subplots(1, 2, figsize=(10, 4))
+
+    ax_eq.plot(neuron_pref_rel[sort_pref], avg_resp_uniform_gains[sort_pref], color='blue', linewidth=3.5)
+    ax_eq.plot(neuron_pref_rel[sort_pref], avg_resp_biased_gains[sort_pref], color='red', linewidth=3.5)
+    ax_eq.set_ylabel("Response Avg (norm.)", fontsize=20)
+
+    ax_shift.plot(pref_uniform_rel[sort_shift], tuning_shift_deg[sort_shift], color='red', linewidth=3.5)
+    ax_shift.set_ylabel(r"$\delta\theta$", fontsize=20)
+
+    for ax in (ax_eq, ax_shift):
+        ax.set_xlabel("Neuron Preference (°)", fontsize=20)
+        ax.set_xlim(-90, 90)
+        ax.set_xticks([-90, 0, 90])
+        ax.locator_params(axis='y', nbins=3)
+        ax.tick_params(axis='both', width=2.5, length=6, labelsize=18)
+        ax.grid(False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(2.5)
+        ax.spines['bottom'].set_linewidth(2.5)
+    fig_eq.tight_layout()
 
     plt.show()
