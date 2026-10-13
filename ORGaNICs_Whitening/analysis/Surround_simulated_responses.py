@@ -49,8 +49,8 @@ TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covar
 
 ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 75000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
-DURATION             = 20     # timesteps each individual adaptation stimulus is held for
+ADAPT_STREAM_LENGTH  = 10000  # 101920   # timesteps of adaptation stimulus (dt=0.1 -> 1092s =~ 11x tau_g)
+DURATION             = 10     # timesteps each individual adaptation stimulus is held for
 N_SETTLE_STEPS       = 1500     # timesteps to settle y/u/a to steady state per probe (dt=0.1 -> 30s)
 
 # If True, every probe response (contrast-response + tuning-curve figures) is computed by
