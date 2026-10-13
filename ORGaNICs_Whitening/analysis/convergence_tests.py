@@ -159,7 +159,7 @@ def run_adaptation(dyn, stim_gen, cond, adapt_location=None, biased=None):
 
     # g_surround/v_surround/mu_surround stay exactly zero at N_SETS=1 (see _derivatives'
     # N_SETS>=2 guard) - returned anyway so this matches the 'no adaptation' branch's 7-tuple
-    # shape above (same convention as Surround_simulated_responses.py's run_adaptation_phase).
+    # shape above (same convention as adapt_ensembles.py's run_adaptation_phase).
     return g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround, (stream, centers)
 
 # ==========================================================================
@@ -168,7 +168,7 @@ def run_adaptation(dyn, stim_gen, cond, adapt_location=None, biased=None):
 # each sampled time step is computed ANALYTICALLY from the current gains via
 #     Cyy(t) = J(t) @ A(t) @ Cxx_raw @ A(t).T @ J(t).T
 # where A(t) = (I + W diag(g_cRF(t)) W^T)^-1 is the linear gain-feedback fixed point
-# (get_response_offline's operator; see Surround_simulated_responses.py), and J(t) is the
+# (get_response_offline's operator; see response_tools.py), and J(t) is the
 # Jacobian of the divisive-normalization nonlinearity y = z'/sqrt(sigma^2 + N(z'^2)),
 # evaluated at z' = A(t) @ z0 for a single CLEAN (no Poisson noise), fixed-contrast probe z0 -
 # clean so the linearization point is deterministic rather than itself noisy, and fixed-contrast

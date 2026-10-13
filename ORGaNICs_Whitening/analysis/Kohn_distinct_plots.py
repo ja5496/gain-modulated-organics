@@ -4,8 +4,9 @@ Kohn_distinct_plots.py
 Tests whether adaptation DURATION and SPATIAL EXTENT produce distinct flank-neuron tuning-curve
 effects (Kohn 2015-style dissociation), using V1Dynamics_Surround's single continuous gain
 trajectory (one tau_g) checkpointed at three points, rather than two separate mechanisms.
-Unlike Dario_plots.py/Surround_simulated_responses.py, the adaptor here is a single SUSTAINED
-(unchanging) oriented stimulus, matching classic single-adaptor physiology paradigms.
+Unlike Dario_plots.py/adapt_ensembles.py, the adaptor here is a single SUSTAINED
+(unchanging) oriented stimulus, matching classic single-adaptor physiology paradigms (as in
+adapt_single_stimulus.py, which instead probes only the final gains of one run).
 """
 
 import os

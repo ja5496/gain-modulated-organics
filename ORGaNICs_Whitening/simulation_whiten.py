@@ -180,7 +180,7 @@ class V1Dynamics_Surround:
         self.W_yy = block_diag(*[v1_model.W_yy] * N_SETS)
         # Normalization pool spans cRF and surround: every one of the N_TOT neurons pools together.
         # Kept as a public attribute for callers that read it directly (e.g.
-        # Surround_simulated_responses.py's get_response_offline/frozen_derivatives,
+        # response_tools.py's get_response_offline/frozen_derivatives,
         # convergence_tests.py's analytic_response_operator) even though _derivatives itself now
         # builds pool_cRF/pool_surround explicitly instead of matrix-multiplying by this.
         self.N_matrix = np.ones((N_TOT, N_TOT))

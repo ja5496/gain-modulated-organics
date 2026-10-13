@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "analysis"))
 from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
-import analysis.Surround_simulated_responses as SSR
+import analysis.adapt_ensembles as AE
 from analysis import Surround_Analytic_Responses as SAR   # shared constants only (N_RF, N_SETS, ...)
 
 N_RF              = SAR.N_RF
@@ -48,7 +48,7 @@ TUNING_WIDTH      = SAR.TUNING_WIDTH
 ENSEMBLE_CONTRAST = SAR.ENSEMBLE_CONTRAST
 
 ADAPT_STREAM_LENGTH = 60000    # per-seed adapted-condition run length (dt=0.1 -> 2.4x tau_g)
-DURATION = SSR.DURATION        # 200, matches Surround_simulated_responses.py exactly
+DURATION = AE.DURATION         # matches adapt_ensembles.py
 N_SEEDS = 16
 SEEDS = list(range(N_SEEDS))
 
@@ -85,7 +85,7 @@ def main(seeds=SEEDS, adapt_stream_length=ADAPT_STREAM_LENGTH, duration=DURATION
     calib_dyn = V1Dynamics_Surround(tunings, frame, N_RF=N_RF, N_SETS=N_SETS,
                                      target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
     stim_gen.stream_length = calibration_stream_length
-    SSR.run_adaptation_phase(calib_dyn, stim_gen, 'no adaptation')
+    AE.run_adaptation_phase(calib_dyn, stim_gen, 'no adaptation')
     theta_t_shared = calib_dyn.theta_t.copy()
     if verbose:
         print(f"Calibration done in {time.time() - t_cal0:.1f}s -- theta_t: "
@@ -109,7 +109,7 @@ def main(seeds=SEEDS, adapt_stream_length=ADAPT_STREAM_LENGTH, duration=DURATION
         dyn.theta_t = theta_t_shared.copy()
 
         for cond in ADAPTED_CONDITIONS:
-            g_cRF, g_surround, *_ = SSR.run_adaptation_phase(dyn, stim_gen, cond)
+            g_cRF, g_surround, *_ = AE.run_adaptation_phase(dyn, stim_gen, cond)
             g_cRF_sum[cond] += g_cRF
             g_surround_sum[cond] += g_surround
             g_cRF_runs[cond].append(g_cRF)

@@ -343,7 +343,7 @@ if __name__ == "__main__":
 
     # Calibrate theta_t once, from a genuinely unbiased stream at a fixed low contrast (kept
     # separate from whatever contrast either figure below actually probes at - see
-    # Surround_simulated_responses.run_adaptation_phase's 'no adaptation' condition, same idea).
+    # adapt_ensembles.run_adaptation_phase's 'no adaptation' condition, same idea).
     # Shared by both figures, per the model's "fixed developmental prior" design
     # (docs/whitening_adaptation_notes.md).
     print("Calibrating theta_t...")

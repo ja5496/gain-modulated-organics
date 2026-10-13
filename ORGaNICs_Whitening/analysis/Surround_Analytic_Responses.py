@@ -24,7 +24,7 @@ import os
 import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # analysis/ -- for `import Surround_simulated_responses`
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # analysis/ -- for `import adapt_ensembles`
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -34,7 +34,7 @@ from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from analysis import Analytic_responses as ar
-import Surround_simulated_responses as SSR   # reuses run_adaptation_phase -- see gain computation below
+import adapt_ensembles as AE   # shared ADAPT_STREAM_LENGTH / DURATION
 from typing import Literal
 from scipy.linalg import block_diag
 
@@ -85,7 +85,7 @@ def probe_local_profile(input_theta, contrast, tuning_width=TUNING_WIDTH):
 def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation
     state. Normalizes the FULL replicated (N_TOTAL,) vector to unit norm, matching
-    Surround_simulated_responses.py's own probe_input_drive exactly -- normalizing each local
+    StimulusGenerator.oriented_drive(..., 'adapt CRF and surround') exactly -- normalizing each local
     block to unit norm BEFORE replicating (the old behavior here) inflates the total probe energy
     by an extra factor of sqrt(N_SETS), which shifts the effective semi-saturation contrast by
     that same factor (c50 = sigma/sqrt(N_SETS) instead of sigma, for the M=0 baseline). That's
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     M_by_condition = {cond: M_from_cached(cond) for cond in CONDITIONS}
 
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF,
-                                 stream_length=SSR.ADAPT_STREAM_LENGTH,
+                                 stream_length=AE.ADAPT_STREAM_LENGTH,
                                  tuning_width=TUNING_WIDTH, contrast=ENSEMBLE_CONTRAST)
     adaptor_idx = N_RF // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
@@ -251,11 +251,11 @@ if __name__ == "__main__":
     # PCA whitening diagnostic below -- a representative ensemble draw, not tied to gain
     # computation (gains come from the cache above), so a single fresh, noisy draw is enough here.
     stream_uni, centers_uni = stim_gen.generate_surround_ensembles(
-        'adapt CRF and surround', biased=False, duration=SSR.DURATION,
+        'adapt CRF and surround', biased=False, duration=AE.DURATION,
         add_poisson_noise=True, return_angles=True)
     stimuli_uni = list(stream_uni[:N_RF, :].T)
     stream_bias, centers_bias = stim_gen.generate_surround_ensembles(
-        'adapt CRF and surround', biased=True, duration=SSR.DURATION,
+        'adapt CRF and surround', biased=True, duration=AE.DURATION,
         add_poisson_noise=True, return_angles=True)
     stimuli_bias = list(stream_bias[:N_RF, :].T)
 

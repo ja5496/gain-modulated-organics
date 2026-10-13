@@ -1,5 +1,5 @@
 '''
-Surround_simulated_responses.py
+adapt_ensembles.py
 
 Simulates neural firing rates using a model of joint adaptation + normalization.
 Interactions between classical receptive field (cRF) neurons and surround (non-cRF) neurons are modeled.
