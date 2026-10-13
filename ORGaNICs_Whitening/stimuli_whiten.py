@@ -214,10 +214,35 @@ class StimulusGenerator:
 
         if return_angles:
             return profiles, centers
-        
+
 
         return profiles
-    
+
+    def oriented_drive(self, theta, contrast, adapt_location: Literal['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
+                       baseline=0.20):
+        '''
+        Single oriented stimulus centered at theta (radians): a Gaussian profile over the N_RF
+        neurons' preferences, routed into adapt_location exactly as in generate_surround_ensembles
+        (flat baseline elsewhere), normalized to unit length and scaled by contrast.
+
+        Returns:
+            np.ndarray: Shape ( N_RF * N_SETS , )
+        '''
+        delta = (self.theta_RF - theta + np.pi / 2) % np.pi - np.pi / 2
+        profile = np.exp(-delta**2 / (2 * self.tuning_width**2))
+        base = np.full(self.N_RF, baseline)
+        match adapt_location:
+            case 'no adaptation':
+                full = np.concatenate([base] * self.N_SETS)
+            case 'adapt CRF only':
+                full = np.concatenate([profile] + [base] * (self.N_SETS - 1))
+            case 'adapt surround only':
+                full = np.concatenate([base] + [profile] * (self.N_SETS - 1))
+            case 'adapt CRF and surround':
+                full = np.concatenate([profile] * self.N_SETS)
+            case _:
+                raise ValueError(f"Unknown adapt_location: {adapt_location!r}")
+        return contrast * full / np.linalg.norm(full)
 
     def generate_contrast_stream(self, peak_ln_contrast, adapt_location, contrast_sigma=1.0,
                                  return_metadata=False, **kwargs):

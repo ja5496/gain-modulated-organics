@@ -47,18 +47,6 @@ CONDITIONS = ['adapt CRF only', 'adapt CRF and surround']
 COND_LABEL = {'adapt CRF only': 'cRF only', 'adapt CRF and surround': 'cRF + Surround'}
 
 
-def oriented_drive(theta, contrast, adapt_location, baseline=0.20):
-    '''Gaussian tuning-curve profile at theta, routed to adapt_location's region(s) (flat
-    baseline elsewhere), tiled across N_SETS, normalized and contrast-scaled. Used for both
-    the sustained adaptor and the (spatially-matched) probe stimuli.'''
-    delta = (THETA_RF - theta + np.pi / 2) % np.pi - np.pi / 2
-    profile = np.exp(-delta**2 / (2 * TUNING_WIDTH**2))
-    base = np.full(N_RF, baseline)
-    full = (np.concatenate([profile] + [base] * (N_SETS - 1)) if adapt_location == 'adapt CRF only'
-            else np.concatenate([profile] * N_SETS))
-    return contrast * full / np.linalg.norm(full)
-
-
 def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
     '''Adapts for N_STEPS and returns {label: (g_cRF, g_surround, mu_cRF, mu_surround)} at each
     CHECKPOINT. 'no adaptation' instead calibrates theta_t from a genuinely unbiased stream
@@ -79,7 +67,7 @@ def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
         zeros_K = np.zeros(dyn.frame.K)
         return zeros_K, zeros_K, mu_cRF_hist[:, -1], mu_surround_hist[:, -1]
 
-    stimulus = oriented_drive(ADAPTOR_THETA, ADAPTOR_CONTRAST, cond)
+    stimulus = stim_gen.oriented_drive(ADAPTOR_THETA, ADAPTOR_CONTRAST, cond)
     stream = np.tile(stimulus[:, None], N_STEPS)   # sustained: same stimulus every timestep
     (_, _, _, _, _, g_cRF_hist, g_surround_hist, _, _,
      mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream, surround_msg_baseline=surround_msg_baseline)
@@ -129,7 +117,7 @@ if __name__ == "__main__":
         '''Flank-neuron response swept over probe_angles, probe shape matching cond.'''
         curve = np.zeros(N_PROBES)
         for i, theta in enumerate(tqdm(probe_angles, desc=desc, leave=False)):
-            probe = oriented_drive(theta, PROBE_CONTRAST, cond)
+            probe = stim_gen.oriented_drive(theta, PROBE_CONTRAST, cond)
             M = offline_gain_operator(g_cRF, g_surround)
             y = get_response_offline(dyn, probe, M)
             curve[i] = y[flank_idx]
