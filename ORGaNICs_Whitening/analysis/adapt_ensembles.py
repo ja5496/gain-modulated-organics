@@ -11,7 +11,10 @@ surround sets, all sharing the same tuning-curve basis and per-RF frame.
 Methodology:
 1. The cRF adapts to a uniform and to a biased (adaptor-heavy) ensemble of gratings, with a flat
    baseline in the surround (generate_surround_ensembles). The biased stimulus sequence is also
-   re-run with gains frozen at zero: the non-adapted network.
+   re-run with gains frozen at zero: the non-adapted network. In every run, the surround's
+   contribution to the cRF's normalization pool arrives SURROUND_DELAY seconds late (as in
+   Kohn_distinct_plots.py); until it does, the cRF sees the surround's settled contribution under
+   a flat, non-adapting stimulus.
 2. Tuning curves are recorded during each run: over its 2nd half, the response to every
    presentation is read at the presentation's last timestep and averaged per orientation.
 3. Ensemble statistics (mean responses, covariances) use the smallest stimulus set with exactly
@@ -46,6 +49,11 @@ TUNING_WIDTH         = 0.75
 ADAPT_STREAM_LENGTH  = 10000     # timesteps of each adaptation run (dt=0.1 -> 1000s)
 DURATION             = 10        # timesteps each individual adaptation stimulus is held for
 
+# Conduction delay (seconds) on the surround's contribution to the cRF's normalization pool, as in
+# Kohn_distinct_plots.py - see V1Dynamics_Surround.set_surround_delay. 0.0 reproduces the
+# pre-delay model exactly.
+SURROUND_DELAY       = 4000.0
+
 CONDITION_LABEL = {
     'no adaptation':          'No adaptation',
     'adapt CRF only':         'cRF adapted',
@@ -78,7 +86,7 @@ GAIN_TIMECOURSE_COND = BIASED_COND    # condition whose gains are plotted vs tim
 SIM_HISTORY = {}   # full history of each adaptation run (y, gains, stream, centers), keyed by condition
 
 
-def run_adaptation_phase(dyn, stim_gen, cond):
+def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
     '''
     Adapts to cond's ensemble from a zero initial state and returns the final (g_cRF, g_surround,
     v_cRF, v_surround, mu_cRF, mu_surround, (stream, centers)); the full run is kept in
@@ -87,6 +95,8 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     'no adaptation' returns zeros without simulating (zero gain feedback is its known steady
     state). For single-region conditions, the region that doesn't get the ensemble only sees the
     flat baseline, so its gains, v and mu are zeroed. theta_t must already be calibrated.
+    surround_msg_baseline holds the delayed surround->cRF pooling signal until a real delayed
+    reading exists (only read while dyn's surround_delay > 0; see settled_surround_msg).
     '''
     K, N_RF = dyn.frame.K, dyn.N_RF
 
@@ -99,7 +109,8 @@ def run_adaptation_phase(dyn, stim_gen, cond):
         ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
         add_poisson_noise=False, return_angles=True)
 
-    (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, _, _, _, _, _) = dyn.run_simulation(stream)
+    (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, _, _, _, _, _) = dyn.run_simulation(
+        stream, surround_msg_baseline=surround_msg_baseline)
     SIM_HISTORY[cond] = dict(y_hist=y_hist, g_cRF_hist=g_cRF_hist,
                               g_surround_hist=g_surround_hist, stream=stream, centers=centers)
 
@@ -132,7 +143,7 @@ def run_adaptation_phase(dyn, stim_gen, cond):
     return g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround, (stream, centers)
 
 
-def run_gains_frozen(dyn, stream):
+def run_gains_frozen(dyn, stream, surround_msg_baseline=0.0):
     '''
     Runs stream with dg/dt = 0 (tau_g -> inf), so the gains stay at their zero initial value: the
     non-adapted network seeing exactly the same stimuli. Returns y_hist (rectified y).
@@ -140,11 +151,25 @@ def run_gains_frozen(dyn, stream):
     tau_g = dyn.tau_g
     dyn.tau_g = np.inf
     try:
-        (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, *_) = dyn.run_simulation(stream)
+        (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, *_) = dyn.run_simulation(
+            stream, surround_msg_baseline=surround_msg_baseline)
     finally:
         dyn.tau_g = tau_g
     assert not g_cRF_hist.any() and not g_surround_hist.any(), "gains moved during the gains-frozen run"
     return y_hist
+
+
+def settled_surround_msg(dyn, stim_gen, n_steps=ADAPT_STREAM_LENGTH):
+    '''
+    Surround's settled contribution to the normalization pool under the flat, orientation-less
+    baseline (gains frozen at zero, no delay). Holds the delayed surround->cRF signal until the
+    real one arrives - not zero, since the surround is never actually silent (as in
+    Kohn_distinct_plots.py).
+    '''
+    assert dyn.n_lag == 0, "settle the baseline before setting the surround delay"
+    flat = stim_gen.oriented_drive(0.0, ENSEMBLE_CONTRAST, 'no adaptation')   # baseline everywhere; theta unused
+    run_gains_frozen(dyn, np.tile(flat[:, None], n_steps))
+    return dyn._surround_msg(dyn.last_state)
 
 
 def orientation_index(angles, num_angles):
@@ -247,14 +272,22 @@ if __name__ == "__main__":
     print("Calibrating theta_t from the uniform target covariance...")
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
 
-    print("Running adaptation phase...")
+    print("Settling the surround's non-adapting normalization signal (no delay)...")
+    surround_msg_baseline = settled_surround_msg(dyn, stim_gen)
+    dyn.set_surround_delay(SURROUND_DELAY)
+    if dyn.n_lag >= ADAPT_STREAM_LENGTH:
+        print(f"  NOTE: surround_delay ({SURROUND_DELAY:g}s) >= run length ({ADAPT_STREAM_LENGTH * dyn.dt:g}s): "
+              f"the cRF only ever sees this baseline surround signal.")
+
+    print(f"Running adaptation phase (surround_delay={SURROUND_DELAY:g}s)...")
     final_gains = {}
     for cond in (UNIFORM_COND, BIASED_COND):
         print(f"  Adapting: {CONDITION_LABEL[cond]}")
-        final_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond)
+        final_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=surround_msg_baseline)
 
     print("  Non-adapted: re-running the biased stimulus sequence with gains frozen at zero...")
-    y_hist_nonadapted = run_gains_frozen(dyn, SIM_HISTORY[BIASED_COND]['stream'])
+    y_hist_nonadapted = run_gains_frozen(dyn, SIM_HISTORY[BIASED_COND]['stream'],
+                                         surround_msg_baseline=surround_msg_baseline)
 
     # ==========================================================================
     # Diagnostic: theoretical optimal g_cRF (Analytic_responses.get_optimal_gains_target) for the
