@@ -17,9 +17,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
-from scipy.linalg import block_diag
 from simulation_whiten import Frame, V1Dynamics_Surround
-from Surround_simulated_responses import get_response_offline
+from response_tools import get_response_offline, offline_gain_operator
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 N_RF, N_SETS = 13, 6
@@ -104,21 +103,12 @@ if __name__ == "__main__":
     flank_idx = (adaptor_idx + 1) % N_RF
     probe_angles = np.linspace(0, np.pi, N_PROBES, endpoint=False)
 
-    def offline_gain_operator(g_cRF, g_surround):
-        '''(N_TOTAL, N_TOTAL) block-diagonal M = W diag(g) W.T feeding get_response_offline's
-        (I+M)^-1 fixed point - same cRF/surround block layout as frozen_derivatives'
-        full_gain_feedback: the cRF block uses g_cRF, every surround block reuses g_surround.'''
-        W = dyn.frame.W
-        M_cRF = W @ np.diag(g_cRF) @ W.T
-        M_surround = W @ np.diag(g_surround) @ W.T
-        return block_diag(M_cRF, *([M_surround] * (N_SETS - 1)))
-
     def flank_tuning_curve(cond, g_cRF, g_surround, mu_cRF, mu_surround, desc):
         '''Flank-neuron response swept over probe_angles, probe shape matching cond.'''
         curve = np.zeros(N_PROBES)
         for i, theta in enumerate(tqdm(probe_angles, desc=desc, leave=False)):
             probe = stim_gen.oriented_drive(theta, PROBE_CONTRAST, cond)
-            M = offline_gain_operator(g_cRF, g_surround)
+            M = offline_gain_operator(dyn, g_cRF, g_surround)
             y = get_response_offline(dyn, probe, M)
             curve[i] = y[flank_idx]
         return curve

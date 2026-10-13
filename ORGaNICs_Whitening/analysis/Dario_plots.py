@@ -33,13 +33,12 @@ from scipy.special import i0
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics_Surround
-from Surround_simulated_responses import get_response_offline, probe_input_drive
+from response_tools import get_response_offline
 
 # ---- Parameters ----
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 N_RF = 13                      # Number of primary neurons per receptive field
-N_SETS = 6                     # 1 classical RF (cRF) + 5 surround sets; must match Surround_simulated_responses.N_SETS,
-                               # which sizes both get_response_offline's (I+M) and probe_input_drive
+N_SETS = 6                     # 1 classical RF (cRF) + 5 surround sets
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 ADAPT_LOC = 'adapt CRF only'   # no spatial cRF/surround distinction in these experiments
@@ -71,15 +70,16 @@ def offline_gain_operator(dyn, state):
     return block_diag(M_cRF, *([M_surround] * (N_SETS - 1)))
 
 
-def probe_responses(dyn, M, probe_angles, contrast):
+def probe_responses(dyn, stim_gen, M, probe_angles, contrast):
     """
-    cRF population response vectors (N_RF, n_probes) to Gaussian probes (probe_input_drive) at
-    each of probe_angles, with gains frozen in M (from offline_gain_operator), settled via
-    get_response_offline.
+    cRF population response vectors (N_RF, n_probes) to full-field Gaussian probes
+    (stim_gen.oriented_drive) at each of probe_angles, with gains frozen in M (from
+    offline_gain_operator), settled via get_response_offline.
     """
     resp = np.zeros((N_RF, len(probe_angles)))
     for i, theta in enumerate(probe_angles):
-        resp[:, i] = get_response_offline(dyn, probe_input_drive(theta, contrast), M)[:N_RF]
+        probe = stim_gen.oriented_drive(theta, contrast, 'adapt CRF and surround')
+        resp[:, i] = get_response_offline(dyn, probe, M)[:N_RF]
     return resp
 
 
@@ -153,7 +153,7 @@ def Dario_fig1(dyn, stim_gen):
     with |log10 P ratio| <= RESTRICTED_FIT_RANGE (dotted). Only the cRF block is analyzed."""
     print(' ----------- FIGURE 1 -----------')
     # Probe exactly at the neuron preferences (np.linspace(0, pi, N_RF, endpoint=False), as in
-    # probe_input_drive/stimuli_whiten); 180° is excluded since it's the same orientation as 0°
+    # stimuli_whiten); 180° is excluded since it's the same orientation as 0°
     probe_angles = np.linspace(0, np.pi, PROBE_RES, endpoint=False)
 
     print("\n--- Running Adaptation Stage ---")
@@ -167,7 +167,7 @@ def Dario_fig1(dyn, stim_gen):
     # --- Probe Stage: gains frozen at each adapted state, probed with the offline fixed point
     # (cRF block only) ---
     print("\n--- Running Probe Stage ---")
-    resp = {env: probe_responses(dyn, offline_gain_operator(dyn, state), probe_angles, PROBE_CONTRAST)
+    resp = {env: probe_responses(dyn, stim_gen, offline_gain_operator(dyn, state), probe_angles, PROBE_CONTRAST)
             for env, state in final_states.items()}
 
     # Response magnitude = l2 norm of each probe's population response vector (as in Tring et al.)
@@ -296,7 +296,8 @@ def Dario_fig3(dyn, stim_gen):
         for c in tqdm(probe_contrasts, desc=f"{label} contrast sweep", leave=True):
             resp = np.zeros((N_RF, PROBE_RES))
             for i, angle in enumerate(probe_angles_fig3):
-                y = get_response_offline(dyn, probe_input_drive(angle, c), M)
+                probe = stim_gen.oriented_drive(angle, c, 'adapt CRF and surround')
+                y = get_response_offline(dyn, probe, M)
                 resp[:, i] = y[:N_RF]
             _, mu_c, var_c = calc_moments(resp)
             mus.append(np.nanmean(mu_c))
