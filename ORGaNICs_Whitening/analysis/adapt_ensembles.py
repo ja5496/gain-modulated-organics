@@ -10,15 +10,18 @@ surround sets, all sharing the same tuning-curve basis and per-RF frame.
 
 Methodology:
 1. The cRF adapts to a uniform and to a biased (adaptor-heavy) ensemble of gratings, with a flat
-   baseline in the surround (generate_surround_ensembles). The biased stimulus sequence is also
-   re-run with gains frozen at zero: the non-adapted network. In every run, the surround's
+   baseline in the surround (generate_surround_ensembles). In every run, the surround's
    contribution to the cRF's normalization pool arrives SURROUND_DELAY seconds late (as in
    Kohn_distinct_plots.py); until it does, the cRF sees the surround's settled contribution under
    a flat, non-adapting stimulus.
 2. Tuning curves are recorded during each run: over its 2nd half, the response to every
-   presentation is read at the presentation's last timestep and averaged per orientation.
-3. Ensemble statistics (mean responses, covariances) use the smallest stimulus set with exactly
-   the ensemble's distribution (minimal_ensemble), mapped through those tuning curves.
+   presentation is read at the presentation's last timestep and averaged per orientation. Each
+   cRF tuning curve is fit with a Gaussian on the orientation circle; tuning shifts and the
+   tuning-curve figure use the fits.
+3. 1st- and 2nd-order equalization use the cRF responses actually produced during biased
+   adaptation (mean firing rates and covariance), over consecutive STATS_WINDOW-step windows of
+   the run. The input covariance uses the smallest stimulus set with exactly the ensemble's
+   distribution (minimal_ensemble).
 4. Figures: a subset of g_cRF vs time; stimulus covariance vs gain-implied factorizations;
    ensemble histograms + biased-adapted tuning curves; input covariance, tuning repulsion and
    1st/2nd-order equalization vs time.
@@ -31,10 +34,10 @@ sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
-from response_tools import curve_peak_deg
 import Analytic_responses as AR
 
 N_RF       = 13                    # Number of primary neurons per receptive field
@@ -46,13 +49,14 @@ TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covar
 
 ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 10000     # timesteps of each adaptation run (dt=0.1 -> 1000s)
-DURATION             = 10        # timesteps each individual adaptation stimulus is held for
+ADAPT_STREAM_LENGTH  = 20000     # timesteps of each adaptation run (dt=0.1 -> 1000s)
+DURATION             = 15        # timesteps each individual adaptation stimulus is held for
+STATS_WINDOW         = 5000      # timesteps per window of the adaptation run's 1st/2nd-order statistics
 
 # Conduction delay (seconds) on the surround's contribution to the cRF's normalization pool, as in
 # Kohn_distinct_plots.py - see V1Dynamics_Surround.set_surround_delay. 0.0 reproduces the
 # pre-delay model exactly.
-SURROUND_DELAY       = 4000.0
+SURROUND_DELAY       = 25.0
 
 CONDITION_LABEL = {
     'no adaptation':          'No adaptation',
@@ -80,7 +84,7 @@ BIASED_FOR_COND = {
 }
 
 UNIFORM_COND = 'uniform adaptation'   # reference for tuning-curve normalization and repulsion
-BIASED_COND  = 'adapt CRF only'       # biased-ensemble adaptation analyzed in every figure
+BIASED_COND  = 'adapt CRF and surround'       # biased-ensemble adaptation analyzed in every figure
 GAIN_TIMECOURSE_COND = BIASED_COND    # condition whose gains are plotted vs time
 
 SIM_HISTORY = {}   # full history of each adaptation run (y, gains, stream, centers), keyed by condition
@@ -234,22 +238,44 @@ def bin_by_preference(response, neuron_preferences, n_bins=N_RF):
     return binned
 
 
-def first_order_equalization(rate, ens_idx):
-    '''||r_hat - 1||_2 with r_hat = r / mean(r), where r is each cRF neuron's mean firing rate over
-    the ensemble stimuli ens_idx (rate: tuning curves, (N_TOT, num_angles)). 0 = fully equalized.'''
-    r = rate[CRF_SLICE][:, ens_idx].mean(axis=1)
+def first_order_equalization(y_hist, window):
+    '''||r_hat - 1||_2 with r_hat = r / mean(r), where r is each cRF neuron's mean firing rate
+    (rectified y squared) over every timestep of y_hist in window = [t_start, t_stop).
+    0 = fully equalized.'''
+    t_start, t_stop = window
+    r = (y_hist[CRF_SLICE, t_start:t_stop] ** 2).mean(axis=1)
     return np.linalg.norm(r / r.mean() - 1)
 
 
-def response_covariance(y, ens_idx):
-    '''cRF covariance of rectified y over the ensemble stimuli ens_idx (y: tuning curves,
-    (N_TOT, num_angles)). ddof=0: the exact covariance of the ensemble distribution.'''
-    return np.cov(y[CRF_SLICE][:, ens_idx], bias=True)
+def response_covariance(y_hist, window):
+    '''cRF covariance of the rectified y actually produced during a run (y_hist: (N_TOT, n_steps)),
+    over every timestep in window = [t_start, t_stop). ddof=0.'''
+    t_start, t_stop = window
+    return np.cov(y_hist[CRF_SLICE, t_start:t_stop], bias=True)
 
 
-def second_order_equalization(y, ens_idx, target_cov):
-    '''Largest eigenvalue of Cov_responses - Cov_target.'''
-    return np.linalg.eigvalsh(response_covariance(y, ens_idx) - target_cov)[-1]
+def second_order_equalization(y_hist, window, target_cov):
+    '''Operator distance: largest eigenvalue of Cov_responses - Cov_target (as in
+    Analytic_responses.compute_error's 'operator'), Cov_responses over window of y_hist.'''
+    return np.linalg.eigvalsh(response_covariance(y_hist, window) - target_cov)[-1]
+
+
+def gaussian_tuning(theta_deg, amp, mu, width, base):
+    '''Gaussian on the orientation circle: base + amp * exp(-d^2 / (2 width^2)), with d the
+    distance from theta to the preferred orientation mu wrapped to +-90 deg.'''
+    d = (theta_deg - mu + 90) % 180 - 90
+    return base + amp * np.exp(-0.5 * (d / width) ** 2)
+
+
+def fit_gaussian_tuning(curve, angles_deg):
+    '''Least-squares fit of gaussian_tuning to a tuning curve sampled at angles_deg over [0, 180).
+    Returns (amp, mu, width, base), mu wrapped to [0, 180).'''
+    i = int(np.argmax(curve))
+    p0 = [curve[i] - curve.min(), angles_deg[i], 30.0, curve.min()]
+    bounds = ([0.0, -np.inf, 1.0, -np.inf], [np.inf, np.inf, 180.0, np.inf])
+    params, _ = curve_fit(gaussian_tuning, angles_deg, curve, p0=p0, bounds=bounds, maxfev=10000)
+    params[1] %= 180
+    return params
 
 
 if __name__ == "__main__":
@@ -284,10 +310,6 @@ if __name__ == "__main__":
     for cond in (UNIFORM_COND, BIASED_COND):
         print(f"  Adapting: {CONDITION_LABEL[cond]}")
         final_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=surround_msg_baseline)
-
-    print("  Non-adapted: re-running the biased stimulus sequence with gains frozen at zero...")
-    y_hist_nonadapted = run_gains_frozen(dyn, SIM_HISTORY[BIASED_COND]['stream'],
-                                         surround_msg_baseline=surround_msg_baseline)
 
     # ==========================================================================
     # Diagnostic: theoretical optimal g_cRF (Analytic_responses.get_optimal_gains_target) for the
@@ -358,38 +380,44 @@ if __name__ == "__main__":
 
     # ==========================================================================
     # In-stream tuning curves. Each snapshot is the biased-adaptation state at one time step, and
-    # every panel of the time-course figure (except the input covariance) loops over them. To add
+    # the tuning-repulsion panel of the time-course figure loops over them. To add
     # time points, append snapshots of other windows of the biased run, e.g.
     # snapshot(t, biased['y_hist'], biased['centers'], window=(t - 2000, t), label=...).
+    # Every cRF tuning curve (firing rate) is fit with gaussian_tuning; the tuning shifts and the
+    # tuning-curve figure use the fits.
     # ==========================================================================
     print("Recording in-stream tuning curves...")
 
     def snapshot(t, y_hist, centers, window=None, label=''):
         rate, y, counts = tuning_curves(y_hist, centers, n_angles, window)
         print(f"  {label} (t={t}): {counts.sum()} presentations, {counts.min()}-{counts.max()} per orientation")
-        return dict(t=t, rate=rate, y=y)
+        fits = np.array([fit_gaussian_tuning(tc, stim_deg) for tc in rate[CRF_SLICE]])   # (N_RF, 4)
+        return dict(t=t, rate=rate, y=y, fits=fits)
 
     uniform = SIM_HISTORY[UNIFORM_COND]
     biased  = SIM_HISTORY[BIASED_COND]
     n_steps = biased['y_hist'].shape[1]
     uniform_ref = snapshot(n_steps, uniform['y_hist'], uniform['centers'], label='uniform-adapted')
     snapshots = [
-        snapshot(0, y_hist_nonadapted, biased['centers'], label='non-adapted'),   # gains frozen at 0
         snapshot(n_steps, biased['y_hist'], biased['centers'], label='adapted'),  # 2nd-half average
     ]
-    adapted_snapshots = [s for s in snapshots if s['t'] > 0]
 
     # ==========================================================================
-    # Ensemble histograms and biased-adapted cRF tuning curves, normalized to the uniform-adapted
-    # peaks. All orientation axes are relative to the adaptor.
+    # Ensemble histograms and biased-adapted cRF tuning curves (Gaussian fits), normalized to the
+    # uniform-adapted fits' peaks. All orientation axes are relative to the adaptor.
     # ==========================================================================
     print("Plotting ensemble histograms and tuning curves...")
     N_BINS = N_RF
     uni_angles_deg  = np.degrees(uniform['centers'])   # stimulus centers actually shown during each run
     bias_angles_deg = np.degrees(biased['centers'])
 
-    binned_uniform = bin_by_preference(uniform_ref['rate'][CRF_SLICE], tunings.theta)
-    binned_crf     = bin_by_preference(adapted_snapshots[-1]['rate'][CRF_SLICE], tunings.theta)
+    # Fits evaluated on a fine grid of orientations relative to the adaptor
+    x_axis = np.linspace(-90, 90, 361)
+    def fitted_curves(fits):
+        return np.array([gaussian_tuning(x_axis + adaptor_deg, *p) for p in fits])   # (N_RF, len(x_axis))
+
+    binned_uniform = bin_by_preference(fitted_curves(uniform_ref['fits']), tunings.theta)
+    binned_crf     = bin_by_preference(fitted_curves(snapshots[-1]['fits']), tunings.theta)
 
     # Each neuron's biased-adapted curve as a fraction of ITS OWN uniform-adapted peak.
     peak_uniform = np.max(binned_uniform, axis=1, keepdims=True)
@@ -402,10 +430,6 @@ if __name__ == "__main__":
     bins_hist = np.linspace(-90, 90, N_BINS + 1)
     weights_uni  = np.ones_like(uni_angles_rel)  / len(uni_angles_rel)
     weights_bias = np.ones_like(bias_angles_rel) / len(bias_angles_rel)
-
-    x_axis = (stim_deg - adaptor_deg + 90) % 180 - 90
-    sort_idx = np.argsort(x_axis)
-    x_axis_sorted = x_axis[sort_idx]
 
     blue_colors = plt.cm.Blues(np.linspace(0.2, 1.0, N_BINS))
 
@@ -422,7 +446,7 @@ if __name__ == "__main__":
         ax.spines['left'].set_visible(False)
 
     for i in range(N_BINS):
-        ax_tc_bias.plot(x_axis_sorted, norm_crf[i][sort_idx], color=blue_colors[i], linewidth=2.0)
+        ax_tc_bias.plot(x_axis, norm_crf[i], color=blue_colors[i], linewidth=2.0)
     ymin, ymax = ax_tc_bias.get_ylim()
     ax_tc_bias.set_ylim(ymin - 0.05 * (ymax - ymin), ymax)
     ax_tc_bias.set_yticks([0, 1])
@@ -443,26 +467,30 @@ if __name__ == "__main__":
 
     # ==========================================================================
     # Biased adaptation over time: input covariance | tuning repulsion | 1st- and 2nd-order
-    # equalization. Ensemble statistics use the biased ensemble's minimal stimulus set.
+    # equalization. The input covariance uses the biased ensemble's minimal stimulus set; the
+    # 1st- and 2nd-order equalization use the responses actually produced in consecutive
+    # STATS_WINDOW-step windows of the biased run.
     # ==========================================================================
     print("Plotting biased-adaptation time course...")
-    ens_stimuli, ens_idx = minimal_ensemble(BIASED_COND, n_angles)
+    ens_stimuli, _ = minimal_ensemble(BIASED_COND, n_angles)
     input_cov = np.cov(ens_stimuli[CRF_SLICE], bias=True)   # exact ensemble covariance (ddof=0)
 
-    # Tuning repulsion: shift of each neuron's peak from its uniform-adapted peak, wrapped to +-90 deg.
-    pref_uniform_deg = np.array([curve_peak_deg(tc, stim_deg) for tc in uniform_ref['rate'][CRF_SLICE]])
+    # Tuning repulsion: shift of each neuron's fitted preference from its uniform-adapted fitted
+    # preference, wrapped to +-90 deg.
+    pref_uniform_deg = uniform_ref['fits'][:, 1]
     pref_uniform_rel = (pref_uniform_deg - adaptor_deg + 90) % 180 - 90
     sort_shift = np.argsort(pref_uniform_rel)   # connect neighbours in preference order
 
     def tuning_shift_deg(snap):
-        pref = np.array([curve_peak_deg(tc, stim_deg) for tc in snap['rate'][CRF_SLICE]])
-        return (pref - pref_uniform_deg + 90) % 180 - 90
+        return (snap['fits'][:, 1] - pref_uniform_deg + 90) % 180 - 90
 
-    times = [s['t'] for s in snapshots]
-    eq1 = [first_order_equalization(s['rate'], ens_idx) for s in snapshots]
-    eq2 = [second_order_equalization(s['y'], ens_idx, dyn.uniform_target_covariance) for s in snapshots]
+    # One point per window [t - STATS_WINDOW, t) of the biased run, plotted at t.
+    windows = [(t0, t0 + STATS_WINDOW) for t0 in range(0, n_steps - STATS_WINDOW + 1, STATS_WINDOW)]
+    times = [t_stop for _, t_stop in windows]
+    eq1 = [first_order_equalization(biased['y_hist'], w) for w in windows]
+    eq2 = [second_order_equalization(biased['y_hist'], w, dyn.uniform_target_covariance) for w in windows]
     for t, e1, e2 in zip(times, eq1, eq2):
-        print(f"  t={t}: 1st-order equalization = {e1:.4f}, 2nd-order (lambda_max) = {e2:.4g}")
+        print(f"  t={t}: 1st-order equalization = {e1:.4f}, 2nd-order (operator distance) = {e2:.4g}")
 
     fig_eq, (ax_cov_in, ax_shift, ax_eq1, ax_eq2) = plt.subplots(1, 4, figsize=(17.5, 3.75))
 
@@ -474,13 +502,13 @@ if __name__ == "__main__":
     ax_cov_in.set_title("Input covariance", fontsize=16)
 
     # Latest snapshot in navy; earlier ones (when added) in lighter blues.
-    shift_colors = list(plt.cm.Blues(np.linspace(0.35, 0.75, len(adapted_snapshots) - 1))) + ['navy']
-    for snap, color in zip(adapted_snapshots, shift_colors):
+    shift_colors = list(plt.cm.Blues(np.linspace(0.35, 0.75, len(snapshots) - 1))) + ['navy']
+    for snap, color in zip(snapshots, shift_colors):
         shift = tuning_shift_deg(snap)
         ax_shift.plot(pref_uniform_rel[sort_shift], shift[sort_shift],
                       color='lightblue', linestyle=':', linewidth=2.0, zorder=2)
         ax_shift.scatter(pref_uniform_rel, shift, color=color, s=50, zorder=3, label=f"t = {snap['t']}")
-    if len(adapted_snapshots) > 1:
+    if len(snapshots) > 1:
         ax_shift.legend(fontsize=10, frameon=False)
     ax_shift.set_xlim(-90, 90)
     ax_shift.set_xticks([-90, 0, 90])
@@ -495,7 +523,7 @@ if __name__ == "__main__":
         ax.axhline(0, color='gray', linestyle='--', linewidth=1.0, zorder=1)
         ax.plot(times, values, color='lightgray', linestyle=':', linewidth=2.0, zorder=2)
         ax.scatter(times, values, color='black', s=60, zorder=3)
-        ax.set_xticks(times)
+        ax.set_xticks(times, labels=[f"{t // 1000}k" for t in times])
         ax.margins(x=0.15)
         ax.locator_params(axis='y', nbins=4)
         ax.set_xlabel("Time Step", fontsize=18)

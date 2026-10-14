@@ -13,8 +13,9 @@ Methodology:
    routed to the adapted region(s), flat baseline elsewhere) is held for ADAPT_STREAM_LENGTH steps.
 2. The final gains are frozen and the network is probed with full-field gratings (response_tools:
    closed-form fixed point by default, settled RK4 dynamics if online=True).
-3. Figures: a subset of g_cRF vs time; contrast-response functions of the cRF neuron that prefers
-   the adaptor; tuning curves of the flank neuron next to it.
+3. Figures: a subset of g_cRF vs time; contrast-response functions of the cRF subpopulation
+   (l2 norm of its response) at the adaptor orientation; tuning curves of the flank neuron next
+   to the adaptor-preferring cRF neuron.
 '''
 
 import os
@@ -136,7 +137,7 @@ if __name__ == "__main__":
 
     adaptor_idx = stim_gen.num_angles // 2          # same adaptor as adapt_ensembles.py's biased ensemble
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
-    crf_target_idx = CRF_IDX * N_RF + adaptor_idx   # cRF neuron preferring the adaptor (num_angles == N_RF)
+    crf_slice = slice(CRF_IDX * N_RF, (CRF_IDX + 1) * N_RF)   # cRF subpopulation
 
     print("Calibrating theta_t from the uniform target covariance...")
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
@@ -190,15 +191,16 @@ if __name__ == "__main__":
         return offline_gain_operator(dyn, g_cRF, g_surround)
 
     # ==========================================================================
-    # Contrast response functions of the cRF neuron that prefers the adaptor
+    # Contrast response functions of the cRF subpopulation to the adaptor-orientation probe
     # ==========================================================================
     print("Computing contrast response functions...")
 
     def crf_curve(cond):
+        '''cRF population response magnitude (l2 norm over the N_RF cRF neurons) vs contrast.'''
         M = gain_operator(cond)
         resp = np.zeros(N_CONTRASTS)
         for i, c in enumerate(tqdm(CRF_CONTRASTS, desc=f"    {cond}", leave=False)):
-            resp[i] = probe_response(cond, full_field_probe(adaptor_rad, c), M)[crf_target_idx]
+            resp[i] = np.linalg.norm(probe_response(cond, full_field_probe(adaptor_rad, c), M)[crf_slice])
         return resp
 
     curves_by_condition = {cond: crf_curve(cond) for cond in CONDITIONS}
@@ -224,7 +226,6 @@ if __name__ == "__main__":
     # Tuning curve of the flank neuron (adjacent to the adaptor-preferring neuron)
     # ==========================================================================
     print("Computing flank-neuron tuning curves...")
-    crf_slice = slice(CRF_IDX * N_RF, (CRF_IDX + 1) * N_RF)
     probe_angles = np.linspace(0, np.pi, N_PROBES, endpoint=False)
     probe_angles_deg = np.degrees(probe_angles)
     adaptor_deg = np.degrees(adaptor_rad)
@@ -257,6 +258,8 @@ if __name__ == "__main__":
         if FLANK_LEGEND_LABEL[cond] is not None:
             plot_kwargs['label'] = FLANK_LEGEND_LABEL[cond]
         ax_flank.plot(probe_angles_deg, flank_curves[cond], **plot_kwargs)
+
+    ax_flank.axvline(control_peak, color='grey', linestyle='--', linewidth=1.0, zorder=0)
 
     ax_flank.annotate('', xy=(adaptor_deg, 0.80), xytext=(adaptor_deg, 0.94),
                        xycoords=('data', 'axes fraction'), textcoords=('data', 'axes fraction'),
