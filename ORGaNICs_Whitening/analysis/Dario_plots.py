@@ -33,7 +33,18 @@ from scipy.special import i0
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics_Surround
-from response_tools import get_response_offline
+from response_tools import get_response_offline, to_steps
+
+# ---- Durations (ms, the units of the model's time constants) ----
+DT = 0.1                       # simulation time step
+# Length of every adaptation stream: several tau_g (1000 ms in V1Dynamics_Surround) so the gains
+# converge
+ADAPTATION_DURATION = 10000.0
+STIMULUS_DURATION = 2.0        # time each stimulus in an adaptation stream is held for
+
+# ---- The same durations in timesteps ----
+ADAPTATION_STEPS = to_steps(ADAPTATION_DURATION, DT, 'ADAPTATION_DURATION')
+STIMULUS_STEPS = to_steps(STIMULUS_DURATION, DT, 'STIMULUS_DURATION')
 
 # ---- Parameters ----
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,9 +61,6 @@ ENVIRONMENTS = {'A': (30.0, 6.0),    # tall and skinny
                 'B': (90.0, 3.0),    # in between
                 'C': (150.0, 1.5)}   # short and wide
 
-# tau_g=750 (V1Dynamics_Surround) needs several tau_g of adaptation time to converge; at dt=0.1
-# this gives ~4 tau_g (~98% settled) for every adaptation/probe stream below.
-STREAM_LENGTH = 100000
 PROBE_RES = 13                 # probe orientations; keep a multiple of N_RF so probes land on neuron preferences
 RATE_FLOOR = 1e-3              # responses below this (log10 = -3) are treated as zero (excluded from the log moments)
 RESTRICTED_FIT_RANGE = 1.0     # Figure 1's dotted power-law fit uses only points with |log10 P ratio| <= this
@@ -161,7 +169,7 @@ def Dario_fig1(dyn, stim_gen):
     for env, (center_deg, kappa) in ENVIRONMENTS.items():
         print(f"Adapting to environment {env} (von Mises, peak {center_deg:g}°, kappa {kappa:g})...")
         dyn.run_simulation(stim_gen.generate_surround_ensembles(ADAPT_LOC, von_mises=True, von_mises_center=center_deg,
-                                                                von_mises_kappa=kappa))
+                                                                von_mises_kappa=kappa, duration=STIMULUS_STEPS))
         final_states[env] = dyn.last_state
 
     # --- Probe Stage: gains frozen at each adapted state, probed with the offline fixed point
@@ -266,15 +274,18 @@ def Dario_fig3(dyn, stim_gen):
 
     print("\n--- Running Adaptation Stage ---")
     print("Adapting to high contrast stream...")
-    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=0, adapt_location=ADAPT_LOC))
+    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=0, adapt_location=ADAPT_LOC,
+                                                         duration=STIMULUS_STEPS))
     state_hi = dyn.last_state
 
     print("Adapting to medium contrast stream...")
-    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-1.5, adapt_location=ADAPT_LOC))
+    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-1.5, adapt_location=ADAPT_LOC,
+                                                         duration=STIMULUS_STEPS))
     state_med = dyn.last_state
 
     print("Adapting to low contrast stream...")
-    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-3, adapt_location=ADAPT_LOC))
+    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-3, adapt_location=ADAPT_LOC,
+                                                         duration=STIMULUS_STEPS))
     state_lo = dyn.last_state
 
     probe_contrasts   = np.logspace(np.log10(0.04), np.log10(1.0), 20)
@@ -337,8 +348,8 @@ if __name__ == "__main__":
     print("Initializing tunings, frame, stimulus generator, and dynamics...")
     tunings = V1Tunings(N=N_RF)
     frame = Frame(csv_path=FRAME_PATH)
-    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, stream_length=STREAM_LENGTH, contrast=ADAPT_CONTRAST)
-    dyn = V1Dynamics_Surround(tunings, frame, N_RF=N_RF, N_SETS=N_SETS,
+    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, stream_length=ADAPTATION_STEPS, contrast=ADAPT_CONTRAST)
+    dyn = V1Dynamics_Surround(tunings, frame, dt=DT, N_RF=N_RF, N_SETS=N_SETS,
                                target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
 
     # Calibrate theta_t once, from a genuinely unbiased stream at a fixed low contrast (kept

@@ -48,7 +48,7 @@ TUNING_WIDTH      = SAR.TUNING_WIDTH
 ENSEMBLE_CONTRAST = SAR.ENSEMBLE_CONTRAST
 
 ADAPT_STREAM_LENGTH = 60000    # per-seed adapted-condition run length (dt=0.1 -> 2.4x tau_g)
-DURATION = AE.DURATION         # matches adapt_ensembles.py
+DURATION = AE.STIMULUS_STEPS   # timesteps per stimulus; matches adapt_ensembles.py
 N_SEEDS = 16
 SEEDS = list(range(N_SEEDS))
 

@@ -34,7 +34,7 @@ from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from analysis import Analytic_responses as ar
-import adapt_ensembles as AE   # shared ADAPT_STREAM_LENGTH / DURATION
+import adapt_ensembles as AE   # shared ADAPTATION_STEPS / STIMULUS_STEPS
 from typing import Literal
 from scipy.linalg import block_diag
 
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     M_by_condition = {cond: M_from_cached(cond) for cond in CONDITIONS}
 
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF,
-                                 stream_length=AE.ADAPT_STREAM_LENGTH,
+                                 stream_length=AE.ADAPTATION_STEPS,
                                  tuning_width=TUNING_WIDTH, contrast=ENSEMBLE_CONTRAST)
     adaptor_idx = N_RF // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
@@ -251,11 +251,11 @@ if __name__ == "__main__":
     # PCA whitening diagnostic below -- a representative ensemble draw, not tied to gain
     # computation (gains come from the cache above), so a single fresh, noisy draw is enough here.
     stream_uni, centers_uni = stim_gen.generate_surround_ensembles(
-        'adapt CRF and surround', biased=False, duration=AE.DURATION,
+        'adapt CRF and surround', biased=False, duration=AE.STIMULUS_STEPS,
         add_poisson_noise=True, return_angles=True)
     stimuli_uni = list(stream_uni[:N_RF, :].T)
     stream_bias, centers_bias = stim_gen.generate_surround_ensembles(
-        'adapt CRF and surround', biased=True, duration=AE.DURATION,
+        'adapt CRF and surround', biased=True, duration=AE.STIMULUS_STEPS,
         add_poisson_noise=True, return_angles=True)
     stimuli_bias = list(stream_bias[:N_RF, :].T)
 

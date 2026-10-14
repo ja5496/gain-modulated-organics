@@ -2,7 +2,8 @@
 response_tools.py
 
 Shared helpers for probing V1Dynamics_Surround (simulation_whiten.py) with its adaptation gains
-held fixed, plus a tuning-curve peak finder. Used by adapt_single_stimulus.py, adapt_ensembles.py,
+held fixed, plus the surround's settled baseline signal, a tuning-curve peak finder and a
+ms -> timestep converter. Used by adapt_single_stimulus.py, adapt_ensembles.py,
 Kohn_distinct_plots.py and Dario_plots.py.
 
 Two ways to compute a frozen-gain probe response:
@@ -13,7 +14,7 @@ Two ways to compute a frozen-gain probe response:
 import numpy as np
 from scipy.linalg import block_diag
 
-N_SETTLE_STEPS = 1500   # RK4 steps used by the online probes to settle y/u/a/v (dt=0.1 -> 150s)
+N_SETTLE_STEPS = 1500   # RK4 steps used by the online probes to settle y/u/a/v (dt=0.1 -> 150 ms)
 
 
 def offline_gain_operator(dyn, g_cRF, g_surround):
@@ -27,8 +28,9 @@ def offline_gain_operator(dyn, g_cRF, g_surround):
 
 def get_response_offline(dyn, stimulus, M, Beta=0.5):
     '''Fixed point with gains frozen in M and v at its fast limit: normalized, whitened input
-    y = z'/sqrt(sigma^2 + N z'^2), z' = (I + M)^-1 stimulus. Returns firing rates (rectified y^2).'''
-    z_prime = np.linalg.inv(np.eye(stimulus.size) + M) @ stimulus
+    y = z'/sqrt(sigma^2 + N z'^2), z' = (I + M)^-1 stimulus. stimulus is one probe (N_TOT,) or one
+    probe per column (N_TOT, n_probes). Returns firing rates (rectified y^2), same shape.'''
+    z_prime = np.linalg.solve(np.eye(stimulus.shape[0]) + M, stimulus)
     y = z_prime / np.sqrt(dyn.sigma**2 + dyn.N_matrix @ (z_prime**2))
     rectified_y = dyn.half_wave_rectify(y)
 
@@ -146,6 +148,31 @@ def get_response_traced(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n
         v_surround_hist[:, t] = state[3*N_TOT+K:3*N_TOT+2*K]
 
     return y_hist, u_hist, a_hist, v_cRF_hist, v_surround_hist
+
+
+def settled_surround_msg(dyn, stimulus, n_steps):
+    '''
+    Surround's settled contribution to the cRF's normalization pool (dyn._surround_msg) after
+    n_steps of a constant stimulus, with the gains held at zero (tau_g -> inf) and no surround
+    delay. Holds the delayed surround->cRF signal until the real one arrives (run_simulation's
+    surround_msg_baseline) - not zero, since the surround is never actually silent.
+    '''
+    assert dyn.n_lag == 0, "settle the baseline before setting the surround delay"
+    tau_g = dyn.tau_g
+    dyn.tau_g = np.inf
+    try:
+        dyn.run_simulation(np.broadcast_to(stimulus[:, None], (stimulus.size, n_steps)))
+    finally:
+        dyn.tau_g = tau_g
+    return dyn._surround_msg(dyn.last_state)
+
+
+def to_steps(duration, dt, name='duration'):
+    '''A duration in time units (ms) as a number of dt timesteps; it must be a whole number (>= 1).'''
+    n = int(round(duration / dt))
+    assert n >= 1 and np.isclose(n * dt, duration), \
+        f"{name} ({duration} ms) must be a whole number (>= 1) of dt ({dt} ms) steps"
+    return n
 
 
 def curve_peak_deg(curve, angles_deg):

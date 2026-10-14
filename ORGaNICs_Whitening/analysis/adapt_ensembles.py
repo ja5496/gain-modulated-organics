@@ -11,7 +11,7 @@ surround sets, all sharing the same tuning-curve basis and per-RF frame.
 Methodology:
 1. The cRF adapts to a uniform and to a biased (adaptor-heavy) ensemble of gratings, with a flat
    baseline in the surround (generate_surround_ensembles). In every run, the surround's
-   contribution to the cRF's normalization pool arrives SURROUND_DELAY seconds late (as in
+   contribution to the cRF's normalization pool arrives SURROUND_DELAY ms late (as in
    Kohn_distinct_plots.py); until it does, the cRF sees the surround's settled contribution under
    a flat, non-adapting stimulus.
 2. Tuning curves are recorded during each run: over its 2nd half, the response to every
@@ -19,7 +19,7 @@ Methodology:
    cRF tuning curve is fit with a Gaussian on the orientation circle; tuning shifts and the
    tuning-curve figure use the fits.
 3. 1st- and 2nd-order equalization use the cRF responses actually produced during biased
-   adaptation (mean firing rates and covariance), over consecutive STATS_WINDOW-step windows of
+   adaptation (mean firing rates and covariance), over consecutive STATS_WINDOW-ms windows of
    the run. The input covariance uses the smallest stimulus set with exactly the ensemble's
    distribution (minimal_ensemble).
 4. Figures: a subset of g_cRF vs time; stimulus covariance vs gain-implied factorizations;
@@ -38,7 +38,25 @@ from scipy.optimize import curve_fit
 from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
+from response_tools import settled_surround_msg, to_steps
 import Analytic_responses as AR
+
+# ---- Durations (ms, the units of the model's time constants) ----
+DT                   = 0.1       # simulation time step
+ADAPTATION_DURATION  = 4200.0    # length of each adaptation run
+STIMULUS_DURATION    = 30.0      # time each individual adaptation stimulus is held for
+STATS_WINDOW         = 1000.0    # length of each window of the adaptation run's 1st/2nd-order statistics
+# Conduction delay on the surround's contribution to the cRF's normalization pool, as in
+# Kohn_distinct_plots.py. V1Dynamics_Surround.set_surround_delay takes it in ms and converts it to
+# timesteps itself. 0.0 reproduces the pre-delay model exactly.
+SURROUND_DELAY       = 25.0
+BASELINE_SETTLE_TIME = 500.0     # time the network settles under the flat baseline before adapting
+
+# ---- The same durations in timesteps ----
+ADAPTATION_STEPS     = to_steps(ADAPTATION_DURATION, DT, 'ADAPTATION_DURATION')
+STIMULUS_STEPS       = to_steps(STIMULUS_DURATION, DT, 'STIMULUS_DURATION')
+STATS_WINDOW_STEPS   = to_steps(STATS_WINDOW, DT, 'STATS_WINDOW')
+BASELINE_SETTLE_STEPS = to_steps(BASELINE_SETTLE_TIME, DT, 'BASELINE_SETTLE_TIME')
 
 N_RF       = 13                    # Number of primary neurons per receptive field
 N_SETS     = 6                     # 1 classical RF (cRF) + 5 surround sets
@@ -49,14 +67,6 @@ TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covar
 
 ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 20000     # timesteps of each adaptation run (dt=0.1 -> 1000s)
-DURATION             = 15        # timesteps each individual adaptation stimulus is held for
-STATS_WINDOW         = 5000      # timesteps per window of the adaptation run's 1st/2nd-order statistics
-
-# Conduction delay (seconds) on the surround's contribution to the cRF's normalization pool, as in
-# Kohn_distinct_plots.py - see V1Dynamics_Surround.set_surround_delay. 0.0 reproduces the
-# pre-delay model exactly.
-SURROUND_DELAY       = 25.0
 
 CONDITION_LABEL = {
     'no adaptation':          'No adaptation',
@@ -100,7 +110,7 @@ def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
     state). For single-region conditions, the region that doesn't get the ensemble only sees the
     flat baseline, so its gains, v and mu are zeroed. theta_t must already be calibrated.
     surround_msg_baseline holds the delayed surround->cRF pooling signal until a real delayed
-    reading exists (only read while dyn's surround_delay > 0; see settled_surround_msg).
+    reading exists (only read while dyn's surround_delay > 0; see response_tools.settled_surround_msg).
     '''
     K, N_RF = dyn.frame.K, dyn.N_RF
 
@@ -110,7 +120,7 @@ def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
         return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N, (None, None)
 
     stream, centers = stim_gen.generate_surround_ensembles(
-        ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=DURATION,
+        ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=STIMULUS_STEPS,
         add_poisson_noise=False, return_angles=True)
 
     (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, _, _, _, _, _) = dyn.run_simulation(
@@ -147,35 +157,6 @@ def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
     return g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround, (stream, centers)
 
 
-def run_gains_frozen(dyn, stream, surround_msg_baseline=0.0):
-    '''
-    Runs stream with dg/dt = 0 (tau_g -> inf), so the gains stay at their zero initial value: the
-    non-adapted network seeing exactly the same stimuli. Returns y_hist (rectified y).
-    '''
-    tau_g = dyn.tau_g
-    dyn.tau_g = np.inf
-    try:
-        (y_hist, _, _, _, _, g_cRF_hist, g_surround_hist, *_) = dyn.run_simulation(
-            stream, surround_msg_baseline=surround_msg_baseline)
-    finally:
-        dyn.tau_g = tau_g
-    assert not g_cRF_hist.any() and not g_surround_hist.any(), "gains moved during the gains-frozen run"
-    return y_hist
-
-
-def settled_surround_msg(dyn, stim_gen, n_steps=ADAPT_STREAM_LENGTH):
-    '''
-    Surround's settled contribution to the normalization pool under the flat, orientation-less
-    baseline (gains frozen at zero, no delay). Holds the delayed surround->cRF signal until the
-    real one arrives - not zero, since the surround is never actually silent (as in
-    Kohn_distinct_plots.py).
-    '''
-    assert dyn.n_lag == 0, "settle the baseline before setting the surround delay"
-    flat = stim_gen.oriented_drive(0.0, ENSEMBLE_CONTRAST, 'no adaptation')   # baseline everywhere; theta unused
-    run_gains_frozen(dyn, np.tile(flat[:, None], n_steps))
-    return dyn._surround_msg(dyn.last_state)
-
-
 def orientation_index(angles, num_angles):
     '''Index k of each angle on stimuli_whiten's orientation grid, theta_inputs[k] = k * pi / num_angles.'''
     return np.round(np.asarray(angles) * num_angles / np.pi).astype(int) % num_angles
@@ -183,7 +164,7 @@ def orientation_index(angles, num_angles):
 
 def tuning_curves(y_hist, centers, num_angles, window=None):
     '''
-    In-stream tuning curves: for each presentation (DURATION-step block) whose last timestep lies
+    In-stream tuning curves: for each presentation (STIMULUS_STEPS block) whose last timestep lies
     in window = [t_start, t_stop) (default: the run's 2nd half), the response at that last
     timestep, averaged over all presentations of the same orientation.
 
@@ -192,7 +173,7 @@ def tuning_curves(y_hist, centers, num_angles, window=None):
     '''
     n_steps = y_hist.shape[1]
     t_start, t_stop = window if window is not None else (n_steps // 2, n_steps)
-    last = np.arange(DURATION - 1, n_steps, DURATION)
+    last = np.arange(STIMULUS_STEPS - 1, n_steps, STIMULUS_STEPS)
     last = last[(last >= t_start) & (last < t_stop)]
     stim_idx = orientation_index(centers[last], num_angles)
     counts = np.bincount(stim_idx, minlength=num_angles)
@@ -283,11 +264,11 @@ if __name__ == "__main__":
     print("Initializing tunings, frame, and dynamics...")
     tunings = V1Tunings(N=N_RF)
     frame   = Frame(csv_path=FRAME_PATH)
-    dyn     = V1Dynamics_Surround(tunings, frame, N_RF=N_RF, N_SETS=N_SETS,
+    dyn     = V1Dynamics_Surround(tunings, frame, dt=DT, N_RF=N_RF, N_SETS=N_SETS,
                                    target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
 
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF,
-                                  stream_length=ADAPT_STREAM_LENGTH,
+                                  stream_length=ADAPTATION_STEPS,
                                   tuning_width=TUNING_WIDTH, contrast=ENSEMBLE_CONTRAST)
     n_angles = stim_gen.num_angles
     adaptor_idx = n_angles // 2                      # matches generate_surround_ensembles' own adaptor
@@ -299,13 +280,14 @@ if __name__ == "__main__":
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
 
     print("Settling the surround's non-adapting normalization signal (no delay)...")
-    surround_msg_baseline = settled_surround_msg(dyn, stim_gen)
+    flat = stim_gen.oriented_drive(0.0, ENSEMBLE_CONTRAST, 'no adaptation')   # baseline everywhere; theta unused
+    surround_msg_baseline = settled_surround_msg(dyn, flat, BASELINE_SETTLE_STEPS)
     dyn.set_surround_delay(SURROUND_DELAY)
-    if dyn.n_lag >= ADAPT_STREAM_LENGTH:
-        print(f"  NOTE: surround_delay ({SURROUND_DELAY:g}s) >= run length ({ADAPT_STREAM_LENGTH * dyn.dt:g}s): "
+    if dyn.n_lag >= ADAPTATION_STEPS:
+        print(f"  NOTE: surround_delay ({SURROUND_DELAY:g}ms) >= run length ({ADAPTATION_DURATION:g}ms): "
               f"the cRF only ever sees this baseline surround signal.")
 
-    print(f"Running adaptation phase (surround_delay={SURROUND_DELAY:g}s)...")
+    print(f"Running adaptation phase (surround_delay={SURROUND_DELAY:g}ms)...")
     final_gains = {}
     for cond in (UNIFORM_COND, BIASED_COND):
         print(f"  Adapting: {CONDITION_LABEL[cond]}")
@@ -469,7 +451,7 @@ if __name__ == "__main__":
     # Biased adaptation over time: input covariance | tuning repulsion | 1st- and 2nd-order
     # equalization. The input covariance uses the biased ensemble's minimal stimulus set; the
     # 1st- and 2nd-order equalization use the responses actually produced in consecutive
-    # STATS_WINDOW-step windows of the biased run.
+    # STATS_WINDOW-ms windows of the biased run.
     # ==========================================================================
     print("Plotting biased-adaptation time course...")
     ens_stimuli, _ = minimal_ensemble(BIASED_COND, n_angles)
@@ -484,8 +466,8 @@ if __name__ == "__main__":
     def tuning_shift_deg(snap):
         return (snap['fits'][:, 1] - pref_uniform_deg + 90) % 180 - 90
 
-    # One point per window [t - STATS_WINDOW, t) of the biased run, plotted at t.
-    windows = [(t0, t0 + STATS_WINDOW) for t0 in range(0, n_steps - STATS_WINDOW + 1, STATS_WINDOW)]
+    # One point per window [t - STATS_WINDOW_STEPS, t) of the biased run, plotted at t (timesteps).
+    windows = [(t0, t0 + STATS_WINDOW_STEPS) for t0 in range(0, n_steps - STATS_WINDOW_STEPS + 1, STATS_WINDOW_STEPS)]
     times = [t_stop for _, t_stop in windows]
     eq1 = [first_order_equalization(biased['y_hist'], w) for w in windows]
     eq2 = [second_order_equalization(biased['y_hist'], w, dyn.uniform_target_covariance) for w in windows]

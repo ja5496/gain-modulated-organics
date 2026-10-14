@@ -195,11 +195,11 @@ class V1Dynamics_Surround:
 
         self.theta_t = np.full(self.frame.K, 1.0) # Initial overestimate of target variances (not the values that will be used)
 
-        self.tau_y = 0.2       # time constant of primary neuron (fast)
-        self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
-        self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
-        self.tau_g = 1000.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
-        self.tau_v = 15.0    # time constant of excitatory neurons in normalization pool (medium to fast)
+        self.tau_y = 0.4       # time constant of primary neuron (fast)
+        self.tau_a = 0.2       # time constant of inhibitory neurons in normalization pool (fast)
+        self.tau_u = 30.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
+        self.tau_g = 2000.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
+        self.tau_v = 30.0    # time constant of excitatory neurons in normalization pool (medium to fast)
         self.tau_mu = 400000.0  # time constant of mean-response tracker (very slow, full context window needed)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
@@ -230,7 +230,7 @@ class V1Dynamics_Surround:
         self.state_size = self._off_mu_surround + N_RF
 
     def set_surround_delay(self, surround_delay):
-        '''Set (or change) the surround->cRF communication delay, in seconds. 0.0 (default)
+        '''Set (or change) the surround->cRF communication delay, in ms (the time constants' units). 0.0 (default)
         reproduces the model's pre-delay behavior exactly. Callable after construction so a
         caller can compare multiple delays without reconstructing/recalibrating theta_t.'''
         assert surround_delay >= 0, f"surround_delay must be >= 0 (got {surround_delay})"

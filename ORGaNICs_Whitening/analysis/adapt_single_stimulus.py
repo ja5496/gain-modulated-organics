@@ -10,7 +10,7 @@ surround sets, all sharing the same tuning-curve basis and per-RF frame.
 
 Methodology:
 1. For each condition, one grating at the adaptor orientation (StimulusGenerator.oriented_drive,
-   routed to the adapted region(s), flat baseline elsewhere) is held for ADAPT_STREAM_LENGTH steps.
+   routed to the adapted region(s), flat baseline elsewhere) is held for ADAPTATION_DURATION ms.
 2. The final gains are frozen and the network is probed with full-field gratings (response_tools:
    closed-form fixed point by default, settled RK4 dynamics if online=True).
 3. Figures: a subset of g_cRF vs time; contrast-response functions of the cRF subpopulation
@@ -30,7 +30,16 @@ from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from response_tools import (offline_gain_operator, get_response_offline, get_response_online,
-                            curve_peak_deg)
+                            curve_peak_deg, to_steps)
+
+# ---- Durations (ms, the units of the model's time constants) ----
+DT                   = 0.1         # simulation time step (in ms)
+ADAPTATION_DURATION  = 2100.0      # time (in ms) the adaptor is held for 
+PROBE_SETTLE_TIME    = 150.0       # time (in ms) each online probe (online=True) is settled for
+
+# ---- The same durations in timesteps ----
+ADAPTATION_STEPS     = to_steps(ADAPTATION_DURATION, DT, 'ADAPTATION_DURATION')
+PROBE_SETTLE_STEPS   = to_steps(PROBE_SETTLE_TIME, DT, 'PROBE_SETTLE_TIME')
 
 N_RF       = 13                    # Number of primary neurons per receptive field
 N_SETS     = 6                     # 1 classical RF (cRF) + 5 surround sets
@@ -40,7 +49,6 @@ TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covar
 
 ADAPTOR_CONTRAST     = 0.8         # contrast of the sustained adaptor (same as adapt_ensembles.py's ensembles)
 TUNING_WIDTH         = 0.75
-ADAPT_STREAM_LENGTH  = 10000       # timesteps the adaptor is held for (dt=0.1 -> 1000s)
 
 # If True, probes settle the full RK4 dynamics with gains frozen (get_response_online - slow,
 # exact). If False, they use the closed-form fixed point (get_response_offline - fast).
@@ -77,7 +85,7 @@ SIM_HISTORY = {}   # g_cRF history (K, n_steps) of each adaptation run, keyed by
 
 def run_adaptation_phase(dyn, stim_gen, adaptor_rad, cond):
     '''
-    Holds the adaptor for ADAPT_STREAM_LENGTH steps (from a zero initial state) and returns the
+    Holds the adaptor for ADAPTATION_DURATION ms (from a zero initial state) and returns the
     final (g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround).
 
     'no adaptation' returns all zeros without simulating (zero gain feedback is its known steady
@@ -92,7 +100,7 @@ def run_adaptation_phase(dyn, stim_gen, adaptor_rad, cond):
         return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N
 
     adaptor = stim_gen.oriented_drive(adaptor_rad, ADAPTOR_CONTRAST, cond)
-    stream = np.tile(adaptor[:, None], ADAPT_STREAM_LENGTH)   # same stimulus at every timestep
+    stream = np.tile(adaptor[:, None], ADAPTATION_STEPS)   # same stimulus at every timestep
 
     (_, _, _, _, _, g_cRF_hist, _, _, _, _, _, _) = dyn.run_simulation(stream)
     SIM_HISTORY[cond] = g_cRF_hist
@@ -131,7 +139,7 @@ if __name__ == "__main__":
     print("Initializing tunings, frame, and dynamics...")
     tunings  = V1Tunings(N=N_RF)
     frame    = Frame(csv_path=FRAME_PATH)
-    dyn      = V1Dynamics_Surround(tunings, frame, N_RF=N_RF, N_SETS=N_SETS,
+    dyn      = V1Dynamics_Surround(tunings, frame, dt=DT, N_RF=N_RF, N_SETS=N_SETS,
                                     target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, tuning_width=TUNING_WIDTH)
 
@@ -182,7 +190,8 @@ if __name__ == "__main__":
         '''Response of every neuron to one probe with cond's gains frozen (M: offline operator).'''
         if online:
             g_cRF, g_surround, _, _, mu_cRF, mu_surround = frozen_gains[cond]
-            y, _, _ = get_response_online(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround)
+            y, _, _ = get_response_online(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround,
+                                          n_steps=PROBE_SETTLE_STEPS)
             return y
         return get_response_offline(dyn, probe, M)
 

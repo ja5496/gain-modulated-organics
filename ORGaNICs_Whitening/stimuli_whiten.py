@@ -245,7 +245,7 @@ class StimulusGenerator:
         return contrast * full / np.linalg.norm(full)
 
     def generate_contrast_stream(self, peak_ln_contrast, adapt_location, contrast_sigma=1.0,
-                                 return_metadata=False, **kwargs):
+                                 return_metadata=False, duration=20, **kwargs):
         '''
         Generates a stimulus stream scaled by contrasts drawn from a truncated
         log-normal distribution bounded between e^-3 and 1 (i.e., ln(contrast) ∈ [-3, 0]).
@@ -257,6 +257,7 @@ class StimulusGenerator:
             contrast_sigma (float): Standard deviation of the underlying normal distribution.
             return_metadata (bool): If True, return (stream, angles_per_pres, contrasts_per_pres)
                 where angles_per_pres and contrasts_per_pres are per-stimulus-presentation arrays.
+            duration (int): Timesteps each stimulus (orientation and contrast) is held for.
             **kwargs: Arguments to pass to generate_surround_ensembles (e.g. biased, von_mises).
 
         Returns:
@@ -264,14 +265,14 @@ class StimulusGenerator:
         '''
         # 1. Generate base normalized profiles from generate_surround_ensembles
         if return_metadata:
-            profiles, centers = self.generate_surround_ensembles(adapt_location, return_angles=True, **kwargs)
+            profiles, centers = self.generate_surround_ensembles(adapt_location, return_angles=True,
+                                                                 duration=duration, **kwargs)
         else:
-            profiles = self.generate_surround_ensembles(adapt_location, **kwargs)
+            profiles = self.generate_surround_ensembles(adapt_location, duration=duration, **kwargs)
 
         # 2. Determine number of distinct stimulus presentations from the actual
         #    profile length (uniform path truncates to complete cycles, so
         #    profiles.shape[1] may be shorter than self.stream_length)
-        duration = 20  # Matches generate_surround_ensembles's own default
         num_inputs = profiles.shape[1] // duration
 
         # 3. peak_ln_contrast is the mean of the underlying normal (mode in log-space)

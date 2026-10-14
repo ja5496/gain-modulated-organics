@@ -11,116 +11,98 @@ adapt_single_stimulus.py, which instead probes only the final gains of one run).
 
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm import tqdm
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics_Surround
-from response_tools import get_response_offline, offline_gain_operator
+from response_tools import get_response_offline, offline_gain_operator, settled_surround_msg, to_steps
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ---- Durations (ms, the units of the model's time constants) ----
+DT = 0.1                        # simulation time step
+# Conduction delay on the surround's contribution to the cRF's normalization pool.
+# V1Dynamics_Surround.set_surround_delay takes it in ms and converts it to timesteps itself.
+# 0.0 reproduces the pre-delay model exactly.
+SURROUND_DELAY = 40.0
+# Times along the ONE adaptation trajectory to checkpoint
+CHECKPOINTS = {'Short': 400.0, 'Medium': 4000.0, 'Long': 10000.0}
+BASELINE_SETTLE_TIME = 500.0    # time the network settles under the flat baseline before adapting
+
+# ---- The same durations in timesteps ----
+CHECKPOINT_STEPS = {label: to_steps(t, DT, f"CHECKPOINTS['{label}']") for label, t in CHECKPOINTS.items()}
+N_STEPS = max(CHECKPOINT_STEPS.values())   # adaptation run length: up to the last checkpoint
+BASELINE_SETTLE_STEPS = to_steps(BASELINE_SETTLE_TIME, DT, 'BASELINE_SETTLE_TIME')
+
 N_RF, N_SETS = 13, 6
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_high_c.csv")
 TUNING_WIDTH = 0.75
-THETA_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
 
 ADAPTOR_THETA = np.pi / 2       # radians (centered in the [0, pi) probe sweep -> mid-plot on x-axis)
-ADAPTOR_CONTRAST = 1.0
-PROBE_CONTRAST = 0.6
+ADAPTOR_CONTRAST = 0.8
+PROBE_CONTRAST = 1.0
 N_PROBES = 90
-THETA_T_CONTRAST = 0.6         # fixed low contrast used only to calibrate theta_t
-
-# Conduction delay (seconds) on the surround's contribution to the cRF's normalization pool -
-# see V1Dynamics_Surround.set_surround_delay. 0.0 reproduces the pre-delay model exactly.
-SURROUND_DELAY = 4000.0
-
-# Step indices along the ONE adaptation trajectory to checkpoint, labeled per spec - dt=0.1
-# makes these labels nominal (short/medium/long), not dimensionally exact.
-CHECKPOINTS = {'Short': 4000, 'Medium': 40000, 'Long': 100000}
-N_STEPS = max(CHECKPOINTS.values()) + 1
+BASELINE_CONTRAST = 0.3         # contrast of the flat, orientation-less baseline seen before adapting
 
 CONDITIONS = ['adapt CRF only', 'adapt CRF and surround']
 COND_LABEL = {'adapt CRF only': 'cRF only', 'adapt CRF and surround': 'cRF + Surround'}
 
 
-def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
-    '''Adapts for N_STEPS and returns {label: (g_cRF, g_surround, mu_cRF, mu_surround)} at each
-    CHECKPOINT. 'no adaptation' instead calibrates theta_t from a genuinely unbiased stream
-    (stim_gen is only ever used for this) and returns the (zero-gain, baseline-mu) reference
-    state for the non-adapted control curve: (g_cRF, g_surround, mu_cRF, mu_surround). The
-    'no adaptation' pass always runs with whatever delay dyn currently has (the caller is
-    expected to run it before calling dyn.set_surround_delay, so it establishes a clean,
-    delay-free baseline - see __main__). surround_msg_baseline is only consulted by
-    run_simulation while surround_delay>0 (see V1Dynamics_Surround.run_simulation).'''
-    if cond == 'no adaptation':
-        stream = stim_gen.generate_surround_ensembles('no adaptation', add_poisson_noise=False)
-        (_, _, _, _, _, g_cRF_hist, g_surround_hist, v_cRF_hist, v_surround_hist,
-         mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream)
-        assert np.all(g_cRF_hist == 0) and np.all(g_surround_hist == 0), (
-            "calibration run's gains moved away from zero - theta_t sentinel no longer holds."
-        )
-        dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
-        zeros_K = np.zeros(dyn.frame.K)
-        return zeros_K, zeros_K, mu_cRF_hist[:, -1], mu_surround_hist[:, -1]
-
-    stimulus = stim_gen.oriented_drive(ADAPTOR_THETA, ADAPTOR_CONTRAST, cond)
-    stream = np.tile(stimulus[:, None], N_STEPS)   # sustained: same stimulus every timestep
-    (_, _, _, _, _, g_cRF_hist, g_surround_hist, _, _,
-     mu_cRF_hist, mu_surround_hist, _) = dyn.run_simulation(stream, surround_msg_baseline=surround_msg_baseline)
-
-    return {label: (g_cRF_hist[:, t], g_surround_hist[:, t], mu_cRF_hist[:, t], mu_surround_hist[:, t])
-            for label, t in CHECKPOINTS.items()}
+def adapted_gains(dyn, stim_gen, cond, surround_msg_baseline):
+    '''Holds the adaptor (routed per cond) for N_STEPS from a zero initial state and returns
+    {checkpoint label: (g_cRF, g_surround)}.'''
+    adaptor = stim_gen.oriented_drive(ADAPTOR_THETA, ADAPTOR_CONTRAST, cond)
+    stream = np.broadcast_to(adaptor[:, None], (adaptor.size, N_STEPS))   # same stimulus every timestep
+    _, _, _, _, _, g_cRF_hist, g_surround_hist, *_ = dyn.run_simulation(
+        stream, surround_msg_baseline=surround_msg_baseline)
+    # History column t is the state after t + 1 steps, so checkpoint n steps is column n - 1.
+    # Copied so the full histories can be freed.
+    return {label: (g_cRF_hist[:, n - 1].copy(), g_surround_hist[:, n - 1].copy())
+            for label, n in CHECKPOINT_STEPS.items()}
 
 
 if __name__ == "__main__":
     print("Initializing tunings, frame, stimulus generator, and dynamics...")
     tunings = V1Tunings(N=N_RF)
     frame = Frame(csv_path=FRAME_PATH)
-    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, stream_length=N_STEPS,
-                                  tuning_width=TUNING_WIDTH, contrast=THETA_T_CONTRAST)
-    dyn = V1Dynamics_Surround(tunings, frame, N_RF=N_RF, N_SETS=N_SETS,
+    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, tuning_width=TUNING_WIDTH)
+    dyn = V1Dynamics_Surround(tunings, frame, dt=DT, N_RF=N_RF, N_SETS=N_SETS,
                                target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
 
     print("Calibrating theta_t...")
-    baseline_state = run_adaptation_phase(dyn, stim_gen, 'no adaptation')  # runs at surround_delay=0
+    dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
 
-    # Surround's settled non-adapting contribution, used to hold the delay buffer during the
-    # first surround_delay seconds of the adaptation runs below (see run_simulation's
-    # surround_msg_baseline docstring) - not zero, since the surround is never actually silent.
-    surround_msg_baseline = dyn._surround_msg(dyn.last_state)
+    print("Settling the surround's signal under the flat baseline (no delay)...")
+    baseline = stim_gen.oriented_drive(0.0, BASELINE_CONTRAST, 'no adaptation')   # theta unused
+    surround_msg_baseline = settled_surround_msg(dyn, baseline, BASELINE_SETTLE_STEPS)
     dyn.set_surround_delay(SURROUND_DELAY)
 
     print(f"Running adaptation phase (sustained adaptor, cRF-only and cRF+surround, "
-          f"surround_delay={SURROUND_DELAY}s)...")
-    frozen_states = {cond: run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=surround_msg_baseline)
-                      for cond in CONDITIONS}
+          f"surround_delay={SURROUND_DELAY:g}ms)...")
+    gains = {cond: adapted_gains(dyn, stim_gen, cond, surround_msg_baseline) for cond in CONDITIONS}
 
     # Flank neuron: positive-angle neighbor of the adaptor (right of it on a tuning plot).
-    adaptor_idx = int(np.argmin(np.abs(THETA_RF - ADAPTOR_THETA)))
+    adaptor_idx = int(np.argmin(np.abs(tunings.theta - ADAPTOR_THETA)))
     flank_idx = (adaptor_idx + 1) % N_RF
     probe_angles = np.linspace(0, np.pi, N_PROBES, endpoint=False)
+    # One probe per column, shaped like the condition's adaptor
+    probes = {cond: np.stack([stim_gen.oriented_drive(theta, PROBE_CONTRAST, cond) for theta in probe_angles],
+                             axis=1)
+              for cond in CONDITIONS}
 
-    def flank_tuning_curve(cond, g_cRF, g_surround, mu_cRF, mu_surround, desc):
-        '''Flank-neuron response swept over probe_angles, probe shape matching cond.'''
-        curve = np.zeros(N_PROBES)
-        for i, theta in enumerate(tqdm(probe_angles, desc=desc, leave=False)):
-            probe = stim_gen.oriented_drive(theta, PROBE_CONTRAST, cond)
-            M = offline_gain_operator(dyn, g_cRF, g_surround)
-            y = get_response_offline(dyn, probe, M)
-            curve[i] = y[flank_idx]
-        return curve
+    def flank_tuning_curve(cond, g_cRF, g_surround):
+        '''Flank-neuron response to cond's probes, with the gains frozen at (g_cRF, g_surround).'''
+        M = offline_gain_operator(dyn, g_cRF, g_surround)
+        return get_response_offline(dyn, probes[cond], M)[flank_idx]
 
     print("Computing flank-neuron tuning curves...")
-    tuning_curves = {(cond, label): flank_tuning_curve(cond, *frozen_states[cond][label], f"{cond} @ {label}")
-                      for cond in CONDITIONS for label in CHECKPOINTS}
-
-    print("Computing non-adapted reference curves...")
-    baseline_curves = {cond: flank_tuning_curve(cond, *baseline_state, f"{cond} @ baseline")
-                        for cond in CONDITIONS}
+    zeros_K = np.zeros(dyn.frame.K)
+    baseline_curves = {cond: flank_tuning_curve(cond, zeros_K, zeros_K) for cond in CONDITIONS}   # non-adapted
+    tuning_curves = {(cond, label): flank_tuning_curve(cond, *gains[cond][label])
+                     for cond in CONDITIONS for label in CHECKPOINTS}
 
     probe_deg = np.degrees(probe_angles)
     fig, axes = plt.subplots(2, 3, figsize=(10, 6), sharex=True, sharey='row')
