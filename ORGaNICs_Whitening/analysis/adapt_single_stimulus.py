@@ -9,13 +9,15 @@ Population: N_SETS sets of N_RF primary neurons (6 x 13 = 78): one classical RF 
 surround sets, all sharing the same tuning-curve basis and per-RF frame.
 
 Methodology:
-1. For each condition, one grating at the adaptor orientation (StimulusGenerator.oriented_drive,
-   routed to the adapted region(s), flat baseline elsewhere) is held for ADAPTATION_DURATION ms.
+1. For each condition, one grating at ADAPTOR_THETA (StimulusGenerator.oriented_drive, routed to
+   the adapted region(s), flat baseline elsewhere) is held for ADAPTATION_DURATION ms. The whole
+   network's final state is kept, including the region that only saw the flat baseline (which
+   adapts too).
 2. The final gains are frozen and the network is probed with full-field gratings (response_tools:
    closed-form fixed point by default, settled RK4 dynamics if online=True).
 3. Figures: a subset of g_cRF vs time; contrast-response functions of the cRF subpopulation
-   (l2 norm of its response) at the adaptor orientation; tuning curves of the flank neuron next
-   to the adaptor-preferring cRF neuron.
+   (l2 norm of its response) at the adaptor orientation; tuning curves of a flank neuron 20.8 deg
+   from the adaptor.
 '''
 
 import os
@@ -49,6 +51,7 @@ TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covar
 
 ADAPTOR_CONTRAST     = 0.8         # contrast of the sustained adaptor (same as adapt_ensembles.py's ensembles)
 TUNING_WIDTH         = 0.75
+ADAPTOR_THETA        = np.pi / 2   # radians: midway between neurons 6 (83.08 deg) and 7 (96.92 deg)
 
 # If True, probes settle the full RK4 dynamics with gains frozen (get_response_online - slow,
 # exact). If False, they use the closed-form fixed point (get_response_offline - fast).
@@ -83,14 +86,13 @@ GAIN_TIMECOURSE_COND = 'adapt CRF and surround'   # condition whose gains are pl
 SIM_HISTORY = {}   # g_cRF history (K, n_steps) of each adaptation run, keyed by condition
 
 
-def run_adaptation_phase(dyn, stim_gen, adaptor_rad, cond):
+def run_adaptation_phase(dyn, stim_gen, cond):
     '''
-    Holds the adaptor for ADAPTATION_DURATION ms (from a zero initial state) and returns the
-    final (g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround).
-
-    'no adaptation' returns all zeros without simulating (zero gain feedback is its known steady
-    state). For single-region conditions, the region that doesn't see the adaptor only sees the
-    flat baseline, so its gains, v and mu are zeroed. theta_t must already be calibrated.
+    Holds the adaptor (ADAPTOR_THETA, routed per cond) for ADAPTATION_DURATION ms from a zero
+    initial state and returns the final (g_cRF, g_surround, v_cRF, v_surround, mu_cRF, mu_surround)
+    of the whole network - including, for single-region conditions, the region that only saw the
+    flat baseline. 'no adaptation' returns all zeros without simulating (zero gain feedback is its
+    known steady state). theta_t must already be calibrated.
     '''
     K, N_RF = dyn.frame.K, dyn.N_RF
 
@@ -99,7 +101,7 @@ def run_adaptation_phase(dyn, stim_gen, adaptor_rad, cond):
         zeros_N = np.zeros(N_RF)
         return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N
 
-    adaptor = stim_gen.oriented_drive(adaptor_rad, ADAPTOR_CONTRAST, cond)
+    adaptor = stim_gen.oriented_drive(ADAPTOR_THETA, ADAPTOR_CONTRAST, cond)
     stream = np.tile(adaptor[:, None], ADAPTATION_STEPS)   # same stimulus at every timestep
 
     (_, _, _, _, _, g_cRF_hist, _, _, _, _, _, _) = dyn.run_simulation(stream)
@@ -112,15 +114,6 @@ def run_adaptation_phase(dyn, stim_gen, adaptor_rad, cond):
     v_surround  = unpacked['v_surround']
     mu_cRF      = unpacked['mu_cRF']
     mu_surround = unpacked['mu_surround']
-
-    if cond == 'adapt CRF only':
-        g_surround = np.zeros(K)
-        v_surround = np.zeros(K)
-        mu_surround = np.zeros(N_RF)
-    elif cond == 'adapt surround only':
-        g_cRF = np.zeros(K)
-        v_cRF = np.zeros(K)
-        mu_cRF = np.zeros(N_RF)
 
     # If the adaptor never drives an interneuron's variance above theta_t, every gain clips to 0.
     g_active = g_cRF if cond != 'adapt surround only' else g_surround
@@ -143,8 +136,6 @@ if __name__ == "__main__":
                                     target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, tuning_width=TUNING_WIDTH)
 
-    adaptor_idx = stim_gen.num_angles // 2          # same adaptor as adapt_ensembles.py's biased ensemble
-    adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
     crf_slice = slice(CRF_IDX * N_RF, (CRF_IDX + 1) * N_RF)   # cRF subpopulation
 
     print("Calibrating theta_t from the uniform target covariance...")
@@ -154,7 +145,7 @@ if __name__ == "__main__":
     frozen_gains = {}
     for cond in CONDITIONS:
         print(f"  Adapting: {CONDITION_LABEL[cond]}")
-        frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, adaptor_rad, cond)
+        frozen_gains[cond] = run_adaptation_phase(dyn, stim_gen, cond)
 
     # ==========================================================================
     # Subset of g_cRF vs. time step - checks that the gains settle during adaptation.
@@ -209,7 +200,7 @@ if __name__ == "__main__":
         M = gain_operator(cond)
         resp = np.zeros(N_CONTRASTS)
         for i, c in enumerate(tqdm(CRF_CONTRASTS, desc=f"    {cond}", leave=False)):
-            resp[i] = np.linalg.norm(probe_response(cond, full_field_probe(adaptor_rad, c), M)[crf_slice])
+            resp[i] = np.linalg.norm(probe_response(cond, full_field_probe(ADAPTOR_THETA, c), M)[crf_slice])
         return resp
 
     curves_by_condition = {cond: crf_curve(cond) for cond in CONDITIONS}
@@ -232,12 +223,15 @@ if __name__ == "__main__":
     ax_crf.legend(fontsize=10, frameon=False)
 
     # ==========================================================================
-    # Tuning curve of the flank neuron (adjacent to the adaptor-preferring neuron)
+    # Tuning curve of the flank neuron
     # ==========================================================================
     print("Computing flank-neuron tuning curves...")
     probe_angles = np.linspace(0, np.pi, N_PROBES, endpoint=False)
     probe_angles_deg = np.degrees(probe_angles)
-    adaptor_deg = np.degrees(adaptor_rad)
+    adaptor_deg = np.degrees(ADAPTOR_THETA)
+    # Flank neuron: negative-angle neighbor of neuron 6 (83.08 deg) -> neuron 5 (69.23 deg), 20.8 deg
+    # below the 90 deg adaptor (the mirror image of Kohn_distinct_plots.py's flank, 20.8 deg above).
+    adaptor_idx = stim_gen.num_angles // 2
     flank_idx = (adaptor_idx - 1) % N_RF
     FLANK_CONDITIONS = ['no adaptation', 'adapt surround only', 'adapt CRF only']
 

@@ -28,7 +28,7 @@ DT = 0.1                        # simulation time step
 # 0.0 reproduces the pre-delay model exactly.
 SURROUND_DELAY = 40.0
 # Times along the ONE adaptation trajectory to checkpoint
-CHECKPOINTS = {'Short': 400.0, 'Medium': 4000.0, 'Long': 10000.0}
+CHECKPOINTS = {'0.4 sec': 400.0, '4 sec': 4000.0, '40 sec': 40000.0}
 BASELINE_SETTLE_TIME = 500.0    # time the network settles under the flat baseline before adapting
 
 # ---- The same durations in timesteps ----
@@ -41,11 +41,11 @@ FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_high_c.csv")
 TUNING_WIDTH = 0.75
 
-ADAPTOR_THETA = np.pi / 2       # radians (centered in the [0, pi) probe sweep -> mid-plot on x-axis)
+ADAPTOR_THETA = np.pi / 2       # radians: midway between neurons 6 (83.08 deg) and 7 (96.92 deg)
 ADAPTOR_CONTRAST = 0.8
 PROBE_CONTRAST = 1.0
 N_PROBES = 90
-BASELINE_CONTRAST = 0.3         # contrast of the flat, orientation-less baseline seen before adapting
+BASELINE_CONTRAST = 0.01         # contrast of the flat, orientation-less baseline seen before adapting
 
 CONDITIONS = ['adapt CRF only', 'adapt CRF and surround']
 COND_LABEL = {'adapt CRF only': 'cRF only', 'adapt CRF and surround': 'cRF + Surround'}
@@ -84,7 +84,9 @@ if __name__ == "__main__":
           f"surround_delay={SURROUND_DELAY:g}ms)...")
     gains = {cond: adapted_gains(dyn, stim_gen, cond, surround_msg_baseline) for cond in CONDITIONS}
 
-    # Flank neuron: positive-angle neighbor of the adaptor (right of it on a tuning plot).
+    # Flank neuron: positive-angle neighbor of the adaptor (right of it on a tuning plot). At 90 deg,
+    # argmin picks neuron 7 (96.92 deg; it beats neuron 6 by floating-point rounding), so the flank
+    # is neuron 8 (110.77 deg), 20.8 deg above the adaptor.
     adaptor_idx = int(np.argmin(np.abs(tunings.theta - ADAPTOR_THETA)))
     flank_idx = (adaptor_idx + 1) % N_RF
     probe_angles = np.linspace(0, np.pi, N_PROBES, endpoint=False)
