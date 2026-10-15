@@ -23,8 +23,9 @@ Methodology:
    the run. The input covariance uses the smallest stimulus set with exactly the ensemble's
    distribution (minimal_ensemble).
 4. Figures: a subset of g_cRF vs time; stimulus covariance vs gain-implied factorizations;
-   ensemble histograms + biased-adapted tuning curves; input covariance, tuning repulsion and
-   1st/2nd-order equalization vs time.
+   ensemble histograms + biased-adapted tuning curves (in-stream fits, and offline fixed-point
+   responses to a fine orientation grid with each run's final gains frozen); input covariance,
+   tuning repulsion and 1st/2nd-order equalization vs time.
 '''
 
 import os
@@ -38,7 +39,7 @@ from scipy.optimize import curve_fit
 from simulation_whiten import Frame, V1Dynamics_Surround
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
-from response_tools import settled_surround_msg, to_steps
+from response_tools import get_response_offline, offline_gain_operator, settled_surround_msg, to_steps
 import Analytic_responses as AR
 
 # ---- Durations (ms, the units of the model's time constants) ----
@@ -49,7 +50,7 @@ STATS_WINDOW         = 1000.0    # length of each window of the adaptation run's
 # Conduction delay on the surround's contribution to the cRF's normalization pool, as in
 # Kohn_distinct_plots.py. V1Dynamics_Surround.set_surround_delay takes it in ms and converts it to
 # timesteps itself. 0.0 reproduces the pre-delay model exactly.
-SURROUND_DELAY       = 25.0
+SURROUND_DELAY       = 40.0
 BASELINE_SETTLE_TIME = 500.0     # time the network settles under the flat baseline before adapting
 
 # ---- The same durations in timesteps ----
@@ -405,6 +406,20 @@ if __name__ == "__main__":
     peak_uniform = np.max(binned_uniform, axis=1, keepdims=True)
     norm_crf     = binned_crf / (peak_uniform + 1e-12)
 
+    # Offline tuning curves: closed-form fixed point (get_response_offline) with each run's final
+    # gains frozen, probed at every orientation of x_axis (0.5 deg spacing). Probes are routed and
+    # scaled like that condition's ensemble, as the in-stream presentations were.
+    def offline_tuning(cond):
+        g_cRF, g_surround = final_gains[cond][:2]
+        probes = np.stack([stim_gen.oriented_drive(theta, ENSEMBLE_CONTRAST, ADAPT_LOCATION_FOR_COND[cond])
+                           for theta in np.radians(x_axis + adaptor_deg)], axis=1)   # (N_TOT, len(x_axis))
+        M = offline_gain_operator(dyn, g_cRF, g_surround)
+        return get_response_offline(dyn, probes, M)[CRF_SLICE]   # firing rates, (N_RF, len(x_axis))
+
+    binned_offline_uniform = bin_by_preference(offline_tuning(UNIFORM_COND), tunings.theta)
+    binned_offline_crf     = bin_by_preference(offline_tuning(BIASED_COND), tunings.theta)
+    norm_offline_crf = binned_offline_crf / (np.max(binned_offline_uniform, axis=1, keepdims=True) + 1e-12)
+
     # num_angles == N_RF is odd and the adaptor is one of the presented angles, so the relative
     # angles land exactly on the centers of N_BINS equal bins spanning [-90, 90].
     uni_angles_rel  = (uni_angles_deg  - adaptor_deg + 90) % 180 - 90
@@ -415,8 +430,8 @@ if __name__ == "__main__":
 
     blue_colors = plt.cm.Blues(np.linspace(0.2, 1.0, N_BINS))
 
-    fig_tc, axes_tc = plt.subplots(1, 3, figsize=(13, 3.75))
-    ax_uni_hist, ax_bias_hist, ax_tc_bias = axes_tc
+    fig_tc, axes_tc = plt.subplots(1, 4, figsize=(17.3, 3.75))
+    ax_uni_hist, ax_bias_hist, ax_tc_bias, ax_tc_offline = axes_tc
 
     ax_uni_hist.hist(uni_angles_rel, bins=bins_hist, weights=weights_uni, color='black', rwidth=0.9)
     ax_bias_hist.hist(bias_angles_rel, bins=bins_hist, weights=weights_bias, color='black', rwidth=0.9)
@@ -429,9 +444,15 @@ if __name__ == "__main__":
 
     for i in range(N_BINS):
         ax_tc_bias.plot(x_axis, norm_crf[i], color=blue_colors[i], linewidth=2.0)
-    ymin, ymax = ax_tc_bias.get_ylim()
-    ax_tc_bias.set_ylim(ymin - 0.05 * (ymax - ymin), ymax)
-    ax_tc_bias.set_yticks([0, 1])
+        ax_tc_offline.plot(x_axis, norm_offline_crf[i], color=blue_colors[i], linewidth=2.0)
+    ax_tc_bias.set_title("In-stream (fit)", fontsize=16)
+    ax_tc_offline.set_title("Offline (frozen gains)", fontsize=16)
+    # Shared y-scale so the in-stream and offline curves are directly comparable
+    ymin = min(ax.get_ylim()[0] for ax in (ax_tc_bias, ax_tc_offline))
+    ymax = max(ax.get_ylim()[1] for ax in (ax_tc_bias, ax_tc_offline))
+    for ax in (ax_tc_bias, ax_tc_offline):
+        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax)
+        ax.set_yticks([0, 1])
 
     for ax in axes_tc:
         ax.set_xlim(-90, 90)
@@ -442,9 +463,10 @@ if __name__ == "__main__":
         ax.spines['right'].set_visible(False)
         ax.tick_params(axis='both', labelsize=16)
 
-    ax_tc_bias.spines['left'].set_linewidth(1.8)
-    ax_tc_bias.spines['bottom'].set_linewidth(1.8)
-    ax_tc_bias.tick_params(axis='both', width=1.8, length=5)
+    for ax in (ax_tc_bias, ax_tc_offline):
+        ax.spines['left'].set_linewidth(1.8)
+        ax.spines['bottom'].set_linewidth(1.8)
+        ax.tick_params(axis='both', width=1.8, length=5)
     fig_tc.tight_layout()
 
     # ==========================================================================

@@ -39,8 +39,8 @@ from response_tools import get_response_offline, to_steps
 DT = 0.1                       # simulation time step
 # Length of every adaptation stream: several tau_g (1000 ms in V1Dynamics_Surround) so the gains
 # converge
-ADAPTATION_DURATION = 10000.0
-STIMULUS_DURATION = 2.0        # time each stimulus in an adaptation stream is held for
+ADAPTATION_DURATION = 4200.0
+STIMULUS_DURATION = 30.0        # time each stimulus in an adaptation stream is held for
 
 # ---- The same durations in timesteps ----
 ADAPTATION_STEPS = to_steps(ADAPTATION_DURATION, DT, 'ADAPTATION_DURATION')
@@ -53,8 +53,8 @@ N_SETS = 6                     # 1 classical RF (cRF) + 5 surround sets
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 ADAPT_LOC = 'adapt CRF only'   # no spatial cRF/surround distinction in these experiments
-ADAPT_CONTRAST = 0.8
-PROBE_CONTRAST = 0.6
+ADAPT_CONTRAST = 1.0
+PROBE_CONTRAST = 0.8
 # Figure 1 orientation environments, all von Mises with peaks evenly spaced 60° apart:
 # name -> (peak orientation in degrees, concentration kappa)
 ENVIRONMENTS = {'A': (30.0, 6.0),    # tall and skinny
