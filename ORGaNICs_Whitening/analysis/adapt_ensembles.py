@@ -9,8 +9,10 @@ Population: N_SETS sets of N_RF primary neurons (6 x 13 = 78): one classical RF 
 surround sets, all sharing the same tuning-curve basis and per-RF frame.
 
 Methodology:
-1. The cRF adapts to a uniform and to a biased (adaptor-heavy) ensemble of gratings, with a flat
-   baseline in the surround (generate_surround_ensembles). In every run, the surround's
+1. The cRF and surround adapt to a uniform and to a biased (adaptor-heavy) ensemble of full-field
+   gratings (generate_surround_ensembles' 'adapt CRF and surround' routing). theta_t comes from
+   the single-RF target covariance rescaled by crf_response_scale, since the shared normalization
+   pool suppresses the cRF's responses to full-field gratings. In every run, the surround's
    contribution to the cRF's normalization pool arrives SURROUND_DELAY ms late (as in
    Kohn_distinct_plots.py); until it does, the cRF sees the surround's settled contribution under
    a flat, non-adapting stimulus.
@@ -46,10 +48,7 @@ import Analytic_responses as AR
 DT                   = 0.1       # simulation time step
 ADAPTATION_DURATION  = 4200.0    # length of each adaptation run
 STIMULUS_DURATION    = 30.0      # time each individual adaptation stimulus is held for
-STATS_WINDOW         = 1000.0    # length of each window of the adaptation run's 1st/2nd-order statistics
-# Conduction delay on the surround's contribution to the cRF's normalization pool, as in
-# Kohn_distinct_plots.py. V1Dynamics_Surround.set_surround_delay takes it in ms and converts it to
-# timesteps itself. 0.0 reproduces the pre-delay model exactly.
+STATS_WINDOW         = 4200.0    # length of each window of the adaptation run's 1st/2nd-order statistics
 SURROUND_DELAY       = 40.0
 BASELINE_SETTLE_TIME = 500.0     # time the network settles under the flat baseline before adapting
 
@@ -68,6 +67,7 @@ TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covar
 
 ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
+BASELINE_CONTRAST = 0.01
 
 CONDITION_LABEL = {
     'no adaptation':          'No adaptation',
@@ -77,14 +77,14 @@ CONDITION_LABEL = {
     'uniform adaptation':     'Uniform adaptation',
 }
 # Ensemble routing per condition. 'no adaptation' (unbiased, both regions) has zero gains by
-# construction and is never simulated; 'uniform adaptation' is the unbiased ensemble in the cRF,
-# genuinely adapted.
+# construction and is never simulated; 'uniform adaptation' is the same unbiased full-field
+# ensemble, genuinely adapted.
 ADAPT_LOCATION_FOR_COND = {
-    'no adaptation':          'adapt CRF and surround',
+    'no adaptation':          'adapt CRF only', # CHANGED FROM CRF AND SURROUND
     'adapt CRF only':         'adapt CRF only',
     'adapt surround only':    'adapt surround only',
     'adapt CRF and surround': 'adapt CRF and surround',
-    'uniform adaptation':     'adapt CRF only',
+    'uniform adaptation':     'adapt CRF only', # CHANGED FROM CRF AND SURROUND
 }
 BIASED_FOR_COND = {
     'no adaptation':          False,
@@ -95,7 +95,7 @@ BIASED_FOR_COND = {
 }
 
 UNIFORM_COND = 'uniform adaptation'   # reference for tuning-curve normalization and repulsion
-BIASED_COND  = 'adapt CRF and surround'       # biased-ensemble adaptation analyzed in every figure
+BIASED_COND  = 'adapt CRF only'       # biased-ensemble adaptation analyzed in every figure # CHANGED FROM CRF AND SURROUND
 GAIN_TIMECOURSE_COND = BIASED_COND    # condition whose gains are plotted vs time
 
 SIM_HISTORY = {}   # full history of each adaptation run (y, gains, stream, centers), keyed by condition
@@ -206,6 +206,28 @@ def minimal_ensemble(cond, num_angles):
     return stimuli, orientation_index(centers, num_angles)
 
 
+def crf_response_scale(dyn, layout, reference='adapt CRF only'):
+    '''
+    kappa = s^2: the cRF's mean squared response to a uniform ensemble routed to layout, relative
+    to the same ensemble routed to reference. Uses the closed-form fixed point
+    y = z / sqrt(sigma^2 + N z^2) at g = 0, over one presentation of each orientation.
+
+    The all-ones normalization pool divides every neuron by the whole population's drive, so a
+    full-field grating suppresses the cRF by s ~ 0.5 relative to a cRF-only grating (kappa ~ 0.25).
+    The target covariance at TARGET_COV_PATH is single-RF (no surround suppression), so theta_t is
+    rescaled by kappa to sit at the cRF's actual response scale. tau_g is not rescaled: dg/dt
+    scales with the squared response, so under full-field stimulation the gains approach this set
+    point about 1/kappa times more slowly than cRF-only gains.
+    '''
+    def mean_power(loc):
+        gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, stream_length=N_RF,
+                                tuning_width=TUNING_WIDTH, contrast=ENSEMBLE_CONTRAST)
+        z = gen.generate_surround_ensembles(loc, duration=1)   # each orientation once
+        y = z / np.sqrt(dyn.sigma ** 2 + dyn.N_matrix @ z ** 2)
+        return np.mean(np.sum(y[CRF_SLICE] ** 2, axis=0))
+    return mean_power(layout) / mean_power(reference)
+
+
 def bin_by_preference(response, neuron_preferences, n_bins=N_RF):
     '''Averages response rows into n_bins equal bins of neuron preference (one neuron per bin
     when n_bins == N_RF). Matches Surround_Analytic_Responses.py's bin_by_preference.'''
@@ -278,10 +300,16 @@ if __name__ == "__main__":
     K = dyn.frame.K
 
     print("Calibrating theta_t from the uniform target covariance...")
-    dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
+    # Target rescaled to the cRF's response scale under the uniform ensemble's routing (see
+    # crf_response_scale); also the target of the 2nd-order equalization below.
+    kappa = crf_response_scale(dyn, ADAPT_LOCATION_FOR_COND[UNIFORM_COND])
+    target_cov = dyn.uniform_target_covariance #* kappa
+    print(f"  kappa = {kappa:.4f} (cRF response power, "
+          f"'{ADAPT_LOCATION_FOR_COND[UNIFORM_COND]}' vs 'adapt CRF only')")
+    dyn.calibrate_theta_t(C_zz_uniform=target_cov, uniform_target=True)
 
     print("Settling the surround's non-adapting normalization signal (no delay)...")
-    flat = stim_gen.oriented_drive(0.0, ENSEMBLE_CONTRAST, 'no adaptation')   # baseline everywhere; theta unused
+    flat = stim_gen.oriented_drive(0.0, BASELINE_CONTRAST, 'no adaptation')   # baseline everywhere; theta unused
     surround_msg_baseline = settled_surround_msg(dyn, flat, BASELINE_SETTLE_STEPS)
     dyn.set_surround_delay(SURROUND_DELAY)
     if dyn.n_lag >= ADAPTATION_STEPS:
@@ -492,7 +520,7 @@ if __name__ == "__main__":
     windows = [(t0, t0 + STATS_WINDOW_STEPS) for t0 in range(0, n_steps - STATS_WINDOW_STEPS + 1, STATS_WINDOW_STEPS)]
     times = [t_stop for _, t_stop in windows]
     eq1 = [first_order_equalization(biased['y_hist'], w) for w in windows]
-    eq2 = [second_order_equalization(biased['y_hist'], w, dyn.uniform_target_covariance) for w in windows]
+    eq2 = [second_order_equalization(biased['y_hist'], w, target_cov) for w in windows]
     for t, e1, e2 in zip(times, eq1, eq2):
         print(f"  t={t}: 1st-order equalization = {e1:.4f}, 2nd-order (operator distance) = {e2:.4g}")
 
