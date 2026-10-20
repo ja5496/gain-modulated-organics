@@ -207,19 +207,23 @@ if __name__ == "__main__":
 
     fig_combined, (ax_crf, ax_flank) = plt.subplots(1, 2, figsize=(8, 3.5))
 
+    # Normalize by the no-adaptation peak so the unadapted response is the reference (= 1)
+    crf_norm = curves_by_condition['no adaptation'].max()
     for cond in CONDITIONS:
-        ax_crf.plot(CRF_CONTRASTS, curves_by_condition[cond], color=CONDITION_COLOR[cond],
+        ax_crf.plot(CRF_CONTRASTS, curves_by_condition[cond] / crf_norm, color=CONDITION_COLOR[cond],
                     linewidth=3.5, label=CONDITION_LABEL[cond])
 
     ax_crf.set_xscale('log')
     ax_crf.set_xlabel("Contrast", fontsize=20)
-    ax_crf.set_yticks([])
+    ax_crf.set_ylabel("Norm. Response", fontsize=20)
+    ax_crf.set_ylim(bottom=0)
+    ax_crf.set_yticks([0, 1])
     ax_crf.grid(False)
     ax_crf.spines['top'].set_visible(False)
     ax_crf.spines['right'].set_visible(False)
-    ax_crf.spines['left'].set_visible(False)
+    ax_crf.spines['left'].set_linewidth(2.5)
     ax_crf.spines['bottom'].set_linewidth(2.5)
-    ax_crf.tick_params(axis='x', width=2.5, length=6, labelsize=18)
+    ax_crf.tick_params(axis='both', width=2.5, length=6, labelsize=18)
     ax_crf.legend(fontsize=10, frameon=False)
 
     # ==========================================================================
@@ -256,11 +260,12 @@ if __name__ == "__main__":
         'adapt CRF only':      fr"$\Delta\theta$ = {peak_shift_deg['adapt CRF only']:+.2f}°",
     }
 
+    flank_norm = flank_curves['no adaptation'].max()
     for cond in FLANK_CONDITIONS:
         plot_kwargs = dict(color=CONDITION_COLOR[cond], linewidth=3.5)
         if FLANK_LEGEND_LABEL[cond] is not None:
             plot_kwargs['label'] = FLANK_LEGEND_LABEL[cond]
-        ax_flank.plot(probe_angles_deg, flank_curves[cond], **plot_kwargs)
+        ax_flank.plot(probe_angles_deg, flank_curves[cond] / flank_norm, **plot_kwargs)
 
     ax_flank.axvline(control_peak, color='grey', linestyle='--', linewidth=1.0, zorder=0)
 
@@ -272,13 +277,15 @@ if __name__ == "__main__":
     ax_flank.set_xlim(0, 180)
     ax_flank.set_xticks([0, 90, 180])
     ax_flank.set_xticklabels(['0', '90', '180'], fontsize=18)
-    ax_flank.set_yticks([])
+    ax_flank.set_ylim(bottom=0)
+    ax_flank.set_yticks([0, 1])
     ax_flank.grid(False)
     ax_flank.spines['top'].set_visible(False)
     ax_flank.spines['right'].set_visible(False)
-    ax_flank.spines['left'].set_visible(False)
+    ax_flank.spines['left'].set_linewidth(2.5)
     ax_flank.spines['bottom'].set_linewidth(2.5)
     ax_flank.tick_params(axis='x', width=2.5, length=8)
+    ax_flank.tick_params(axis='y', width=2.5, length=6, labelsize=18)
     ax_flank.legend(fontsize=12, frameon=False, handlelength=1.0)
     fig_combined.tight_layout()
 

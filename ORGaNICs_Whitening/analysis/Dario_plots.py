@@ -8,7 +8,8 @@ peaks evenly spaced in orientation and different widths (see ENVIRONMENTS). Pane
 orientation distributions and the power-law test of Tring, Dipoppa &
 Ringach (2023, Nat. Commun., "A power law describes the magnitude of adaptation in neural
 populations of primary visual cortex") - log ratio of population response magnitudes between
-two environments vs. log ratio of the stimulus probabilities.
+two environments vs. log ratio of the stimulus probabilities. A companion figure zooms the power
+law to |log10 P ratio| <= RESTRICTED_FIT_RANGE.
 
 Figure 3: Contrast response functions after adapting to low/medium/high contrast ensembles.
 
@@ -53,7 +54,7 @@ N_SETS = 6                     # 1 classical RF (cRF) + 5 surround sets
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 ADAPT_LOC = 'adapt CRF only'   # no spatial cRF/surround distinction in these experiments
-ADAPT_CONTRAST = 1.0
+ADAPT_CONTRAST = 0.8
 PROBE_CONTRAST = 0.8
 # Figure 1 orientation environments, all von Mises with peaks evenly spaced 60° apart:
 # name -> (peak orientation in degrees, concentration kappa)
@@ -158,7 +159,8 @@ def Dario_fig1(dyn, stim_gen):
     population response magnitudes (l2 norm of the response vector) between two environments X, Y
     vs. log10 ratio of the stimulus probabilities, fit by a line without intercept
     (r_X/r_Y = (p_X/p_Y)^beta, pooled over pairs) - over all points (solid) and over only points
-    with |log10 P ratio| <= RESTRICTED_FIT_RANGE (dotted). Only the cRF block is analyzed."""
+    with |log10 P ratio| <= RESTRICTED_FIT_RANGE (dotted). A second figure repeats the power-law
+    panel with only those points and the dotted fit. Only the cRF block is analyzed."""
     print(' ----------- FIGURE 1 -----------')
     # Probe exactly at the neuron preferences (np.linspace(0, pi, N_RF, endpoint=False), as in
     # stimuli_whiten); 180° is excluded since it's the same orientation as 0°
@@ -202,6 +204,7 @@ def Dario_fig1(dyn, stim_gen):
 
     # --- Figure ---
     fig, (ax_dist, ax_pow) = plt.subplots(1, 2, figsize=(13, 5.5))
+    fig_in, ax_pow_in = plt.subplots(figsize=(6.5, 5.5))   # power law zoomed to RESTRICTED_FIT_RANGE
     colors = {'A': '#4169E1', 'B': '#D2042D', 'C': '#B8860B'}   # royal blue, cherry red, dark yellow
     pair_styles = {('A', 'B'): ('#6A3D9A', 'o'), ('A', 'C'): ('#0F6B2F', 's'),   # purple circles, green squares,
                    ('B', 'C'): ('#E07000', '^')}                                  # orange triangles
@@ -211,7 +214,7 @@ def Dario_fig1(dyn, stim_gen):
     fs_label = 24
     fs_ticks = 16
     axis_lw = 1.5
-    for ax in (ax_dist, ax_pow):
+    for ax in (ax_dist, ax_pow, ax_pow_in):
         for spine in ax.spines.values():
             spine.set_linewidth(axis_lw)
 
@@ -234,36 +237,45 @@ def Dario_fig1(dyn, stim_gen):
     ax.set_yticks([])
     ax.tick_params(axis='x', length=0, labelsize=fs_ticks)
 
-    # Right: log response-magnitude ratio vs log probability ratio, one marker per probe orientation
-    ax = ax_pow
-    ax.axhline(0, color='lightgray', lw=1, zorder=0)
-    ax.axvline(0, color='lightgray', lw=1, zorder=0)
-    for X, Y in pairs:
-        color, marker = pair_styles[(X, Y)]
-        ax.scatter(log_p_ratio[(X, Y)], log_r_ratio[(X, Y)], color=color, alpha=point_alpha, marker=marker,
-                   s=point_size, edgecolors='white', linewidths=1, zorder=3)
-    x_fit = np.array([x_all.min(), x_all.max()])
-    fit_all_line, = ax.plot(x_fit, beta * x_fit, color='#333333', lw=2, zorder=2,
-                            label=fr'$\beta = {beta:.2f}$, $R^2 = {r_squared:.2f}$')
-    # Restricted fit, drawn only over the range it was fit on
-    x_fit_in = np.clip(x_fit, -RESTRICTED_FIT_RANGE, RESTRICTED_FIT_RANGE)
-    fit_in_line, = ax.plot(x_fit_in, beta_in * x_fit_in, color='#333333', lw=2.5, ls=':', zorder=2,
-                           label=fr'$\beta = {beta_in:.2f}$, $R^2 = {r_squared_in:.2f}$')
-    ax.set_xlabel(r'$\log_{10}\,[P_X(\theta)\,/\,P_Y(\theta)]$', fontsize=fs_label)
-    ax.set_ylabel(r'$\log_{10}\,[r_X(\theta)\,/\,r_Y(\theta)]$', fontsize=fs_label)
-    ax.xaxis.set_major_locator(MultipleLocator(1))   # a tick label at every integer
-    # Three y ticks symmetric about 0: the largest one-significant-figure value inside both y limits
-    y_extent = min(abs(lim) for lim in ax.get_ylim())
-    decade = 10 ** np.floor(np.log10(y_extent))
-    y_tick = np.floor(y_extent / decade + 1e-9) * decade
-    ax.set_yticks([-y_tick, 0, y_tick])
-    ax.set_yticklabels([f'−{y_tick:g}', '0', f'{y_tick:g}'])
-    ax.tick_params(labelsize=fs_ticks, width=axis_lw)
-    add_pair_legend(ax, pairs, pair_styles, colors, alpha=point_alpha, markersize=np.sqrt(point_size),
-                    loc='lower left')
-    ax.legend(handles=[fit_all_line, fit_in_line], loc='upper right', fontsize=14)
+    def draw_power_law(ax, fits, x_limit=np.inf):
+        '''Log response-magnitude ratio vs log probability ratio, one marker per probe orientation,
+        keeping only points with |log10 P ratio| <= x_limit. fits: (beta, R^2, x endpoints, line kwargs).'''
+        ax.axhline(0, color='lightgray', lw=1, zorder=0)
+        ax.axvline(0, color='lightgray', lw=1, zorder=0)
+        for X, Y in pairs:
+            color, marker = pair_styles[(X, Y)]
+            keep = np.abs(log_p_ratio[(X, Y)]) <= x_limit
+            ax.scatter(log_p_ratio[(X, Y)][keep], log_r_ratio[(X, Y)][keep], color=color, alpha=point_alpha,
+                       marker=marker, s=point_size, edgecolors='white', linewidths=1, zorder=3)
+        fit_lines = [ax.plot(x_fit, b * x_fit, color='#333333', zorder=2,
+                             label=fr'$\beta = {b:.2f}$, $R^2 = {r2:.2f}$', **line_kwargs)[0]
+                     for b, r2, x_fit, line_kwargs in fits]
+        ax.set_xlabel(r'$\log_{10}\,[P_X(\theta)\,/\,P_Y(\theta)]$', fontsize=fs_label)
+        ax.set_ylabel(r'$\log_{10}\,[r_X(\theta)\,/\,r_Y(\theta)]$', fontsize=fs_label)
+        ax.xaxis.set_major_locator(MultipleLocator(1))   # a tick label at every integer
+        # Three y ticks symmetric about 0: the largest one-significant-figure value inside both y limits
+        y_extent = min(abs(lim) for lim in ax.get_ylim())
+        decade = 10 ** np.floor(np.log10(y_extent))
+        y_tick = np.floor(y_extent / decade + 1e-9) * decade
+        ax.set_yticks([-y_tick, 0, y_tick])
+        ax.set_yticklabels([f'−{y_tick:g}', '0', f'{y_tick:g}'])
+        ax.tick_params(labelsize=fs_ticks, width=axis_lw)
+        add_pair_legend(ax, pairs, pair_styles, colors, alpha=point_alpha, markersize=np.sqrt(point_size),
+                        loc='lower left')
+        ax.legend(handles=fit_lines, loc='upper right', fontsize=14)
 
-    plt.tight_layout()
+    # Right: all points with both fits; the restricted fit is drawn only over the range it was fit on
+    x_fit = np.array([x_all.min(), x_all.max()])
+    x_fit_in = np.clip(x_fit, -RESTRICTED_FIT_RANGE, RESTRICTED_FIT_RANGE)
+    fit_all = (beta, r_squared, x_fit, dict(lw=2))
+    fit_in = (beta_in, r_squared_in, x_fit_in, dict(lw=2.5, ls=':'))
+    draw_power_law(ax_pow, [fit_all, fit_in])
+    fig.tight_layout()
+
+    # Separate figure: only the points within RESTRICTED_FIT_RANGE, with their (dotted) fit
+    draw_power_law(ax_pow_in, [fit_in], x_limit=RESTRICTED_FIT_RANGE)
+    fig_in.tight_layout()
+
     plt.show()
 
 

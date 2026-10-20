@@ -6,7 +6,8 @@ effects (Kohn 2015-style dissociation), using V1Dynamics_Surround's single conti
 trajectory (one tau_g) checkpointed at three points, rather than two separate mechanisms.
 Unlike Dario_plots.py/adapt_ensembles.py, the adaptor here is a single SUSTAINED
 (unchanging) oriented stimulus, matching classic single-adaptor physiology paradigms (as in
-adapt_single_stimulus.py, which instead probes only the final gains of one run).
+adapt_single_stimulus.py, which instead probes only the final gains of one run). Every condition's
+tuning is probed with full-field (cRF + surround) gratings, as in adapt_single_stimulus.py.
 """
 
 import os
@@ -19,7 +20,8 @@ import matplotlib.pyplot as plt
 from tunings_whiten import V1Tunings
 from stimuli_whiten import StimulusGenerator
 from simulation_whiten import Frame, V1Dynamics_Surround
-from response_tools import get_response_offline, offline_gain_operator, settled_surround_msg, to_steps
+from response_tools import (get_response_offline, offline_gain_operator, settled_surround_msg, to_steps,
+                            curve_peak_deg)
 
 # ---- Durations (ms, the units of the model's time constants) ----
 DT = 0.1                        # simulation time step
@@ -43,9 +45,9 @@ TUNING_WIDTH = 0.75
 
 ADAPTOR_THETA = np.pi / 2       # radians: midway between neurons 6 (83.08 deg) and 7 (96.92 deg)
 ADAPTOR_CONTRAST = 0.8
-PROBE_CONTRAST = 1.0
+PROBE_CONTRAST = 0.8
 N_PROBES = 90
-BASELINE_CONTRAST = 0.01         # contrast of the flat, orientation-less baseline seen before adapting
+BASELINE_CONTRAST = 0.1         # contrast of the flat, orientation-less baseline seen before adapting
 
 CONDITIONS = ['adapt CRF only', 'adapt CRF and surround']
 COND_LABEL = {'adapt CRF only': 'cRF only', 'adapt CRF and surround': 'cRF + Surround'}
@@ -90,30 +92,35 @@ if __name__ == "__main__":
     adaptor_idx = int(np.argmin(np.abs(tunings.theta - ADAPTOR_THETA)))
     flank_idx = (adaptor_idx + 1) % N_RF
     probe_angles = np.linspace(0, np.pi, N_PROBES, endpoint=False)
-    # One probe per column, shaped like the condition's adaptor
-    probes = {cond: np.stack([stim_gen.oriented_drive(theta, PROBE_CONTRAST, cond) for theta in probe_angles],
-                             axis=1)
-              for cond in CONDITIONS}
+    # One full-field (cRF + surround) probe per column, shared by every condition. A cRF-only probe
+    # would let the adapted cRF dominate the shared normalization pool, cancelling the repulsion.
+    probes = np.stack([stim_gen.oriented_drive(theta, PROBE_CONTRAST, 'adapt CRF and surround')
+                       for theta in probe_angles], axis=1)
 
-    def flank_tuning_curve(cond, g_cRF, g_surround):
-        '''Flank-neuron response to cond's probes, with the gains frozen at (g_cRF, g_surround).'''
+    def flank_tuning_curve(g_cRF, g_surround):
+        '''Flank-neuron response to the full-field probes, with the gains frozen at (g_cRF, g_surround).'''
         M = offline_gain_operator(dyn, g_cRF, g_surround)
-        return get_response_offline(dyn, probes[cond], M)[flank_idx]
+        return get_response_offline(dyn, probes, M)[flank_idx]
 
     print("Computing flank-neuron tuning curves...")
     zeros_K = np.zeros(dyn.frame.K)
-    baseline_curves = {cond: flank_tuning_curve(cond, zeros_K, zeros_K) for cond in CONDITIONS}   # non-adapted
-    tuning_curves = {(cond, label): flank_tuning_curve(cond, *gains[cond][label])
+    baseline_curve = flank_tuning_curve(zeros_K, zeros_K)   # non-adapted (same for every condition)
+    tuning_curves = {(cond, label): flank_tuning_curve(*gains[cond][label])
                      for cond in CONDITIONS for label in CHECKPOINTS}
 
     probe_deg = np.degrees(probe_angles)
+    adaptor_deg = np.degrees(ADAPTOR_THETA)
+    baseline_peak_deg = curve_peak_deg(baseline_curve, probe_deg)
     fig, axes = plt.subplots(2, 3, figsize=(10, 6), sharex=True, sharey='row')
     for row, cond in enumerate(CONDITIONS):
         for col, label in enumerate(CHECKPOINTS):
             ax = axes[row, col]
-            ax.plot(probe_deg, baseline_curves[cond], color='gray', ls='--', lw=3.0, label='No adaptation')
+            ax.plot(probe_deg, baseline_curve, color='gray', ls='--', lw=3.0, label='No adaptation')
             ax.plot(probe_deg, tuning_curves[(cond, label)], color="#89021D", lw=3.5, label='Adapted')
-            ax.axvline(np.degrees(ADAPTOR_THETA), color='gray', ls=':', lw=1.2)
+            ax.axvline(baseline_peak_deg, color='grey', linestyle='--', linewidth=1.0, zorder=0)
+            ax.annotate('', xy=(adaptor_deg, 0.80), xytext=(adaptor_deg, 0.94),
+                        xycoords=('data', 'axes fraction'), textcoords=('data', 'axes fraction'),
+                        arrowprops=dict(arrowstyle='-|>', color='black', linewidth=2.5, mutation_scale=18))
             if row == 0:
                 ax.set_title(label, fontsize=20, fontweight='bold')
             if col == 0:
