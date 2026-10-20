@@ -80,11 +80,11 @@ CONDITION_LABEL = {
 # construction and is never simulated; 'uniform adaptation' is the same unbiased full-field
 # ensemble, genuinely adapted.
 ADAPT_LOCATION_FOR_COND = {
-    'no adaptation':          'adapt CRF only', # CHANGED FROM CRF AND SURROUND
+    'no adaptation':          'adapt CRF and surround', # CHANGED FROM CRF AND SURROUND
     'adapt CRF only':         'adapt CRF only',
     'adapt surround only':    'adapt surround only',
     'adapt CRF and surround': 'adapt CRF and surround',
-    'uniform adaptation':     'adapt CRF only', # CHANGED FROM CRF AND SURROUND
+    'uniform adaptation':     'adapt CRF and surround', # CHANGED FROM CRF AND SURROUND
 }
 BIASED_FOR_COND = {
     'no adaptation':          False,
@@ -95,7 +95,7 @@ BIASED_FOR_COND = {
 }
 
 UNIFORM_COND = 'uniform adaptation'   # reference for tuning-curve normalization and repulsion
-BIASED_COND  = 'adapt CRF only'       # biased-ensemble adaptation analyzed in every figure # CHANGED FROM CRF AND SURROUND
+BIASED_COND  = 'adapt CRF and surround'       # biased-ensemble adaptation analyzed in every figure # CHANGED FROM CRF AND SURROUND
 GAIN_TIMECOURSE_COND = BIASED_COND    # condition whose gains are plotted vs time
 
 SIM_HISTORY = {}   # full history of each adaptation run (y, gains, stream, centers), keyed by condition
