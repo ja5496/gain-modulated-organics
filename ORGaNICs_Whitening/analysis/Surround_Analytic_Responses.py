@@ -55,6 +55,7 @@ Beta  = 0.5
 
 ENSEMBLE_CONTRAST = 1.0      # Contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH      = 0.75     # Width of the gaussian stimulus profiles
+INPUT_BOUND       = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, tuning_width=TUNING_WIDTH).max_drive   # fixed input bound (see StimulusGenerator)
 N_CONTRASTS   = 20           # Number of contrasts to probe with
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
 PROBE_CONTRAST = 0.8         
@@ -71,22 +72,22 @@ def half_wave_rectify(y):      # Estimates primary neuron firing rate from membr
     return np.maximum(y, 0.0) ** 2
 
 def probe_local_profile(input_theta, contrast, tuning_width=TUNING_WIDTH):
-    '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding. Currently
-    unused by any figure below (probe_input_drive, which normalizes AFTER replication -- not this
-    function's own per-block normalization -- is what every contrast/tuning-curve figure uses);
+    '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding: one block of
+    probe_input_drive's probe. Currently unused by any figure below (they use probe_input_drive);
     kept as a building block for any single-local-block diagnostic added later.'''
     theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False)    # Evenly spaced orientation preferences for neurons
     delta = theta_grid - input_theta                            # Distance between neuron preference from stimulus orientation
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2             # Shift by 90 degrees to match other scripts
     profile = np.exp(-delta**2 / (2 * tuning_width**2))         # Gaussian profile
-    profile = contrast * profile / np.linalg.norm(profile)      # Normalize and scale by contrast
+    profile = contrast * profile / INPUT_BOUND                  # Scale by contrast, divide by the fixed input bound
     return profile
 
 def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation
-    state. Normalizes the FULL replicated (N_TOTAL,) vector to unit norm, matching
-    StimulusGenerator.oriented_drive(..., 'adapt CRF and surround') exactly -- normalizing each local
-    block to unit norm BEFORE replicating (the old behavior here) inflates the total probe energy
+    state. Scales the replicated (N_TOTAL,) profile by contrast and divides it by the fixed input
+    bound, matching StimulusGenerator.oriented_drive(..., 'adapt CRF and surround') exactly (for a
+    full-field probe the bound is the probe's own norm at contrast 1, to within 0.04%) -- normalizing
+    each local block to unit norm BEFORE replicating (an older behavior here) inflates the total probe energy
     by an extra factor of sqrt(N_SETS), which shifts the effective semi-saturation contrast by
     that same factor (c50 = sigma/sqrt(N_SETS) instead of sigma, for the M=0 baseline). That's
     what was making sigma=0.15 look "wrong" -- the response formula was correct, the probe
@@ -97,7 +98,7 @@ def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2
     profile = np.exp(-delta**2 / (2 * tuning_width**2))
     full_profile = np.concatenate([profile] * N_SETS)
-    return contrast * full_profile / np.linalg.norm(full_profile)
+    return contrast * full_profile / INPUT_BOUND
 
 def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     '''M = W @ diag(g) W.T '''
@@ -146,12 +147,12 @@ def block_diag_W(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt 
 def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     match adapt_location:
         case 'adapt CRF only':
-            baseline = np.full(N_RF, 0.2)            
+            baseline = np.full(N_RF, 0.2 / INPUT_BOUND)            
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([stimuli] + [baseline] * repeats)
             return full_stimuli
         case 'adapt surround only':
-            baseline = np.full(N_RF, 0.2)
+            baseline = np.full(N_RF, 0.2 / INPUT_BOUND)
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([baseline] + [stimuli] * repeats)
             return full_stimuli
@@ -159,7 +160,7 @@ def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'ada
             full_stimuli = np.concatenate([stimuli] * N_SETS)
             return full_stimuli
         case 'no adaptation':
-            baseline = np.full(N_RF, 0.2)            
+            baseline = np.full(N_RF, 0.2 / INPUT_BOUND)            
             full_stimuli = np.concatenate([baseline] * N_SETS)
             return full_stimuli
 

@@ -63,11 +63,10 @@ N_SETS     = 6                     # 1 classical RF (cRF) + 5 surround sets
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 CRF_SLICE  = slice(CRF_IDX * N_RF, (CRF_IDX + 1) * N_RF)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_high_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 
 ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH         = 0.75
-BASELINE_CONTRAST = 0.01
 
 CONDITION_LABEL = {
     'no adaptation':          'No adaptation',
@@ -213,7 +212,8 @@ def crf_response_scale(dyn, layout, reference='adapt CRF only'):
     y = z / sqrt(sigma^2 + N z^2) at g = 0, over one presentation of each orientation.
 
     The all-ones normalization pool divides every neuron by the whole population's drive, so a
-    full-field grating suppresses the cRF by s ~ 0.5 relative to a cRF-only grating (kappa ~ 0.25).
+    full-field grating suppresses the cRF by s ~ 0.56 relative to a cRF-only grating
+    (kappa ~ 0.31 at contrast 0.8).
     The target covariance at TARGET_COV_PATH is single-RF (no surround suppression), so theta_t is
     rescaled by kappa to sit at the cRF's actual response scale. tau_g is not rescaled: dg/dt
     scales with the squared response, so under full-field stimulation the gains approach this set
@@ -309,7 +309,7 @@ if __name__ == "__main__":
     dyn.calibrate_theta_t(C_zz_uniform=target_cov, uniform_target=True)
 
     print("Settling the surround's non-adapting normalization signal (no delay)...")
-    flat = stim_gen.oriented_drive(0.0, BASELINE_CONTRAST, 'no adaptation')   # baseline everywhere; theta unused
+    flat = stim_gen.oriented_drive(0.0, 0.0, 'no adaptation')   # blank screen: the fixed baseline everywhere
     surround_msg_baseline = settled_surround_msg(dyn, flat, BASELINE_SETTLE_STEPS)
     dyn.set_surround_delay(SURROUND_DELAY)
     if dyn.n_lag >= ADAPTATION_STEPS:

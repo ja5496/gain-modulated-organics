@@ -47,7 +47,6 @@ ADAPTOR_THETA = np.pi / 2       # radians: midway between neurons 6 (83.08 deg) 
 ADAPTOR_CONTRAST = 0.8
 PROBE_CONTRAST = 0.8
 N_PROBES = 90
-BASELINE_CONTRAST = 0.1         # contrast of the flat, orientation-less baseline seen before adapting
 
 CONDITIONS = ['adapt CRF only', 'adapt CRF and surround']
 COND_LABEL = {'adapt CRF only': 'cRF only', 'adapt CRF and surround': 'cRF + Surround'}
@@ -78,7 +77,7 @@ if __name__ == "__main__":
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
 
     print("Settling the surround's signal under the flat baseline (no delay)...")
-    baseline = stim_gen.oriented_drive(0.0, BASELINE_CONTRAST, 'no adaptation')   # theta unused
+    baseline = stim_gen.oriented_drive(0.0, 0.0, 'no adaptation')   # blank screen: the fixed baseline everywhere
     surround_msg_baseline = settled_surround_msg(dyn, baseline, BASELINE_SETTLE_STEPS)
     dyn.set_surround_delay(SURROUND_DELAY)
 
