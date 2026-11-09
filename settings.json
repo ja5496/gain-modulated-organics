@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Bash(python -m pytest *)",
+      "Bash(pytest *)",
+      "Bash(git status)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git switch *)",
+      "Bash(git checkout -b *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(pip install *)",
+      "Bash(conda install *)"
+    ],
+    "deny": [
+      "Edit(data/raw/**)",
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)"
+    ]
+  }
+}
