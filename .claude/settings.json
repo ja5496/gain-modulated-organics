@@ -4,6 +4,7 @@
       "Edit",
       "Bash(python -m pytest *)",
       "Bash(pytest *)",
+      "Bash(conda run -n gain_modulation --cwd ORGaNICs_Whitening python -m pytest *)",
       "Bash(git status)",
       "Bash(git diff)",
       "Bash(git diff *)",
@@ -19,7 +20,7 @@
       "Bash(conda install *)"
     ],
     "deny": [
-      "Edit(data/raw/**)",
+      "Edit(ORGaNICs_Whitening/data/**)",
       "Bash(rm -rf *)",
       "Bash(git push --force *)"
     ]

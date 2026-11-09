@@ -22,7 +22,7 @@ Scripts:
   - `figures.py`: schematic and covariance-diagnostic figures. Writes PNGs into `analysis/`, e.g. `crf_surround_schematic.png` and `ellipse_norm_schematic.png`.
   - `response_tools.py`: shared helpers for probing `V1Dynamics_Surround` with gains held fixed
 
-Tests: `tests/test_frame.py` is a frame-geometry diagnostic script, not a pytest test (see Environment).
+Tests: `tests/` holds pytest tests; it's currently empty apart from `__init__.py` (see Environment).
 
 Data (`data/`, tracked in git):
 - `frames/`: frame matrices W_yv as CSV (e.g. `N13_mercedes_K182_Frame.csv`)
@@ -39,7 +39,7 @@ There is no separate figures directory, results directory or `.mplstyle` file ye
 - Python 3.11, environment: `conda activate gain_modulation`. Run everything inside it.
 - Dependencies are not specified anywhere: there is no `requirements.txt`, `environment.yml` or `pyproject.toml`. The code imports NumPy, SciPy, Matplotlib and tqdm. Don't add dependencies without asking.
 - Run scripts from inside `ORGaNICs_Whitening/` (e.g. `python analysis/Dario_plots.py`). Some defaults, including `V1Dynamics_Surround`'s `target_covariance_path`, are relative paths such as `data/...`, so they only resolve from that directory.
-- Tests: there is no pytest suite yet, and pytest is not installed in `gain_modulation`. `tests/test_frame.py` has no assertions; run it as a script with `python tests/test_frame.py`. New tests should be pytest tests, run with `python -m pytest tests/ -q` once pytest is installed.
+- Tests: pytest, in `ORGaNICs_Whitening/tests/` (no tests yet). From the repo root, run `conda run -n gain_modulation --cwd ORGaNICs_Whitening python -m pytest tests/ -q`.
 
 ## The model
 Full equations and derivations are in `docs/equations.md` (Eqs. dy, du, da, dv, dg, dmu, y_steady, z_prime). Key facts:
