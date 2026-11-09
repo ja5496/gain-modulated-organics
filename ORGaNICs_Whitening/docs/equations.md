@@ -205,14 +205,13 @@ $$
 \boxed{\ \boldsymbol{y}^2 = \frac{\boldsymbol{z'}^2}{\sigma^2 + \boldsymbol{N}\boldsymbol{z'}^2}\ ; \quad \boldsymbol{z'} = \left[\boldsymbol{I} + \boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]^{-1}\boldsymbol{z}\ }
 $$
 
-## Transcription notes and open points
+## Transcription notes
 
-These are differences from the manuscript text, or things it leaves unstated. Resolve them before treating any of them as settled.
+These are differences from the manuscript text, or things it leaves unstated.
 
-1. **Eq. du_0 typo.** The manuscript writes $\boldsymbol{y_1^+}$ inside $\boldsymbol{N}(\cdot)$; it's transcribed here as $\boldsymbol{y}^+$ to match Eq. du. Confirm, and fix the manuscript if it's a typo.
+1. **Eq. du_0 typo.** The manuscript writes $\boldsymbol{y_1^+}$ inside $\boldsymbol{N}(\cdot)$; it's transcribed here as $\boldsymbol{y}^+$ to match Eq. du, which is correct.
 2. **The fixed point assumes $\beta = 1/2$.** The $\sigma^2$ in Eq. y_steady comes from the $(\sigma/2)^2$ constant in Eq. du combined with $\beta = 1/2$. If $\beta$ changes, Eq. y_steady no longer holds as written.
-3. **Gain clamp.** The manuscript states Eq. dg with no nonnegativity constraint. The implementation rule $\boldsymbol{g} \leftarrow \max(\boldsymbol{g}, 0)$ after every update comes from CLAUDE.md, not the manuscript.
-4. **Symbol $N$ is overloaded.** It is both the number of principal neurons and the normalization matrix $\boldsymbol{N}$. In fixed-point formulas, $\boldsymbol{N}\boldsymbol{z'}^2$ means the matrix applied to the element-wise square.
-5. **Missing cross-references.** The manuscript refers to a standard normalization fixed point ("Equation norm_fixed", with $n = 2$) and a covariance-ellipse figure ("fig:cov_ellipse"). Neither is in the pasted section, so neither is reproduced here.
-6. **Squares are element-wise.** $(\boldsymbol{c}-\boldsymbol{\mu})^2$, $\boldsymbol{y}^2$ and $\boldsymbol{z'}^2$ are all element-wise squares.
-7. **Small edits.** Spelling in the prose was corrected ("inhereted", "superscipt"), and `\bm` was converted to `\boldsymbol` so the math renders in Markdown. No equations were changed apart from note 1.
+3. **Symbol $N$ is overloaded.** It is both the number of principal neurons and the normalization matrix $\boldsymbol{N}$. In fixed-point formulas, $\boldsymbol{N}\boldsymbol{z'}^2$ means the matrix applied to the element-wise square.
+4. **Missing cross-references.** The manuscript refers to a standard normalization fixed point ("Equation norm_fixed", with $n = 2$) and a covariance-ellipse figure ("fig:cov_ellipse"). Neither is in the pasted section, so neither is reproduced here.
+5. **Squares are element-wise.** $(\boldsymbol{c}-\boldsymbol{\mu})^2$, $\boldsymbol{y}^2$ and $\boldsymbol{z'}^2$ are all element-wise squares.
+6. **Small edits.** Spelling in the prose was corrected ("inhereted", "superscipt"), and `\bm` was converted to `\boldsymbol` so the math renders in Markdown. No equations were changed apart from note 1.

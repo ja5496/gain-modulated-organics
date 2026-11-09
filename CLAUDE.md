@@ -63,26 +63,17 @@ Full equations and derivations are in `docs/equations.md` (Eqs. dy, du, da, dv, 
 2. If anything is ambiguous (sign conventions, which terms are rectified, time constants, indexing), ask. Don't guess.
 3. Tag each term in the code with its equation label, e.g. `# Eq. dy: recurrent drive`.
 4. Keep the model definition (right-hand side), the integrator, and the analysis in separate functions.
-5. The system is stiff (τ_a = 0.1 ms vs. τ_g = 2 s, a ratio of ~2×10⁴). For time-varying input, use fixed-step integration (exponential Euler for leaky variables, forward Euler for g followed by the nonnegativity clamp) with dt ≤ τ_a/10 unless a convergence test justifies larger. For constant-input fixed-point tests with g frozen, `solve_ivp` with an implicit method (Radau, BDF, or LSODA) is fine. If existing code uses a different scheme, keep it and make sure the convergence check covers it.
+5. The system is stiff (τ_a = 0.1 ms vs. τ_g = 2 s, a ratio of ~2×10⁴). For time-varying input, use fixed-step integration (exponential Euler for leaky variables, forward Euler for g followed by the nonnegativity clamp) with dt ≤ τ_a/10 unless a convergence test justifies larger. For constant-input fixed-point tests with g frozen, `solve_ivp` with an implicit method (Radau, BDF, or LSODA) is fine. If existing code uses a different scheme, keep it.
 
 ## Verification (required before reporting any result)
 New or changed model code isn't done until it's verified. Use the `model-verifier` subagent.
 
-1. **Fast-subsystem fixed point.** Freeze g and μ, constant z, W_yy = I. Integrate to steady state and compare element-wise with:
-   - z′ = (I + W_yv D(g) W_yvᵀ)⁻¹ z
-   - y* = z′ / √(σ² + N z′²)
-   - u* = (σ² + N z′²) / 4
-   - a*/(1 + a*) = √u*
-   - v* = D(g) W_yvᵀ y*
-   Agreement to [1e-6 relative]; confirm with root-finding on the RHS (`scipy.optimize.root`). Test g = 0 (single-layer ORGaNICs, z′ = z) and several nonzero g.
-2. **Validity conditions.** Assert u* < 1 (otherwise Eq. da has no stable fixed point). Flag any negative component of z′, since rectification makes the fixed-point formula invalid there.
-3. **W_yy ≠ I** (if used): the formula is approximate. Report the deviation; don't assert agreement.
-4. **Stability.** Jacobian eigenvalues of the fast subsystem at the fixed point have negative real parts; perturb the simulation and confirm it returns.
-5. **Gain clamp.** Assert g ≥ 0 at every step. Under constant input, c → μ, so g decreases at rate θ_t/τ_g until it reaches 0 and stays there; z′ → z. This is expected.
-6. **Gain adaptation.** Stochastic input with known covariance: after convergence, the time average of (c − μ)² matches θ_t along each column of W_yv whose gain is positive, within a tolerance that accounts for the finite averaging window (τ_μ = 2 s). For N = 2, K = 3, also check the full covariance of y. Report g trajectories, not just endpoints.
-7. **Target feasibility.** Normalization bounds y, so variance along each frame direction is bounded. If θ_t exceeds what's achievable, that gain pins at 0 instead of matching the target. Report any pinned gains and whether the target was feasible.
-8. **Convergence.** Halving dt changes results by less than [tolerance].
-9. **Regression.** [Baseline figure from the original ORGaNICs paper] still reproduces.
+
+1. **Validity conditions.** Flag any negative component of z′, since rectification makes the fixed-point formula invalid there.
+2. **Stability.** Jacobian eigenvalues of the fast subsystem at the fixed point have negative real parts; perturb the simulation and confirm it returns.
+3. **Gain clamp.** Assert g ≥ 0 at every step. Under constant input, c → μ, so g decreases at rate θ_t/τ_g until it reaches 0 and stays there; z′ → z. This is expected.
+4. **Gain adaptation.** Stochastic input with known covariance: after convergence, the time average of (c − μ)² matches θ_t along each column of W_yv whose gain is positive, within a tolerance that accounts for the finite averaging window (τ_μ = 2 s). For N = 2, K = 3, also check the full covariance of y. Report g trajectories, not just endpoints.
+5. **Target feasibility.** Normalization bounds y, so variance along each frame direction is bounded. If θ_t exceeds what's achievable, that gain pins at 0 instead of matching the target. Report any pinned gains and whether the target was feasible.
 
 Report which checks passed, which failed, and which were skipped and why. Never loosen a tolerance, skip a test, or edit a test to make it pass. A failing check is a result; report it.
 
@@ -100,7 +91,7 @@ Report which checks passed, which failed, and which were skipped and why. Never 
 
 ## Debugging and refactoring
 - Reproduce a bug with a minimal failing test before fixing it.
-- Refactors must leave numerical outputs unchanged (within float tolerance). Run the regression tests before and after.
+- Refactors must leave numerical outputs unchanged (within float tolerance). Check this by running the affected scripts before and after with the same seeds and comparing their outputs.
 
 ## Handoff to my writing agent
 After finishing a model or analysis, update `docs/methods_notes.md` with the equations implemented (LaTeX), a parameter table, the integration method and tolerances, and the verification checks run. I paste this into my writing agent for the Methods section.
