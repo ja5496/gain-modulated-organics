@@ -4,21 +4,42 @@
 I'm a PhD student in physics and computational neuroscience (Martiniani and Heeger labs, NYU). This repo implements a dynamical firing-rate model of V1 that combines ORGaNICs normalization with the Duong et al. adaptive whitening framework, so that responses are both normalized and covariance-transformed. I'm comfortable with Python and the math; explain numerical and modeling choices, not basic syntax.
 
 ## Repo layout
-[To be updated from the actual repo.]
-- `src/[package]/`: model code (importable package)
-- `scripts/`: simulation and analysis entry points
-- `tests/`: pytest tests
-- `figures/`: one script per figure, plus `paper.mplstyle`
-- `docs/equations.md`: source of truth for model equations and their context
-- `docs/methods_notes.md`: running methods summary for my writing agent
-- `refs/`: PDFs of papers being implemented
-- `data/raw/`: never modify
-- `results/`: simulation outputs (gitignored)
+All code lives in `ORGaNICs_Whitening/`. It is not an installable package: modules are flat files, and scripts make them importable with `sys.path.insert(0, REPO_ROOT)`, where `REPO_ROOT` is `ORGaNICs_Whitening/`. Active development is on the `splitting_scripts` branch. That branch is mid-cleanup: much of the code is deprecated and slated for removal, so check before building on an older module.
+
+Model code (top level of `ORGaNICs_Whitening/`):
+- `simulation_whiten.py`: `Frame`, `V1Dynamics` (single RF) and `V1Dynamics_Surround` (cRF plus surround sets, adaptation local to each RF)
+- `frame_whiten.py`: builds and saves overcomplete frames W_yv and target covariances (also defines its own `Frame` class)
+- `stimuli_whiten.py`: `StimulusGenerator`, synthetic LGN responses to oriented gratings
+- `tunings_whiten.py`: `V1Tunings`, recurrent weights and tuning curves for the primary neurons
+
+Scripts:
+- `precompute_adapted_gains.py`: runs adaptation and writes steady-state gains to `data/optimal_gains/`
+- `analysis/`: simulation, analysis and figure scripts, mixed together. Each has a `__main__` block, and most end with `plt.show()` rather than saving.
+  - Experiment replications: `Carandini_plots.py`, `Dario_plots.py`, `Kohn_distinct_plots.py`
+  - Adaptation runs: `adapt_single_stimulus.py`, `adapt_ensembles.py`
+  - Analytic or self-consistent responses: `Analytic_responses.py`, `Surround_Analytic_Responses.py`
+  - Diagnostics: `convergence_tests.py`, `diagnostics_whiten.py`, `normalization.py`
+  - `figures.py`: schematic and covariance-diagnostic figures. Writes PNGs into `analysis/`, e.g. `crf_surround_schematic.png` and `ellipse_norm_schematic.png`.
+  - `response_tools.py`: shared helpers for probing `V1Dynamics_Surround` with gains held fixed
+
+Tests: `tests/test_frame.py` is a frame-geometry diagnostic script, not a pytest test (see Environment).
+
+Data (`data/`, tracked in git):
+- `frames/`: frame matrices W_yv as CSV (e.g. `N13_mercedes_K182_Frame.csv`)
+- `target_covs/`: target covariance matrices as CSV
+- `optimal_gains/`: precomputed adapted gains (CSV) plus `meta.json`
+
+Docs (in `ORGaNICs_Whitening/docs/`):
+- `equations.md`: model equations and fixed-point derivation, transcribed from the manuscript Methods
+- `whitening_adaptation_notes.md`
+
+There is no separate figures directory, results directory or `.mplstyle` file yet.
 
 ## Environment
-- Python [3.x], environment: `[conda activate env-name]`. Run everything inside it.
-- Stack: NumPy, SciPy, Matplotlib. Don't add dependencies without asking.
-- Tests: `python -m pytest tests/ -q`
+- Python 3.11, environment: `conda activate gain_modulation`. Run everything inside it.
+- Dependencies are not specified anywhere: there is no `requirements.txt`, `environment.yml` or `pyproject.toml`. The code imports NumPy, SciPy, Matplotlib and tqdm. Don't add dependencies without asking.
+- Run scripts from inside `ORGaNICs_Whitening/` (e.g. `python analysis/Dario_plots.py`). Some defaults, including `V1Dynamics_Surround`'s `target_covariance_path`, are relative paths such as `data/...`, so they only resolve from that directory.
+- Tests: there is no pytest suite yet, and pytest is not installed in `gain_modulation`. `tests/test_frame.py` has no assertions; run it as a script with `python tests/test_frame.py`. New tests should be pytest tests, run with `python -m pytest tests/ -q` once pytest is installed.
 
 ## The model
 Full equations and derivations are in `docs/equations.md` (Eqs. dy, du, da, dv, dg, dmu, y_steady, z_prime). Key facts:
