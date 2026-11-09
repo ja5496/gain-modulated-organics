@@ -179,7 +179,7 @@ class StimulusGenerator:
 
         # Extend each individual profile from N_RF neurons to the full N_RF * N_SETS population;
         # RFs the stimulus doesn't cover get a fixed, contrast-independent baseline:
-        baseline = np.full((self.N_RF, profile.shape[1]), 0.2)
+        baseline = np.full((self.N_RF, profile.shape[1]), 0.15)
         match adapt_location:
             case 'no adaptation':
                 full_profile = np.concatenate([baseline] * (self.N_SETS), axis=0)
@@ -227,7 +227,7 @@ class StimulusGenerator:
         return profiles
 
     def oriented_drive(self, theta, contrast, adapt_location: Literal['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
-                       baseline=0.20):
+                       baseline=0.15):
         '''
         Single oriented stimulus centered at theta (radians): a Gaussian profile over the N_RF
         neurons' preferences scaled by contrast, routed into adapt_location exactly as in

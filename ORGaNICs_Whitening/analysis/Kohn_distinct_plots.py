@@ -40,11 +40,11 @@ BASELINE_SETTLE_STEPS = to_steps(BASELINE_SETTLE_TIME, DT, 'BASELINE_SETTLE_TIME
 
 N_RF, N_SETS = 13, 6
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_high_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 TUNING_WIDTH = 0.75
 
 ADAPTOR_THETA = np.pi / 2       # radians: midway between neurons 6 (83.08 deg) and 7 (96.92 deg)
-ADAPTOR_CONTRAST = 0.8
+ADAPTOR_CONTRAST = 1.0
 PROBE_CONTRAST = 0.8
 N_PROBES = 90
 

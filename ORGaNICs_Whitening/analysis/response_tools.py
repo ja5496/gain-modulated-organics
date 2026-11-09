@@ -26,12 +26,15 @@ def offline_gain_operator(dyn, g_cRF, g_surround):
     return block_diag(M_cRF, *([M_surround] * (dyn.N_SETS - 1)))
 
 
-def get_response_offline(dyn, stimulus, M, Beta=0.5):
+def get_response_offline(dyn, stimulus, M, Beta=0.5, rectify=True):
     '''Fixed point with gains frozen in M and v at its fast limit: normalized, whitened input
     y = z'/sqrt(sigma^2 + N z'^2), z' = (I + M)^-1 stimulus. stimulus is one probe (N_TOT,) or one
-    probe per column (N_TOT, n_probes). Returns firing rates (rectified y^2), same shape.'''
+    probe per column (N_TOT, n_probes). Returns firing rates (rectified y^2), same shape - or the
+    signed membrane potential y itself if rectify=False.'''
     z_prime = np.linalg.solve(np.eye(stimulus.shape[0]) + M, stimulus)
     y = z_prime / np.sqrt(dyn.sigma**2 + dyn.N_matrix @ (z_prime**2))
+    if not rectify:
+        return y
     rectified_y = dyn.half_wave_rectify(y)
 
     return rectified_y
@@ -79,11 +82,13 @@ def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
     return np.concatenate([dy_dt, du_dt, da_dt, dv_cRF_dt, dv_surround_dt])
 
 
-def get_response_online(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=N_SETTLE_STEPS):
+def get_response_online(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n_steps=N_SETTLE_STEPS,
+                        rectify=True):
     '''
     Settles y/u/a/v for a fixed probe stimulus (RK4, n_steps) with gains frozen. Starts from
     y = u = a = 0 and v = W.T @ mu every call, so probes don't depend on sweep order.
-    Returns (firing rates, v_cRF_final, v_surround_final).
+    Returns (firing rates, v_cRF_final, v_surround_final) - the signed membrane potential y in
+    place of the firing rates if rectify=False.
     '''
     N_TOT = dyn.N_RF * dyn.N_SETS
     K = dyn.frame.K
@@ -107,6 +112,8 @@ def get_response_online(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n
     v_cRF_final = state[3*N_TOT:3*N_TOT+K]
     v_surround_final = state[3*N_TOT+K:3*N_TOT+2*K]
 
+    if not rectify:
+        return y_final, v_cRF_final, v_surround_final
     y_final_rect = dyn.half_wave_rectify(y_final, 2.0)
     return y_final_rect, v_cRF_final, v_surround_final
 

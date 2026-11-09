@@ -187,7 +187,7 @@ class V1Dynamics_Surround:
 
         # Target covariance of one RF's responses to a uniform ensemble (see
         # frame_whiten.py:compute_uniform_target_covariance)
-        self.uniform_target_covariance = np.loadtxt(target_covariance_path, delimiter=",")
+        self.uniform_target_covariance = 0.15*np.loadtxt(target_covariance_path, delimiter=",")
         assert self.uniform_target_covariance.shape == (N_RF, N_RF), (
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
@@ -198,9 +198,9 @@ class V1Dynamics_Surround:
         self.tau_y = 0.4       # time constant of primary neuron (fast)
         self.tau_a = 0.2       # time constant of inhibitory neurons in normalization pool (fast)
         self.tau_u = 30.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
-        self.tau_g = 2000.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
+        self.tau_g = 500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
         self.tau_v = 30.0    # time constant of excitatory neurons in normalization pool (medium to fast)
-        self.tau_mu = 40000.0  # time constant of mean-response tracker (very slow, basically sets a prior)
+        self.tau_mu = 2000.0  # time constant of mean-response tracker (very slow, basically sets a prior)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
         self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation

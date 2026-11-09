@@ -21,8 +21,8 @@ Methodology:
    cRF tuning curve is fit with a Gaussian on the orientation circle; tuning shifts and the
    tuning-curve figure use the fits.
 3. 1st- and 2nd-order equalization use the cRF responses actually produced during biased
-   adaptation (mean firing rates and covariance), over consecutive STATS_WINDOW-ms windows of
-   the run. The input covariance uses the smallest stimulus set with exactly the ensemble's
+   adaptation (mean firing rates and covariance), read at each presentation's last timestep like
+   the tuning curves, over consecutive STATS_WINDOW-ms windows of the run. The input covariance uses the smallest stimulus set with exactly the ensemble's
    distribution (minimal_ensemble).
 4. Figures: a subset of g_cRF vs time; stimulus covariance vs gain-implied factorizations;
    ensemble histograms + biased-adapted tuning curves (in-stream fits, and offline fixed-point
@@ -46,7 +46,7 @@ import Analytic_responses as AR
 
 # ---- Durations (ms, the units of the model's time constants) ----
 DT                   = 0.1       # simulation time step
-ADAPTATION_DURATION  = 4200.0    # length of each adaptation run
+ADAPTATION_DURATION  = 8400.0    # length of each adaptation run
 STIMULUS_DURATION    = 30.0      # time each individual adaptation stimulus is held for
 STATS_WINDOW         = 4200.0    # length of each window of the adaptation run's 1st/2nd-order statistics
 SURROUND_DELAY       = 40.0
@@ -63,9 +63,10 @@ N_SETS     = 6                     # 1 classical RF (cRF) + 5 surround sets
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 CRF_SLICE  = slice(CRF_IDX * N_RF, (CRF_IDX + 1) * N_RF)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 
 ENSEMBLE_CONTRAST    = 0.8       # contrast of the adaptation ensembles (baseline & adaptor)
+PROBE_CONTRAST       = 0.8
 TUNING_WIDTH         = 0.75
 
 CONDITION_LABEL = {
@@ -83,7 +84,7 @@ ADAPT_LOCATION_FOR_COND = {
     'adapt CRF only':         'adapt CRF only',
     'adapt surround only':    'adapt surround only',
     'adapt CRF and surround': 'adapt CRF and surround',
-    'uniform adaptation':     'adapt CRF and surround', # CHANGED FROM CRF AND SURROUND
+    'uniform adaptation':     'adapt CRF only', # CHANGED FROM CRF AND SURROUND
 }
 BIASED_FOR_COND = {
     'no adaptation':          False,
@@ -94,7 +95,7 @@ BIASED_FOR_COND = {
 }
 
 UNIFORM_COND = 'uniform adaptation'   # reference for tuning-curve normalization and repulsion
-BIASED_COND  = 'adapt CRF and surround'       # biased-ensemble adaptation analyzed in every figure # CHANGED FROM CRF AND SURROUND
+BIASED_COND  = 'adapt CRF only'       # biased-ensemble adaptation analyzed in every figure # CHANGED FROM CRF AND SURROUND
 GAIN_TIMECOURSE_COND = BIASED_COND    # condition whose gains are plotted vs time
 
 SIM_HISTORY = {}   # full history of each adaptation run (y, gains, stream, centers), keyed by condition
@@ -162,6 +163,15 @@ def orientation_index(angles, num_angles):
     return np.round(np.asarray(angles) * num_angles / np.pi).astype(int) % num_angles
 
 
+def presentation_ends(n_steps, window=None):
+    '''Last timestep of every presentation (STIMULUS_STEPS block) that lies in window =
+    [t_start, t_stop) (default: the whole run). In-stream responses are read only here, after each
+    presentation's onset transient, never averaged over the presentation.'''
+    t_start, t_stop = window if window is not None else (0, n_steps)
+    last = np.arange(STIMULUS_STEPS - 1, n_steps, STIMULUS_STEPS)
+    return last[(last >= t_start) & (last < t_stop)]
+
+
 def tuning_curves(y_hist, centers, num_angles, window=None):
     '''
     In-stream tuning curves: for each presentation (STIMULUS_STEPS block) whose last timestep lies
@@ -173,8 +183,7 @@ def tuning_curves(y_hist, centers, num_angles, window=None):
     '''
     n_steps = y_hist.shape[1]
     t_start, t_stop = window if window is not None else (n_steps // 2, n_steps)
-    last = np.arange(STIMULUS_STEPS - 1, n_steps, STIMULUS_STEPS)
-    last = last[(last >= t_start) & (last < t_stop)]
+    last = presentation_ends(n_steps, (t_start, t_stop))
     stim_idx = orientation_index(centers[last], num_angles)
     counts = np.bincount(stim_idx, minlength=num_angles)
     assert np.all(counts > 0), (
@@ -244,18 +253,16 @@ def bin_by_preference(response, neuron_preferences, n_bins=N_RF):
 
 def first_order_equalization(y_hist, window):
     '''||r_hat - 1||_2 with r_hat = r / mean(r), where r is each cRF neuron's mean firing rate
-    (rectified y squared) over every timestep of y_hist in window = [t_start, t_stop).
-    0 = fully equalized.'''
-    t_start, t_stop = window
-    r = (y_hist[CRF_SLICE, t_start:t_stop] ** 2).mean(axis=1)
+    (rectified y squared) at the last timestep of every presentation of y_hist in
+    window = [t_start, t_stop). 0 = fully equalized.'''
+    r = (y_hist[CRF_SLICE, presentation_ends(y_hist.shape[1], window)] ** 2).mean(axis=1)
     return np.linalg.norm(r / r.mean() - 1)
 
 
 def response_covariance(y_hist, window):
     '''cRF covariance of the rectified y actually produced during a run (y_hist: (N_TOT, n_steps)),
-    over every timestep in window = [t_start, t_stop). ddof=0.'''
-    t_start, t_stop = window
-    return np.cov(y_hist[CRF_SLICE, t_start:t_stop], bias=True)
+    over the last timestep of every presentation in window = [t_start, t_stop). ddof=0.'''
+    return np.cov(y_hist[CRF_SLICE, presentation_ends(y_hist.shape[1], window)], bias=True)
 
 
 def second_order_equalization(y_hist, window, target_cov):
@@ -410,7 +417,7 @@ if __name__ == "__main__":
     n_steps = biased['y_hist'].shape[1]
     uniform_ref = snapshot(n_steps, uniform['y_hist'], uniform['centers'], label='uniform-adapted')
     snapshots = [
-        snapshot(n_steps, biased['y_hist'], biased['centers'], label='adapted'),  # 2nd-half average
+        snapshot(n_steps, biased['y_hist'], biased['centers'], label='adapted'),  # presentation ends, 2nd half
     ]
 
     # ==========================================================================
@@ -439,7 +446,7 @@ if __name__ == "__main__":
     # scaled like that condition's ensemble, as the in-stream presentations were.
     def offline_tuning(cond):
         g_cRF, g_surround = final_gains[cond][:2]
-        probes = np.stack([stim_gen.oriented_drive(theta, ENSEMBLE_CONTRAST, ADAPT_LOCATION_FOR_COND[cond])
+        probes = np.stack([stim_gen.oriented_drive(theta, PROBE_CONTRAST, ADAPT_LOCATION_FOR_COND[cond])
                            for theta in np.radians(x_axis + adaptor_deg)], axis=1)   # (N_TOT, len(x_axis))
         M = offline_gain_operator(dyn, g_cRF, g_surround)
         return get_response_offline(dyn, probes, M)[CRF_SLICE]   # firing rates, (N_RF, len(x_axis))
@@ -500,8 +507,8 @@ if __name__ == "__main__":
     # ==========================================================================
     # Biased adaptation over time: input covariance | tuning repulsion | 1st- and 2nd-order
     # equalization. The input covariance uses the biased ensemble's minimal stimulus set; the
-    # 1st- and 2nd-order equalization use the responses actually produced in consecutive
-    # STATS_WINDOW-ms windows of the biased run.
+    # 1st- and 2nd-order equalization use the responses actually produced (at each presentation's
+    # last timestep) in consecutive STATS_WINDOW-ms windows of the biased run.
     # ==========================================================================
     print("Plotting biased-adaptation time course...")
     ens_stimuli, _ = minimal_ensemble(BIASED_COND, n_angles)

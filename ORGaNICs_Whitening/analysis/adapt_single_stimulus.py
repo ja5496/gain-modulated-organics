@@ -17,7 +17,9 @@ Methodology:
    closed-form fixed point by default, settled RK4 dynamics if online=True).
 3. Figures: a subset of g_cRF vs time; contrast-response functions of the cRF subpopulation
    (l2 norm of its response) at the adaptor orientation; tuning curves of a flank neuron 20.8 deg
-   from the adaptor.
+   from the adaptor; and a membrane-potential contrast-response function (signed, non-rectified y
+   of the adaptor-tuned cRF neuron) beside that neuron's firing rate, before vs. after the
+   cRF + surround adaptor, which reuses that condition's frozen gains.
 '''
 
 import os
@@ -36,7 +38,7 @@ from response_tools import (offline_gain_operator, get_response_offline, get_res
 
 # ---- Durations (ms, the units of the model's time constants) ----
 DT                   = 0.1         # simulation time step (in ms)
-ADAPTATION_DURATION  = 2100.0      # time (in ms) the adaptor is held for 
+ADAPTATION_DURATION  = 4200.0      # time (in ms) the adaptor is held for 
 PROBE_SETTLE_TIME    = 150.0       # time (in ms) each online probe (online=True) is settled for
 
 # ---- The same durations in timesteps ----
@@ -47,9 +49,9 @@ N_RF       = 13                    # Number of primary neurons per receptive fie
 N_SETS     = 6                     # 1 classical RF (cRF) + 5 surround sets
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_high_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
 
-ADAPTOR_CONTRAST     = 0.8         # contrast of the sustained adaptor (same as adapt_ensembles.py's ensembles)
+ADAPTOR_CONTRAST     = 1.0         # contrast of the sustained adaptor (same as adapt_ensembles.py's ensembles)
 TUNING_WIDTH         = 0.75
 ADAPTOR_THETA        = np.pi / 2   # radians: midway between neurons 6 (83.08 deg) and 7 (96.92 deg)
 
@@ -59,7 +61,7 @@ online = False
 
 N_CONTRASTS    = 20
 CRF_CONTRASTS  = np.logspace(-2, 0, N_CONTRASTS)
-PROBE_CONTRAST = 1.0
+PROBE_CONTRAST = 0.8
 N_PROBES       = 180
 
 # Setting colors for plot lines (designated by what section of the visual field is adapted)
@@ -177,14 +179,15 @@ if __name__ == "__main__":
     def full_field_probe(theta, contrast):
         return stim_gen.oriented_drive(theta, contrast, 'adapt CRF and surround')
 
-    def probe_response(cond, probe, M):
-        '''Response of every neuron to one probe with cond's gains frozen (M: offline operator).'''
+    def probe_response(cond, probe, M, rectify=True):
+        '''Response of every neuron to one probe with cond's gains frozen (M: offline operator):
+        firing rates, or the signed membrane potential y if rectify=False.'''
         if online:
             g_cRF, g_surround, _, _, mu_cRF, mu_surround = frozen_gains[cond]
             y, _, _ = get_response_online(dyn, probe, g_cRF, g_surround, mu_cRF, mu_surround,
-                                          n_steps=PROBE_SETTLE_STEPS)
+                                          n_steps=PROBE_SETTLE_STEPS, rectify=rectify)
             return y
-        return get_response_offline(dyn, probe, M)
+        return get_response_offline(dyn, probe, M, rectify=rectify)
 
     def gain_operator(cond):
         g_cRF, g_surround, *_ = frozen_gains[cond]
@@ -288,5 +291,54 @@ if __name__ == "__main__":
     ax_flank.tick_params(axis='y', width=2.5, length=6, labelsize=18)
     ax_flank.legend(fontsize=12, frameon=False, handlelength=1.0)
     fig_combined.tight_layout()
+
+    # ==========================================================================
+    # Membrane-potential contrast response function: the non-rectified y of the cRF neuron tuned
+    # to the adaptor, unadapted vs. adapted to the large (cRF + surround) adaptor, beside that
+    # neuron's firing rate for direct comparison. Reuses that condition's frozen gains, so no
+    # extra adaptation phase is run. Signed rather than the l2 norm above, so a hyperpolarization
+    # (y < 0, rest = 0) stays visible - cf. Carandini & Ferster (1997), adaptation tonically
+    # hyperpolarizes simple cells.
+    # ==========================================================================
+    print("Computing membrane-potential contrast response functions...")
+    VM_CONDITIONS = ['no adaptation', 'adapt CRF and surround']
+
+    def vm_crf_curve(cond):
+        '''Non-rectified y of the adaptor-tuned cRF neuron (adaptor_idx) vs contrast.'''
+        M = gain_operator(cond)
+        resp = np.zeros(N_CONTRASTS)
+        for i, c in enumerate(tqdm(CRF_CONTRASTS, desc=f"    {cond}", leave=False)):
+            y = probe_response(cond, full_field_probe(ADAPTOR_THETA, c), M, rectify=False)
+            resp[i] = y[crf_slice][adaptor_idx]
+        return resp
+
+    vm_curves = {cond: vm_crf_curve(cond) for cond in VM_CONDITIONS}
+    # The same neuron's firing rate: rectified y^2, as probe_response returns with rectify=True
+    rate_curves = {cond: dyn.half_wave_rectify(vm_curves[cond]) for cond in VM_CONDITIONS}
+
+    fig_vm, (ax_vm, ax_rate) = plt.subplots(1, 2, figsize=(8, 3.5))
+
+    # Normalize each panel by its no-adaptation peak, as in the firing-rate CRF
+    for ax, curves in ((ax_vm, vm_curves), (ax_rate, rate_curves)):
+        curve_norm = curves['no adaptation'].max()
+        for cond in VM_CONDITIONS:
+            ax.plot(CRF_CONTRASTS, curves[cond] / curve_norm, color=CONDITION_COLOR[cond],
+                    linewidth=3.5, label=CONDITION_LABEL[cond])
+        ax.set_xscale('log')
+        ax.set_xlabel("Contrast", fontsize=20)
+        ax.set_yticks([0, 1])
+        ax.grid(False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(2.5)
+        ax.spines['bottom'].set_linewidth(2.5)
+        ax.tick_params(axis='both', width=2.5, length=6, labelsize=18)
+
+    ax_vm.axhline(0, color='grey', linestyle='--', linewidth=1.0, zorder=0)   # rest (y = 0 at zero input)
+    ax_vm.set_ylabel("Norm. Potential", fontsize=20)
+    ax_vm.legend(fontsize=10, frameon=False)
+    ax_rate.set_ylabel("Norm. Rate", fontsize=20)
+    ax_rate.set_ylim(bottom=0)
+    fig_vm.tight_layout()
 
     plt.show()
