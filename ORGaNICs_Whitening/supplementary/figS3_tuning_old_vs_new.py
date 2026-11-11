@@ -205,8 +205,8 @@ def plot(d, a):
     ax_g.plot(t, a['gmean_old'][1], color=col_old, lw=ps.LW_MAIN, label='old')
     ax_g.plot(t, a['gmean_new'][1], color=col_new, lw=ps.LW_MAIN, label='new')
     if 'gmean_new_matched' in a:
-        ax_g.plot(t, a['gmean_new_matched'][1], color=col_new, lw=ps.LW_MAIN, ls=(0, (1, 1.6)),
-                  label='new, matched')
+        ax_g.plot(t, a['gmean_new_matched'][1], color=col_new, lw=ps.LW_MAIN, ls=(0, (1, 1.6)))
+        ax_g.text(39.5, 0.205, r'new, $\theta_t/\kappa$, $\tau_g/\kappa$', fontsize=8, color=col_new, ha='right', va='bottom')
     ps.ref_line(ax_g, t_read, axis='v')
     ax_g.set_xlim(0, 40)
     ax_g.set_xticks([0, 10, 20, 30, 40])
@@ -214,7 +214,7 @@ def plot(d, a):
     ax_g.set_yticks([0, 0.2, 0.4])
     ax_g.set_xlabel('Adaptation time (s)')
     ax_g.set_ylabel('Mean gain')
-    ax_g.legend(loc='lower right', fontsize=8, bbox_to_anchor=(1.02, -0.02), handlelength=1.8)
+    ax_g.legend(loc='lower right', fontsize=8, bbox_to_anchor=(1.02, -0.03), handlelength=1.8, labelspacing=0.15)
 
     # e: suppression at the adaptor versus adaptation time
     i_ad = C.ADAPTOR_IDX

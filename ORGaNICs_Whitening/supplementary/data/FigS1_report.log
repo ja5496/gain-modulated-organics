@@ -1,0 +1,6 @@
+  y: peak of the mean 0.268 at t = 8.4 ms; steady state 0.193; at 32 ms 0.219 (+13% vs steady state)
+  y: half-rise time 1.69 ms
+  u: 64% of its excursion completed at 32 ms; max u+ = 0.197
+  gates: max |u+ - a+/(1+a+)| = 5.4e-04 (0.27% of the gate) at t = 8.5 ms
+  spread of u across cRF neurons: 0.0e+00
+saved /home/user/gain-modulated-organics/ORGaNICs_Whitening/supplementary/figures/FigS1_timescales.png
