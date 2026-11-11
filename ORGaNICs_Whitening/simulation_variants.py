@@ -35,6 +35,15 @@ Equation options (EquationOptions)
 
 Other options: arbitrary normalization weights N (N_TOT, N_TOT), noise (NoiseOptions), and the
 surround -> cRF conduction delay of V1Dynamics_Surround.
+
+Known numerical limits (see tests/test_simulation_variants.py):
+  - The delayed surround signal is sampled once per step, as in V1Dynamics_Surround, so with a
+    delay the scheme is first order in dt and the effective delay is (n_lag - 1/2) dt.
+  - With white_input noise the kick is added after the RK4 step and y is recorded right after it,
+    so the variance of the *recorded* y depends on dt (larger at larger dt). What the slow
+    variables (v, g, mu) integrate does not.
+  - With poisson_response, downstream terms receive the square root of a count-based rate, which
+    is biased low at low counts.
 '''
 
 from dataclasses import dataclass, replace
@@ -190,7 +199,7 @@ class AdaptiveORGaNICs:
         yr = np.maximum(y, 0.0)
         kind = self.noise.kind
         if kind == 'white_response':
-            r = yr + extra['eta']
+            r = yr + extra.get('eta', 0.0)
             return r, r * r
         if kind == 'poisson_response' and extra.get('rate_hat') is not None:
             rate = np.where(extra['noisy'], extra['rate_hat'], yr * yr)
@@ -212,10 +221,15 @@ class AdaptiveORGaNICs:
         g, v, f, mu = state[:, s['g']], state[:, s['v']], state[:, s['f']], state[:, s['mu']]
 
         r_seen, rate_seen = self._seen_response(y, extra)         # sqrt(y+), y+ seen downstream
-        if self.noise.kind in ('white_response', 'poisson_response'):
-            y_for_c = r_seen                                      # noisy, rectified response
+        # What the adaptation interneurons and the running mean see. Response noise does not
+        # change the rectify_c option: without noise each case reduces to the noise-free one.
+        y_clean = np.maximum(y, 0.0) if o.rectify_c else y
+        if self.noise.kind == 'white_response':
+            y_for_c = y_clean + extra.get('eta', 0.0)
+        elif self.noise.kind == 'poisson_response' and extra.get('rate_hat') is not None:
+            y_for_c = np.where(extra['noisy'], r_seen, y_clean)   # counts are rectified by nature
         else:
-            y_for_c = np.maximum(y, 0.0) if o.rectify_c else y
+            y_for_c = y_clean
 
         # Eq. c: input current to the adaptation interneurons, one cRF copy and one surround copy
         c = np.concatenate([y_for_c[:, :n] @ W, y_for_c[:, n:2 * n] @ W if NS >= 2 else np.zeros_like(g[:, :K])],
@@ -337,13 +351,14 @@ class AdaptiveORGaNICs:
         for ip in range(n_pres):
             z_clean = z_pres[:, ip, :]
             z = z_clean
-            for _ in range(steps_per_pres):
+            for i_step in range(steps_per_pres):
                 if n_lag > 0:
                     lag = t - n_lag
                     q_delayed = ring[lag % (n_lag + 1)] if lag >= 0 else q_base
-                if noise.kind == 'poisson_input' and t % bin_steps == 0:
-                    counts = rng.poisson(np.maximum(z_clean, 0.0) * lam_scale)
-                    z = np.where(noisy, counts / lam_scale, z_clean)
+                if noise.kind == 'poisson_input' and (t % bin_steps == 0 or i_step == 0):
+                    # new counts every bin and at every stimulus onset, independent across the batch
+                    rate = np.broadcast_to(np.maximum(z_clean, 0.0) * lam_scale, (B, NT))
+                    z = np.where(noisy, rng.poisson(rate) / lam_scale, z_clean)
                 elif noise.kind == 'poisson_response' and t % bin_steps == 0:
                     yr = np.maximum(state[:, s['y']], 0.0)
                     extra['rate_hat'] = rng.poisson(yr * yr * lam_scale) / lam_scale

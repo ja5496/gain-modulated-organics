@@ -99,7 +99,27 @@ listed changes.
 - Regression: `simulation_variants.py` with codebase options reproduces `V1Dynamics_Surround` to
   1e-16 (responses, gains, v, mu, u, a) with the surround delay.
 - Time step: halving dt from 0.1 to 0.05 ms changes adapted gains by 3e-6 and responses by 8e-5.
-- Independent verification of `simulation_variants.py`: see the last section of this file.
+- Independent verification of `simulation_variants.py` (a separate reviewer agent, tests in
+  `../tests/test_simulation_variants.py`): **verified with caveats; 49 tests pass, 4 fail.**
+  - The deterministic equations match an independently written right-hand side to 1.8e-15 for all
+    64 option combinations, and the old model to 1e-15 in four regression scenarios. Everything in
+    Section 2.1 uses only this deterministic part.
+  - The reviewer found four bugs in the noise options, which no result here uses. I fixed them:
+    response noise silently forced a rectified `c`; Poisson input noise was skipped after a stimulus
+    change when the presentation was not a whole number of bins; Poisson input noise was shared
+    across a batch; and a helper crashed for white response noise.
+  - The 4 failing tests are left failing on purpose, because they are real limits:
+    1. With the surround delay, halving dt changes responses by up to 3e-3 in the reviewer's
+       harsher scenario (8e-5 with my stimuli). The delayed signal is sampled once per step, as
+       in `simulation_whiten.py`, so the scheme is first order in dt and the effective delay is
+       half a step (0.05 ms) shorter than stated.
+    2. With white input noise, the variance of the *recorded* `y` depends on dt (s.d. 13 % too
+       large at dt = 0.1 ms in a linear test). What the gains integrate does not. This must be
+       handled before the noise figure of Section 2.3.
+  - Also flagged, not yet addressed: Poisson response noise feeds the square root of a count-based
+    rate to downstream terms, which is strongly biased low at low counts.
+  - Not covered by the tests: adapted variance matching theta_t under stochastic input, target
+    feasibility, and regression against a baseline ORGaNICs figure (CLAUDE.md checks 6, 7, 9).
 
 ## Draft blurbs for the three figures
 
