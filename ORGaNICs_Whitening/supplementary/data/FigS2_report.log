@@ -1,7 +1,0 @@
-  frozen gains: mean 0.084, max 0.336
-  old gate, old gain placement (codebase) : MSE(0) 1.07e-02, MSE(32 ms)/MSE(0) 0.027, 100-fold reduction at 1.5 ms, max |y - y_codebase| 0.0e+00, settled vs analytic fixed point 8.0e-13 (min z' +5.0e-03)
-  new gate, old gain placement            : MSE(0) 1.07e-02, MSE(32 ms)/MSE(0) 0.027, 100-fold reduction at 1.5 ms, max |y - y_codebase| 2.1e-04, settled vs analytic fixed point 8.1e-13 (min z' +5.0e-03)
-  old gate, new gain placement            : MSE(0) 1.07e-02, MSE(32 ms)/MSE(0) 0.027, 100-fold reduction at 1.5 ms, max |y - y_codebase| 1.7e-16, settled vs analytic fixed point 8.0e-13 (min z' +5.0e-03)
-  new gate, new gain placement            : MSE(0) 1.07e-02, MSE(32 ms)/MSE(0) 0.027, 100-fold reduction at 1.5 ms, max |y - y_codebase| 2.1e-04, settled vs analytic fixed point 8.1e-13 (min z' +5.0e-03)
-  late decay of the squared deviation: time constant 11.7 ms for the deviation itself
-saved /home/user/gain-modulated-organics/ORGaNICs_Whitening/supplementary/figures/FigS2_settling.png
