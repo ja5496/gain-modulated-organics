@@ -1,0 +1,36 @@
+  peak input drive of a small grating 0.1394; peak unadapted response sqrt(y+) 0.3347; target profile: far 0.9, at adaptor 0.6000000000000001, s.d. 20.0 deg
+  white_input: levels [np.float64(0.0), np.float64(0.05), np.float64(0.1), np.float64(0.2), np.float64(0.4), np.float64(0.8)]
+     level: mean gain uniform/biased | uniform-adapted/unadapted peak | ratio far, at adaptor (vs uniform) | biased/unadapted far, at adaptor | distance to target | tuning modulation of unadapted curves
+     0: 0.110/0.105 | 0.190 | 1.117, 0.958 | 0.197, 0.158 | 0.255 | 0.99
+     1: 0.110/0.104 | 0.200 | 1.111, 0.995 | 0.207, 0.172 | 0.256 | 0.98
+     2: 0.109/0.104 | 0.231 | 1.106, 0.952 | 0.237, 0.195 | 0.248 | 0.98
+     3: 0.105/0.101 | 0.326 | 1.078, 0.963 | 0.331, 0.289 | 0.237 | 0.96
+     4: 0.098/0.096 | 0.550 | 1.017, 0.993 | 0.561, 0.519 | 0.228 | 0.90
+     5: 0.096/0.096 | 0.759 | 1.107, 0.951 | 0.785, 0.801 | 0.267 | 0.77
+     time-step check (level 3, dt 0.05 vs 0.1 ms, independent noise draws): max profile difference 0.145 (largest combined s.e.m. 0.056); vs unadapted 0.056; mean gain 0.1027 vs 0.1027
+  white_response: levels [np.float64(0.0), np.float64(0.03), np.float64(0.06), np.float64(0.12), np.float64(0.18), np.float64(0.24)]
+     level: mean gain uniform/biased | uniform-adapted/unadapted peak | ratio far, at adaptor (vs uniform) | biased/unadapted far, at adaptor | distance to target | tuning modulation of unadapted curves
+     0: 0.110/0.105 | 0.190 | 1.117, 0.958 | 0.197, 0.158 | 0.255 | 0.99
+     1: 0.110/0.105 | 0.231 | 1.102, 0.961 | 0.237, 0.195 | 0.247 | 0.98
+     2: 0.109/0.105 | 0.324 | 1.094, 0.966 | 0.336, 0.282 | 0.229 | 0.98
+     3: 0.111/0.111 | 0.443 | 1.030, 0.965 | 0.443, 0.353 | 0.209 | 0.96
+     4: 0.116/0.116 | 0.503 | 0.985, 0.990 | 0.494, 0.451 | 0.223 | 0.95
+     5: 0.120/0.119 | 0.456 | 1.044, 0.987 | 0.452, 0.445 | 0.216 | 0.95
+     time-step check (level 3, dt 0.05 vs 0.1 ms, independent noise draws): max profile difference 0.101 (largest combined s.e.m. 0.073); vs unadapted 0.107; mean gain 0.1099 vs 0.1107
+  poisson_input: levels [np.float64(inf), np.float64(30000.0), np.float64(10000.0), np.float64(3000.0), np.float64(1000.0), np.float64(300.0)]
+     level: mean gain uniform/biased | uniform-adapted/unadapted peak | ratio far, at adaptor (vs uniform) | biased/unadapted far, at adaptor | distance to target | tuning modulation of unadapted curves
+     0: 0.110/0.105 | 0.190 | 1.117, 0.958 | 0.197, 0.158 | 0.255 | 0.99
+     1: 0.112/0.107 | 0.215 | 1.077, 0.967 | 0.219, 0.179 | 0.245 | 0.99
+     2: 0.117/0.112 | 0.262 | 1.102, 1.009 | 0.272, 0.238 | 0.234 | 0.98
+     3: 0.129/0.125 | 0.377 | 1.035, 0.845 | 0.368, 0.305 | 0.196 | 0.98
+     4: 0.149/0.147 | 0.589 | 0.987, 0.895 | 0.612, 0.430 | 0.196 | 0.97
+     5: 0.181/0.179 | 0.741 | 1.001, 0.990 | 0.697, 0.715 | 0.226 | 0.97
+  poisson_response: levels [np.float64(inf), np.float64(100000.0), np.float64(30000.0), np.float64(10000.0), np.float64(3000.0), np.float64(1000.0)]
+     level: mean gain uniform/biased | uniform-adapted/unadapted peak | ratio far, at adaptor (vs uniform) | biased/unadapted far, at adaptor | distance to target | tuning modulation of unadapted curves
+     0: 0.110/0.105 | 0.190 | 1.117, 0.958 | 0.197, 0.158 | 0.255 | 0.99
+     1: 0.121/0.116 | 0.196 | 1.110, 0.969 | 0.203, 0.174 | 0.260 | 0.99
+     2: 0.149/0.143 | 0.182 | 1.058, 0.973 | 0.184, 0.175 | 0.240 | 1.00
+     3: 0.182/0.176 | 0.172 | 1.091, 1.053 | 0.181, 0.173 | 0.275 | 1.00
+     4: 0.197/0.190 | 0.262 | 1.067, 1.034 | 0.308, 0.263 | 0.266 | 1.00
+     5: 0.168/0.167 | 0.485 | 0.969, 0.905 | 0.449, 0.291 | 0.253 | 1.00
+saved /home/user/gain-modulated-organics/ORGaNICs_Whitening/supplementary/figures/FigS6_noise.png
