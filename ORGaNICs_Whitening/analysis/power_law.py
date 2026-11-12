@@ -31,9 +31,9 @@ from matplotlib.ticker import MultipleLocator
 from tqdm import tqdm
 from scipy.linalg import block_diag
 from scipy.special import i0
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
-from simulation_whiten import Frame, V1Dynamics_Surround
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
 from response_tools import get_response_offline, to_steps
 
 # ---- Durations (ms, the units of the model's time constants) ----
@@ -93,7 +93,7 @@ def probe_responses(dyn, stim_gen, M, probe_angles, contrast):
 
 
 def von_mises_orientation_density(theta, center, kappa):
-    '''Probability density over orientation [0, pi) of stimuli_whiten's von Mises environments:
+    '''Probability density over orientation [0, pi) of stimuli's von Mises environments:
     np.random.vonmises(center, kappa) is drawn on the full circle and then folded mod pi, so
     p(theta) = f(theta) + f(theta + pi) = cosh(kappa cos(theta - center)) / (pi I0(kappa)).'''
     return np.cosh(kappa * np.cos(theta - center)) / (np.pi * i0(kappa))
@@ -163,7 +163,7 @@ def Dario_fig1(dyn, stim_gen):
     panel with only those points and the dotted fit. Only the cRF block is analyzed."""
     print(' ----------- FIGURE 1 -----------')
     # Probe exactly at the neuron preferences (np.linspace(0, pi, N_RF, endpoint=False), as in
-    # stimuli_whiten); 180° is excluded since it's the same orientation as 0°
+    # stimuli); 180° is excluded since it's the same orientation as 0°
     probe_angles = np.linspace(0, np.pi, PROBE_RES, endpoint=False)
 
     print("\n--- Running Adaptation Stage ---")
