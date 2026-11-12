@@ -60,6 +60,21 @@ def adapt(norm):
     return norm, res['g_end'].astype(np.float32)          # (3 N_TRIALS, 14, 2K), environment-major
 
 
+def ensembles():
+    return np.stack([C.ensemble_presentations(N_PRES, False, 300 + 100 * e + i, C.SMALL, von_mises=True,
+                                              von_mises_center=ENVS[env][0], von_mises_kappa=ENVS[env][1])[0]
+                     for e, env in enumerate(ENVS) for i in range(N_TRIALS)])
+
+
+def old_equations():
+    '''The same experiment with the equations of the earlier code (simulation_whiten.py), for
+    reference: gains at the end of adaptation and response magnitudes at test contrast 0.8.'''
+    theta = sv.theta_t_from_target(C.load_frame(), MID_TARGET)
+    res = C.adapt(C.make_model(sv.CODEBASE, theta_t=theta), ensembles(), pres_ms=PRES_MS, delay=0.0)
+    g = res['g_end'][:, -1]
+    return dict(g_old=g.astype(np.float32), mag80_old=magnitudes(True, g, 0.8)[0])
+
+
 def magnitudes(norm, g, contrast, method='analytic'):
     '''Response magnitude to each probe orientation for every adapted state: (n_states, 13).'''
     m = model(norm)
@@ -117,6 +132,7 @@ def simulate():
         g = gains[norm].astype(float)[::N_TRIALS, -1]
         dyn, _ = magnitudes(norm, g, TEST_CONTRASTS[i80], method='dynamics')
         out[f'readout_check_{tag}'] = np.abs(dyn / out[f'mag_{tag}'][i80][::N_TRIALS] - 1).max()
+    out.update(old_equations())
     return out
 
 
@@ -221,6 +237,11 @@ def report(d, a):
     print('  normalization on, beta (full) vs test contrast: ' + ', '.join(f'{100 * ci:.0f}%: {bi:.2f}' for ci, bi in zip(c[::2], b[::2])))
     r = a['fits_off'][:, :, 1].mean(axis=1)
     print(f'  normalization off, R2 (full) vs test contrast: min {r.min():.3f}, max {r.max():.3f}')
+    if 'mag80_old' in d:
+        f = fits(d['mag80_old'])
+        print(f'  earlier code (codebase equations, normalization on), 4.2 s: full range beta = {f[:, 0].mean():.3f} +/- {f[:, 0].std(ddof=1):.3f}, '
+              f'R2 = {f[:, 1].mean():.3f} +/- {f[:, 1].std(ddof=1):.3f}; |x| <= 1: beta = {f[:, 2].mean():.3f} +/- {f[:, 2].std(ddof=1):.3f}, '
+              f'R2 = {f[:, 3].mean():.3f} +/- {f[:, 3].std(ddof=1):.3f}')
     t = (np.arange(a['fits_t_on'].shape[0]) + 1) * 10 * PRES_MS / 1000.0
     for tag in ('on', 'off'):
         f = a[f'fits_t_{tag}'].mean(axis=1)
