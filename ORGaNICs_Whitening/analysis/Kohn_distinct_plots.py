@@ -17,9 +17,9 @@ sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
-from simulation_whiten import Frame, V1Dynamics_Surround
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
 from response_tools import (get_response_offline, offline_gain_operator, settled_surround_msg, to_steps,
                             curve_peak_deg)
 

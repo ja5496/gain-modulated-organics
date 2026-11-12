@@ -1,7 +1,7 @@
 '''
 response_tools.py
 
-Shared helpers for probing V1Dynamics_Surround (simulation_whiten.py) with its adaptation gains
+Shared helpers for probing V1Dynamics_Surround (simulation.py) with its adaptation gains
 held fixed, plus the surround's settled baseline signal, a tuning-curve peak finder and a
 ms -> timestep converter. Used by adapt_single_stimulus.py, adapt_ensembles.py,
 Kohn_distinct_plots.py and Dario_plots.py.

@@ -38,9 +38,9 @@ sys.path.insert(0, REPO_ROOT)
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
-from simulation_whiten import Frame, V1Dynamics_Surround
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 from response_tools import get_response_offline, offline_gain_operator, settled_surround_msg, to_steps
 import Analytic_responses as AR
 
@@ -159,7 +159,7 @@ def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
 
 
 def orientation_index(angles, num_angles):
-    '''Index k of each angle on stimuli_whiten's orientation grid, theta_inputs[k] = k * pi / num_angles.'''
+    '''Index k of each angle on stimuli's orientation grid, theta_inputs[k] = k * pi / num_angles.'''
     return np.round(np.asarray(angles) * num_angles / np.pi).astype(int) % num_angles
 
 

@@ -19,9 +19,9 @@ sys.path.insert(0, REPO_ROOT)
 import numpy as np
 import numpy.typing as npt
 import matplotlib.pyplot as plt
-from simulation_whiten import V1Dynamics, Frame
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from simulation import V1Dynamics, Frame
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 from tqdm import tqdm
 import scipy
 from scipy.optimize import minimize, Bounds, nnls
@@ -111,7 +111,7 @@ def get_optimal_gains_target(stimuli, frame, label='', no_norm=False, uniform_st
     target_covariance (optional): an (N, N) covariance matrix to use directly as the target,
     instead of estimating one from a fresh uniform_stimuli sample - e.g. the same
     uniform_target_covariance.csv the simulation uses to derive theta_t (see
-    simulation_whiten.py's V1Dynamics_Surround), so the analytic gains are computed against
+    simulation.py's V1Dynamics_Surround), so the analytic gains are computed against
     the exact target the live network is actually being pulled toward. Takes precedence over
     uniform_stimuli if both are given.
 

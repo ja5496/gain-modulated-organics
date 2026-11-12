@@ -2,11 +2,11 @@
 ---- simulation_variants.py ----
 
 Flagged variants of the joint normalization + adaptation circuit. Nothing in
-simulation_whiten.py is changed: this module re-implements V1Dynamics_Surround's equations with
+simulation.py is changed: this module re-implements V1Dynamics_Surround's equations with
 every alternative studied in the supplementary investigation behind an option, so that the
 codebase ("old") and revised ("new") equations run side by side.
 
-Time unit: ms (as in simulation_whiten.py). Integration: classical RK4 with fixed step dt, as in
+Time unit: ms (as in simulation.py). Integration: classical RK4 with fixed step dt, as in
 V1Dynamics_Surround.run_simulation; gains are clamped to >= 0 after every step.
 
 Variables (B = batch of independent simulations run in parallel)
@@ -65,7 +65,7 @@ class EquationOptions:
         assert self.variance_signal in ('filtered', 'instant')
 
 
-# The equations exactly as implemented in simulation_whiten.V1Dynamics_Surround
+# The equations exactly as implemented in simulation.V1Dynamics_Surround
 CODEBASE = EquationOptions()
 # Eqs. 1-6 of the instructions (u+ gating, gain inside the v equation, variance from c)
 NEW = EquationOptions(gating='u', gain_placement='interneuron', variance_signal='instant', rectify_c=True)
@@ -106,7 +106,7 @@ class NoiseOptions:
 
 @dataclass(frozen=True)
 class ModelParams:
-    '''Defaults are the values in simulation_whiten.V1Dynamics_Surround (ms).'''
+    '''Defaults are the values in simulation.V1Dynamics_Surround (ms).'''
     tau_y: float = 0.4
     tau_a: float = 0.2
     tau_u: float = 30.0
@@ -141,7 +141,7 @@ class AdaptiveORGaNICs:
         self.gains_nonneg = gains_nonneg
         # Normalization weights: all-ones unless given. (N_TOT, N_TOT) or (B, N_TOT, N_TOT).
         self.N_matrix = np.ones((self.N_TOT, self.N_TOT)) if N_matrix is None else np.asarray(N_matrix, float)
-        # Recurrent weights within one RF (identity in tunings_whiten.V1Tunings)
+        # Recurrent weights within one RF (identity in tunings.V1Tunings)
         self.W_yy = None if (W_yy is None or np.array_equal(W_yy, np.eye(N_RF))) else np.asarray(W_yy, float)
         self.set_surround_delay(surround_delay)
 

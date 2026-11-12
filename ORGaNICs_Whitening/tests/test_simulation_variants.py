@@ -3,7 +3,7 @@ test_simulation_variants.py
 
 Verification of simulation_variants.AdaptiveORGaNICs against (i) the equations it claims to
 implement, re-implemented here independently with explicit loops, (ii) the existing model
-simulation_whiten.V1Dynamics_Surround, and (iii) analytic results.
+simulation.V1Dynamics_Surround, and (iii) analytic results.
 
 Run:  cd ORGaNICs_Whitening && python3 -m pytest tests/test_simulation_variants.py -q
 
@@ -35,7 +35,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, 'supplementary'))
 
 import simulation_variants as sv          # noqa: E402
-import simulation_whiten as sw            # noqa: E402
+import simulation as sw            # noqa: E402
 
 sw.tqdm = lambda x, **k: x                # no progress bars from V1Dynamics_Surround
 
@@ -378,7 +378,7 @@ def test_regression_full_configuration_with_delay():
     '''The configuration of supplementary/common.py (N_RF 13, 6 sets, K = 182 frame, default time
     constants, 40 ms delay, blank-settled baseline), 6 presentations of 32 ms of the biased ensemble.'''
     import common as C
-    from tunings_whiten import V1Tunings
+    from tunings import V1Tunings
     z, _ = C.ensemble_presentations(6, True, 11, C.LARGE)
     W = C.load_frame()
     theta = sv.theta_t_from_target(W, C.target_covariance())

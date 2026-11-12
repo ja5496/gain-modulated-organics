@@ -34,9 +34,9 @@ REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "analysis"))
 
-from simulation_whiten import Frame, V1Dynamics_Surround
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 import analysis.adapt_ensembles as AE
 from analysis import Surround_Analytic_Responses as SAR   # shared constants only (N_RF, N_SETS, ...)
 

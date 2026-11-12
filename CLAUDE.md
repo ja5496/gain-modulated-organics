@@ -7,10 +7,10 @@ I'm a PhD student in physics and computational neuroscience (Martiniani and Heeg
 All code lives in `ORGaNICs_Whitening/`. It is not an installable package: modules are flat files, and scripts make them importable with `sys.path.insert(0, REPO_ROOT)`, where `REPO_ROOT` is `ORGaNICs_Whitening/`. Active development is on the `splitting_scripts` branch. That branch is mid-cleanup: much of the code is deprecated and slated for removal, so check before building on an older module.
 
 Model code (top level of `ORGaNICs_Whitening/`):
-- `simulation_whiten.py`: `Frame`, `V1Dynamics` (single RF) and `V1Dynamics_Surround` (cRF plus surround sets, adaptation local to each RF)
-- `frame_whiten.py`: builds and saves overcomplete frames W_yv and target covariances (also defines its own `Frame` class)
-- `stimuli_whiten.py`: `StimulusGenerator`, synthetic LGN responses to oriented gratings
-- `tunings_whiten.py`: `V1Tunings`, recurrent weights and tuning curves for the primary neurons
+- `simulation.py`: `Frame`, `V1Dynamics` (single RF) and `V1Dynamics_Surround` (cRF plus surround sets, adaptation local to each RF)
+- `frame.py`: builds and saves overcomplete frames W_yv and target covariances (also defines its own `Frame` class)
+- `stimuli.py`: `StimulusGenerator`, synthetic LGN responses to oriented gratings
+- `tunings.py`: `V1Tunings`, recurrent weights and tuning curves for the primary neurons
 
 Scripts:
 - `precompute_adapted_gains.py`: runs adaptation and writes steady-state gains to `data/optimal_gains/`
@@ -18,7 +18,7 @@ Scripts:
   - Experiment replications: `Carandini_plots.py`, `Dario_plots.py`, `Kohn_distinct_plots.py`
   - Adaptation runs: `adapt_single_stimulus.py`, `adapt_ensembles.py`
   - Analytic or self-consistent responses: `Analytic_responses.py`, `Surround_Analytic_Responses.py`
-  - Diagnostics: `convergence_tests.py`, `diagnostics_whiten.py`, `normalization.py`
+  - Diagnostics: `convergence_tests.py`, `diagnostics.py`, `normalization.py`
   - `figures.py`: schematic and covariance-diagnostic figures. Writes PNGs into `analysis/`, e.g. `crf_surround_schematic.png` and `ellipse_norm_schematic.png`.
   - `response_tools.py`: shared helpers for probing `V1Dynamics_Surround` with gains held fixed
 

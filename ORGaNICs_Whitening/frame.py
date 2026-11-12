@@ -1,5 +1,5 @@
 '''
-----  frame_whiten.py: ----
+----  frame.py: ----
 Creates a fixed overcomplete frame of synaptic weights used during the whitening process to project
 primary neurons onto interneuron axes (the axes of this frame). Frame is an N x K matrix where N is the number 
 of primary neurons and K >= N(N+1)/2 (I set this equal in this code). Taken from Ch.2 of Lyndon Duong's thesis.
@@ -10,7 +10,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from scipy.special import erf
 from scipy.linalg import sqrtm
-from stimuli_whiten import StimulusGenerator
+from stimuli import StimulusGenerator
 
 def tighten_unit_frame(W, max_iters: int = 500, tol: float = 1e-10, verbose: bool = True):
     '''
@@ -295,8 +295,8 @@ def compute_uniform_target_covariance(N_RF=13, sigma=0.25, Beta=0.5, stream_leng
     by Beta, then divisively normalized by a pooled, semi-saturating denominator
     (sqrt(sigma^2 + pooled squared drive)) before taking the covariance - N_matrix there is
     an all-ones (N_RF, N_RF) pooling matrix (see V1Tunings.N_matrix). sigma=0.25 matches
-    V1Dynamics_Surround's current default (simulation_whiten.py) - keep these in sync, since
-    a stale sigma here makes theta_t (simulation_whiten.py:241) mismatch the live model's
+    V1Dynamics_Surround's current default (simulation.py) - keep these in sync, since
+    a stale sigma here makes theta_t (simulation.py:241) mismatch the live model's
     actual steady-state variance under a uniform ensemble, biasing g/v adaptation even with
     no real adaptation happening. Beta=0.5 matches get_optimal_gains_target's Beta.
 

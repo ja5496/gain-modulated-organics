@@ -30,9 +30,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from tqdm import tqdm
-from simulation_whiten import Frame, V1Dynamics_Surround
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 from analysis import Analytic_responses as ar
 import adapt_ensembles as AE   # shared ADAPTATION_STEPS / STIMULUS_STEPS
 from typing import Literal
@@ -43,7 +43,7 @@ N_SETS     = 5                    # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL    = N_RF * N_SETS         # Full primary-neuron population
 CRF_IDX    = 0                     # Which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
-# Same target-covariance file V1Dynamics_Surround loads for theta_t (simulation_whiten.py) -
+# Same target-covariance file V1Dynamics_Surround loads for theta_t (simulation.py) -
 # used below so the PCA whitening diagnostic's "T" matches the live model's target exactly.
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
@@ -227,7 +227,7 @@ if __name__ == "__main__":
     def M_from_cached(cond):
         '''M = block_diag(W diag(g_cRF) W.T, [W diag(g_surround) W.T] * (N_SETS-1)) -- matches
         V1Dynamics_Surround's own replication assumption (one shared g_surround, tiled across all
-        surround RFs; see full_gain_feedback in simulation_whiten.py's _derivatives).'''
+        surround RFs; see full_gain_feedback in simulation.py's _derivatives).'''
         g_cRF, g_surround = cached_gains[cond]
         M_cRF = frame.W @ np.diag(g_cRF) @ frame.W.T
         M_surround = frame.W @ np.diag(g_surround) @ frame.W.T

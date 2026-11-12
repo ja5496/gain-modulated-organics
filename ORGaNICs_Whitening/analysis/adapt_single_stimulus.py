@@ -30,9 +30,9 @@ sys.path.insert(0, REPO_ROOT)
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from simulation_whiten import Frame, V1Dynamics_Surround
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 from response_tools import (offline_gain_operator, get_response_offline, get_response_online,
                             curve_peak_deg, to_steps)
 

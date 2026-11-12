@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from typing import Literal
 
 '''
----- stimuli_whiten.py ----
+---- stimuli.py ----
 Generates synthetic LGN responses to orientation gratings using gaussian functions.
 These responses are fed into our V1 dynamics as the input layer. 
 

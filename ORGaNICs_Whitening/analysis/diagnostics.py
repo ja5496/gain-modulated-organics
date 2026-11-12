@@ -1,5 +1,5 @@
 """
-diagnostics_whiten.py
+diagnostics.py
 ---------------------
 Three standalone diagnostics for exploring model behavior.
 
@@ -10,7 +10,7 @@ Three standalone diagnostics for exploring model behavior.
 3. Contrast response function – peak response vs. contrast (sigmoidal, σ = half-max contrast)
 
 Run from the ORGaNICs_Whitening/ directory:
-    python analysis/diagnostics_whiten.py
+    python analysis/diagnostics.py
 """
 
 import os
@@ -23,9 +23,9 @@ import matplotlib.pyplot as plt
 from scipy.special import erf
 import time
 
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
-from simulation_whiten import V1Dynamics, Frame
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
+from simulation import V1Dynamics, Frame
 
 
 # ── Shared parameters ──────────────────────────────────────────────────────────

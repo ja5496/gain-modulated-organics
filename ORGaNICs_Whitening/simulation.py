@@ -2,13 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 from scipy.special import erf
 from scipy.linalg import block_diag
 
 '''
----- simulation_whiten.py ----
+---- simulation.py ----
 
 Stores RK4 Dynamics and simulation code for computational neural modeling of joint 
 adaptation and normalization in V1. Dynamics are designed for orientation adaptation. 
@@ -160,7 +160,7 @@ class V1Dynamics_Surround:
     def __init__(self, v1_model, frame, dt=0.1, N_RF = 13, N_SETS = 7,
                  target_covariance_path="data/target_covs/uniform_target_covariance_high_c.csv",
                  gains_nonneg=False, surround_delay=0.0, N_matrix=None):
-        self.v1 = v1_model     # Refers to tunings_whiten.py
+        self.v1 = v1_model     # Refers to tunings.py
         self.frame = frame     # Overcomplete frame (W)
         self.dt = dt           # Time step of simulation
         self.N_RF = N_RF       # Number of neurons in each small receptive field
@@ -204,7 +204,7 @@ class V1Dynamics_Surround:
         self.N_matrix = N_matrix
 
         # Target covariance of one RF's responses to a uniform ensemble (see
-        # frame_whiten.py:compute_uniform_target_covariance)
+        # frame.py:compute_uniform_target_covariance)
         self.uniform_target_covariance = 0.15*np.loadtxt(target_covariance_path, delimiter=",")
         assert self.uniform_target_covariance.shape == (N_RF, N_RF), (
             f"uniform_target_covariance at {target_covariance_path} has shape "
