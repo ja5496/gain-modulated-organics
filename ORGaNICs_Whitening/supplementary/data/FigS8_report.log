@@ -1,0 +1,20 @@
+  best noise from Fig. S6: poisson_input, level 4 (amplitude 1000); best weights from Fig. S7: sigma_s = inf, sigma_theta = 15 deg
+  12 configurations. weights, noise, surround width: distance | ratio far, at adaptor, depth | mean gain uniform/biased
+  ones  False  1.5: 0.219 | 1.106, 0.898, +0.209 | 0.043/0.041
+  best  False  1.5: 0.219 | 1.123, 0.861, +0.262 | 0.074/0.070
+  best  False 0.75: 0.229 | 1.142, 0.812, +0.330 | 0.091/0.086
+  ones  False 0.75: 0.231 | 1.123, 0.912, +0.211 | 0.050/0.048 (baseline)
+  best  False  0.4: 0.235 | 1.136, 0.793, +0.343 | 0.111/0.105
+  ones  False  0.4: 0.254 | 1.145, 0.939, +0.205 | 0.062/0.060
+  best  True  0.75: 0.395 | 1.191, 0.718, +0.473 | 0.126/0.123
+  ones  True   1.5: 0.418 | 1.173, 0.788, +0.385 | 0.060/0.060
+  best  True   1.5: 0.436 | 1.241, 0.854, +0.386 | 0.102/0.100
+  ones  True  0.75: 0.502 | 1.133, 0.719, +0.414 | 0.074/0.073
+  ones  True   0.4: 0.586 | 1.487, 1.746, -0.259 | 0.094/0.094
+  best  True   0.4: 0.699 | 1.607, 1.819, -0.213 | 0.159/0.156
+  baseline profile: [1.108 1.158 1.101 1.098 1.006 0.926 0.912 0.905 0.99  0.993 1.158 1.102
+ 1.112]  s.e.m. [0.048 0.056 0.026 0.023 0.018 0.03  0.03  0.03  0.028 0.021 0.032 0.034
+ 0.039]
+  closest profile : [1.083 1.118 1.098 1.082 0.996 0.944 0.898 0.901 0.955 0.985 1.131 1.099
+ 1.11 ]
+saved /home/user/gain-modulated-organics/ORGaNICs_Whitening/supplementary/figures/FigS8_large_stimuli.png

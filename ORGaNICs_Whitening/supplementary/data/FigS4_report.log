@@ -1,0 +1,12 @@
+  normalization on: full range beta = -0.107 +/- 0.014, R2 = 0.514 +/- 0.190 (min 0.180, max 0.806); |x| <= 1: beta = -0.080 +/- 0.018, R2 = -0.084 +/- 0.480
+     mean cRF gain at 0.3, 2.1, 4.2 s: 0.0266, 0.0707, 0.0982; growth over the last 0.9 s 12.3 %/s; active gains (> 1e-3) per run: 181-182 of 182; min z' over probes -1.7e-03; analytic vs dynamics readout 8.3e-05
+  normalization off: full range beta = -0.057 +/- 0.005, R2 = 0.735 +/- 0.090 (min 0.603, max 0.861); |x| <= 1: beta = -0.059 +/- 0.007, R2 = 0.528 +/- 0.186
+     mean cRF gain at 0.3, 2.1, 4.2 s: 0.0035, 0.0105, 0.0131; growth over the last 0.9 s 8.3 %/s; active gains (> 1e-3) per run: 143-180 of 182; min z' over probes +7.0e-05; analytic vs dynamics readout 3.8e-11
+  range of log10(pX/pY): -1.88 to 0.96; points with |x| <= 1: 31 of 39
+  normalization on, R2 (full) vs test contrast: 1%: 0.55, 2%: 0.55, 5%: 0.55, 10%: 0.54, 22%: 0.53, 46%: 0.52, 100%: 0.51
+  normalization on, R2 (|x|<=1) vs test contrast: 1%: -0.01, 2%: -0.01, 5%: -0.01, 10%: -0.02, 22%: -0.05, 46%: -0.08, 100%: -0.09
+  normalization on, beta (full) vs test contrast: 1%: -0.11, 2%: -0.11, 5%: -0.11, 10%: -0.11, 22%: -0.11, 46%: -0.11, 100%: -0.11
+  normalization off, R2 (full) vs test contrast: min 0.735, max 0.735
+  normalization on, vs adaptation time (s): 0.3: beta -0.073, R2 0.65, R2(|x|<=1) 0.63; 0.9: beta -0.104, R2 0.83, R2(|x|<=1) 0.79; 1.5: beta -0.112, R2 0.84, R2(|x|<=1) 0.76; 2.1: beta -0.115, R2 0.80, R2(|x|<=1) 0.64; 3.0: beta -0.113, R2 0.70, R2(|x|<=1) 0.37; 4.2: beta -0.107, R2 0.51, R2(|x|<=1) -0.09
+  normalization off, vs adaptation time (s): 0.3: beta -0.017, R2 0.71, R2(|x|<=1) 0.75; 0.9: beta -0.035, R2 0.84, R2(|x|<=1) 0.89; 1.5: beta -0.044, R2 0.85, R2(|x|<=1) 0.89; 2.1: beta -0.049, R2 0.86, R2(|x|<=1) 0.87; 3.0: beta -0.054, R2 0.84, R2(|x|<=1) 0.78; 4.2: beta -0.057, R2 0.73, R2(|x|<=1) 0.53
+saved /home/user/gain-modulated-organics/ORGaNICs_Whitening/supplementary/figures/FigS4_power_law.png

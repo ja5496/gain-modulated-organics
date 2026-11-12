@@ -904,10 +904,15 @@ def test_FINDING_white_input_noise_in_recorded_y_depends_on_dt(dt):
 
 
 def test_white_input_noise_enters_through_beta_and_scales_with_sqrt_dt():
-    '''One step from a fixed state, noise on and off with everything else equal: the increment of
-    y is beta * amplitude * sqrt(2 tau_n) * sqrt(dt) / tau_y * N(0, 1) (beta = 1 without
-    normalization), per-batch amplitudes included. 4e4 samples per case: s.e. of the s.d. 0.35%,
-    tolerance 2%.'''
+    '''One step from a fixed state, noise on and off with everything else equal. The kick has
+    total s.d. k = beta * amplitude * sqrt(2 tau_n) * sqrt(dt) / tau_y (beta = 1 without
+    normalization) and is split: half of its variance is added before the RK4 step and decays
+    over the step by a factor d, half is added after it. So the increment of y has s.d.
+    k * sqrt((1 + d^2) / 2). Without normalization d is the RK4 decay factor of the leak,
+    1 - x + x^2/2 - x^3/6 + x^4/24 with x = dt / tau_y (exact expectation). With normalization the
+    decay depends on the sign of y (the recurrent drive cancels the leak for y > 0), so the
+    s.d. must lie between that value and k. Per-batch amplitudes included. 4e4 samples per case:
+    s.e. of the s.d. 0.35%, tolerance 2%. (Updated when the kick was split; tolerance unchanged.)'''
     amps = np.array([0.02, 0.07])
     for norm in (True, False):
         for dt in (0.1, 0.025):
@@ -924,8 +929,15 @@ def test_white_input_noise_enters_through_beta_and_scales_with_sqrt_dt():
                 y0 = clean.simulate(z, 1)['y_end'][:, 0]
                 kicks.append(y1 - y0)
                 expect = beta * amp * np.sqrt(2 * tau_n * dt) / p.tau_y
-                assert abs(kicks[-1].std() / expect - 1) < 0.02, (norm, dt, amp, kicks[-1].std() / expect)
-                assert abs(kicks[-1].mean()) < 5 * expect / np.sqrt(kicks[-1].size)
+                x = dt / p.tau_y
+                d = 1 - x + x ** 2 / 2 - x ** 3 / 6 + x ** 4 / 24
+                low = np.sqrt((1 + d ** 2) / 2)
+                ratio = kicks[-1].std() / expect
+                if norm:
+                    assert low - 0.02 < ratio < 1 + 0.02, (norm, dt, amp, ratio)
+                else:
+                    assert abs(ratio / low - 1) < 0.02, (norm, dt, amp, ratio)
+                    assert abs(kicks[-1].mean()) < 5 * expect / np.sqrt(kicks[-1].size)
 
 
 @pytest.mark.parametrize('dt', [0.1, 0.05])

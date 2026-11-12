@@ -122,8 +122,11 @@ def blank_pool(model):
     '''Each neuron's settled contribution to the normalization pool under the blank screen with
     zero gains: holds the delayed surround signal until the first real delayed sample exists
     (response_tools.settled_surround_msg).'''
-    res = model.settle(blank(), 0.0, 0.0, settle_ms=BASELINE_SETTLE)
-    return model.q_of(res['state'])
+    quiet_model = model.with_options()                 # same circuit without noise, one row
+    quiet_model.noise = sv.NoiseOptions()
+    rows = model.N_matrix.shape[0] if model.N_matrix.ndim == 3 else 1   # one row per normalization matrix
+    res = quiet_model.settle(np.repeat(blank(), rows, axis=0), 0.0, 0.0, settle_ms=BASELINE_SETTLE)
+    return quiet_model.q_of(res['state'])
 
 
 def adapt(model, z_pres, pres_ms=PRES_MS, delay=SURROUND_DELAY, rng=None, **kwargs):
@@ -179,3 +182,95 @@ def load_data(name):
 def quiet():
     with contextlib.redirect_stdout(io.StringIO()):
         yield
+
+
+# ---------------------------------------------------------------- Supplementary Notes 2-4
+ADAPT_PRES = 125               # 125 presentations x 32 ms = 4.0 s of adaptation (Notes 3 and 4)
+
+# Target suppression profile (Notes 3 and 4). The original data were not available, so these are
+# NOMINAL values that encode the reported pattern: slight untuned suppression (ratio TARGET_FAR
+# far from the adaptor) and strong suppression at the adaptor (ratio TARGET_FAR - TARGET_DEPTH),
+# with a Gaussian dip of s.d. TARGET_WIDTH degrees.
+TARGET_FAR, TARGET_DEPTH, TARGET_WIDTH = 0.9, 0.3, 20.0
+
+
+def target_profile(rel_deg):
+    return TARGET_FAR - TARGET_DEPTH * np.exp(-0.5 * (np.asarray(rel_deg) / TARGET_WIDTH) ** 2)
+
+
+def profile_distance(profile, rel_deg=None):
+    """Similarity metric: r.m.s. difference between a suppression profile (one value per cRF
+    neuron) and the target profile. 0 = identical; smaller is closer to experiment."""
+    rel = rel_to_adaptor(pref_deg()) if rel_deg is None else rel_deg
+    return float(np.sqrt(np.mean((np.asarray(profile) - target_profile(rel)) ** 2)))
+
+
+def profile_features(profile):
+    """(ratio far from the adaptor, |rel. preference| >= 55 deg; ratio at the adaptor; depth = far - adaptor)."""
+    rel = rel_to_adaptor(pref_deg())
+    far = float(np.mean(np.asarray(profile)[np.abs(rel) >= 55]))
+    at = float(np.asarray(profile)[ADAPTOR_IDX])
+    return far, at, far - at
+
+
+def uniform_and_biased(n_pres, n_seeds, location=SMALL, contrast=ENSEMBLE_CONTRAST):
+    """Presentations of the uniform (seeds 100..) and biased (seeds 200..) ensembles:
+    (2 n_seeds, n_pres, N_TOT), uniform first; and the stimulus orientations (rad)."""
+    out = [ensemble_presentations(n_pres, b, s0 + i, location, contrast)
+           for b, s0 in ((False, 100), (True, 200)) for i in range(n_seeds)]
+    return np.stack([o[0] for o in out]), np.stack([o[1] for o in out])
+
+
+def time_averaged_rates(model, z, g, settle_ms=150.0, average_ms=150.0, sample_ms=2.0, rng=None):
+    """Frozen-gain firing rates max(y,0)^2 of all neurons, averaged over time after settling
+    (for circuits with noise). z: (B, N_TOT); g: (B, 2K). Returns (B, N_TOT)."""
+    steps = int(round(sample_ms / model.dt))
+    n_settle, n_avg = int(round(settle_ms / sample_ms)), int(round(average_ms / sample_ms))
+    z = np.atleast_2d(z)
+    state = model.zero_state(z.shape[0])
+    state[:, model.sl['g']] = g
+    probe = model.with_options()
+    probe.set_surround_delay(0.0)
+    res = probe.simulate(np.repeat(z[:, None, :], n_settle + n_avg, axis=1), steps, state0=state, adapt=False, rng=rng)
+    return (np.maximum(res['y_end'][:, n_settle:], 0.0) ** 2).mean(axis=1)
+
+
+def instream_tuning(y_end, centers, window=None):
+    """In-stream tuning curves: firing rate at the last step of each presentation, averaged over
+    the presentations of each orientation within window = (first, last) presentation index
+    (default: second half). y_end (n_pres, N); centers (n_pres,) rad. Returns (N, N_RF)."""
+    n_pres = y_end.shape[0]
+    lo, hi = window if window is not None else (n_pres // 2, n_pres)
+    idx = np.round(np.asarray(centers[lo:hi]) * N_RF / np.pi).astype(int) % N_RF
+    rate = np.maximum(y_end[lo:hi], 0.0) ** 2
+    return np.stack([rate[idx == k].mean(axis=0) if np.any(idx == k) else np.full(rate.shape[1], np.nan)
+                     for k in range(N_RF)], axis=1)
+
+
+def normalization_weights(sigma_s, sigma_theta_deg):
+    """
+    Gaussian normalization weights N_ij ~ exp(-d_ij^2 / 2 sigma_s^2) exp(-dtheta_ij^2 / 2 sigma_theta^2).
+    Geometry: the cRF at the origin and the 5 surround RFs evenly spaced on a ring one cRF
+    diameter away (abutting the cRF); d_ij is the distance between RF centres in cRF diameters,
+    dtheta_ij the circular difference between preferred orientations (period 180 deg).
+    np.inf for either width gives a flat profile along that dimension.
+    Rescaling: N is multiplied by one number so that the cRF neuron tuned to an adapting (small,
+    contrast 0.8) grating receives the same pooled drive, sum_j N_ij z_j^2, as with all-ones
+    weights. Its unadapted response to that grating is then identical to the all-ones case.
+    """
+    ang = 2 * np.pi * np.arange(N_SETS - 1) / (N_SETS - 1)
+    centres = np.vstack([[0.0, 0.0], np.c_[np.cos(ang), np.sin(ang)]])
+    d = np.linalg.norm(centres[:, None] - centres[None], axis=2)
+    pref = pref_deg()
+    dth = (pref[:, None] - pref[None] + 90.0) % 180.0 - 90.0
+    w_space = np.ones_like(d) if np.isinf(sigma_s) else np.exp(-d ** 2 / (2 * sigma_s ** 2))
+    w_ori = np.ones_like(dth) if np.isinf(sigma_theta_deg) else np.exp(-dth ** 2 / (2 * sigma_theta_deg ** 2))
+    N = np.kron(w_space, w_ori)
+    z = oriented(np.radians(pref[ADAPTOR_IDX]), ENSEMBLE_CONTRAST, SMALL)[0]
+    return N * np.sum(z ** 2) / (N[ADAPTOR_IDX] @ z ** 2)
+
+
+def unadapted_response(z, N, sigma=0.15):
+    """Closed-form unadapted (zero-gain) steady state for any normalization weights:
+    y_i = z_i / sqrt(sigma^2 + sum_j N_ij z_j^2). z: (n, N_TOT)."""
+    return z / np.sqrt(sigma ** 2 + (z ** 2) @ N.T)

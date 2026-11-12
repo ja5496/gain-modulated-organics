@@ -39,9 +39,9 @@ surround -> cRF conduction delay of V1Dynamics_Surround.
 Known numerical limits (see tests/test_simulation_variants.py):
   - The delayed surround signal is sampled once per step, as in V1Dynamics_Surround, so with a
     delay the scheme is first order in dt and the effective delay is (n_lag - 1/2) dt.
-  - With white_input noise the kick is added after the RK4 step and y is recorded right after it,
-    so the variance of the *recorded* y depends on dt (larger at larger dt). What the slow
-    variables (v, g, mu) integrate does not.
+  - With white_input noise the Euler-Maruyama kick is split, half before and half after the RK4
+    step. The variance of the *recorded* y still depends weakly on dt (a few per cent at
+    dt = tau_y / 4). What the slow variables (v, g, mu) integrate does not.
   - With poisson_response, downstream terms receive the square root of a count-based rate, which
     is biased low at low counts.
 '''
@@ -189,10 +189,11 @@ class AdaptiveORGaNICs:
                     f_cRF=f[:, :K], f_surround=f[:, K:], mu_cRF=mu[:, :n], mu_surround=mu[:, n:])
 
     def _pool(self, q, q_delayed):
+        def apply(N, x):                       # (N x) for every row; one matrix or one per row
+            return x @ N.T if N.ndim == 2 else np.matmul(N, x[..., None])[..., 0]
         if self._N_del is None:
-            return np.matmul(self._N_now, q[..., None])[..., 0]
-        return (np.matmul(self._N_now, q[..., None])[..., 0]
-                + np.matmul(self._N_del, q_delayed[..., None])[..., 0])
+            return apply(self._N_now, q)
+        return apply(self._N_now, q) + apply(self._N_del, q_delayed)
 
     def _seen_response(self, y, extra):
         '''sqrt(y+) and y+ as seen by downstream terms (recurrent drive, pool, interneurons).'''
@@ -340,6 +341,7 @@ class AdaptiveORGaNICs:
             # intensity such that the noise low-passed at tau_n has s.d. amp; enters dy via beta
             beta_eff = p.beta if self.opt.normalization else 1.0
             em_kick = beta_eff * amp * np.sqrt(2.0 * noise.tau_n) * np.sqrt(dt) / p.tau_y
+            em_half = em_kick / np.sqrt(2.0)
         if noise.kind in ('poisson_input', 'poisson_response'):
             noisy = np.isfinite(amp) & (amp > 0)                    # (B, 1): rows with noise
             lam_scale = np.where(noisy, amp, 1.0) * bin_s / noise.ref
@@ -363,6 +365,11 @@ class AdaptiveORGaNICs:
                     yr = np.maximum(state[:, s['y']], 0.0)
                     extra['rate_hat'] = rng.poisson(yr * yr * lam_scale) / lam_scale
 
+                if noise.kind == 'white_input':
+                    # Euler-Maruyama kick, half before and half after the drift step, so that the
+                    # recorded y depends only weakly on dt
+                    state = state.copy()
+                    state[:, s['y']] += em_half * rng.standard_normal((B, NT))
                 k1 = deriv(state, z, q_delayed, adapt, extra)
                 k2 = deriv(state + 0.5 * dt * k1, z, q_delayed, adapt, extra)
                 k3 = deriv(state + 0.5 * dt * k2, z, q_delayed, adapt, extra)
@@ -370,7 +377,7 @@ class AdaptiveORGaNICs:
                 state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
                 if noise.kind == 'white_input':
-                    state[:, s['y']] += em_kick * rng.standard_normal((B, NT))
+                    state[:, s['y']] += em_half * rng.standard_normal((B, NT))
                 elif noise.kind == 'white_response':
                     extra['eta'] = ou_decay * extra['eta'] + ou_kick * rng.standard_normal((B, NT))
                 if self.gains_nonneg:
