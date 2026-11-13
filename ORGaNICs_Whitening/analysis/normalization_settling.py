@@ -70,12 +70,14 @@ TRACE_DURATION  = 300.0    # post-onset window for the two time courses (Fig. 1,
 SWEEP_DURATION  = 60.0     # post-onset window for each sweep point
 SETTLE_TOL      = 0.01     # 1 % band
 SETTLE_DEADLINE = 30.0     # ms
+MIN_DWELL       = 20.0     # ms a run must stay in the band before the window ends to count as settled
 DT_TAU_RATIO    = 4.0      # dt = min(DT_DEFAULT, min(tau_y, tau_u, tau_a) / DT_TAU_RATIO)
 ROBUST_CONTRASTS = [0.125, 0.25, 0.5, 1.0]   # contrasts for the tuned point's robustness check
 SEED            = 0        # nothing here is random; set for the record
 
 # ---- Sweep grids: half-octave steps that contain the code defaults (tau_u = 30, tau_a = 0.2)
-# and the docs/equations.md values (tau_u = 15, tau_a = 0.1) ----
+# and the docs/equations.md (tau_u, tau_a) = (15, 0.1); tau_y stays at the code's 0.4 ms, so
+# the docs' full parameter set (tau_y = 0.2) is not part of the sweep ----
 TAU_U_GRID = 30.0 * 2.0 ** (np.arange(-12, 3) / 2)    # 0.47 ... 60 ms (15 values)
 TAU_A_GRID = 0.2 * 2.0 ** (np.arange(-4, 9) / 2)      # 0.05 ... 3.2 ms (13 values)
 
@@ -108,6 +110,7 @@ def analytic_fixed_point(dyn, z):
     a_ss = np.sqrt(u_ss) / (1 - np.sqrt(u_ss))
     y_ss = z / np.sqrt(norm_sq)
     assert np.allclose(dyn.N_matrix, 1.0), "closed form assumes the all-ones normalization matrix"
+    assert np.allclose(dyn.W_yy, np.eye(dyn.W_yy.shape[0])), "closed form assumes W_yy = I"
     assert np.all(z >= 0), "closed form assumes nonnegative drive (z' = z >= 0)"
     assert np.sqrt(u_ss) < 1, "a* = sqrt(u)/(1 - sqrt(u)) requires u* < 1"
     return y_ss, np.full(N_RF * N_SETS, u_ss), np.full(N_RF * N_SETS, a_ss)
@@ -167,14 +170,17 @@ def rate_rel_error(y_hist, y_ss):
     return np.linalg.norm(r - r_ss[:, None], axis=0) / np.linalg.norm(r_ss)
 
 
-def settling_time(t, err, tol=SETTLE_TOL):
-    '''First post-onset time after which err stays <= tol; nan if still outside at the end.'''
+def settling_time(t, err, tol=SETTLE_TOL, min_dwell=MIN_DWELL):
+    '''First post-onset time after which err stays <= tol for the rest of the window; nan if the
+    run is still outside at the end, or entered the band less than min_dwell ms before the end
+    (too late to tell whether it stays).'''
     post = t > 0
     t, err = t[post], err[post]
     if not np.all(np.isfinite(err)) or err[-1] > tol:
         return np.nan
     outside = np.nonzero(err > tol)[0]
-    return 0.0 if outside.size == 0 else t[outside[-1] + 1]
+    T = 0.0 if outside.size == 0 else t[outside[-1] + 1]
+    return T if t[-1] - T >= min_dwell else np.nan
 
 
 def fast_subsystem_jacobian(dyn, z, y_ss, u_ss, a_ss, eps=1e-7):
@@ -198,6 +204,37 @@ def fast_subsystem_jacobian(dyn, z, y_ss, u_ss, a_ss, eps=1e-7):
     return np.linalg.eigvals(J), residual
 
 
+def symmetric_subspace_eigs(dyn, z, y_ss, u_ss, a_ss, eps=1e-7):
+    '''Eigenvalues (1/ms) of the Jacobian restricted to the invariant subspace in which u and a
+    are uniform across neurons (variables: y, scalar u, scalar a). With the all-ones N every
+    u row sees the same pool, so this subspace is invariant and a uniform stimulus onset stays
+    in it. Its slowest eigenvalue is the mode that sets the settling time. The full Jacobian
+    also has the u_i - u_j difference modes at exactly -1/tau_u, which the onset never excites.'''
+    N_TOT = N_RF * N_SETS
+    base = np.zeros(dyn.state_size)
+    base[:N_TOT] = y_ss
+    u_sl = slice(dyn._off_u_cRF, dyn._off_u_cRF + 2 * N_RF)
+    a_sl = slice(dyn._off_a_cRF, dyn._off_a_cRF + 2 * N_RF)
+    base[u_sl], base[a_sl] = u_ss[0], a_ss[0]
+
+    def f(s):
+        d = dyn._derivatives(s, z, 0.0)
+        return np.concatenate([d[:N_TOT], [d[dyn._off_u_cRF]], [d[dyn._off_a_cRF]]])
+
+    J = np.zeros((N_TOT + 2, N_TOT + 2))
+    for j in range(N_TOT + 2):
+        dp, dm = base.copy(), base.copy()
+        if j < N_TOT:
+            dp[j] += eps
+            dm[j] -= eps
+        else:
+            sl = u_sl if j == N_TOT else a_sl
+            dp[sl] += eps
+            dm[sl] -= eps
+        J[:, j] = (f(dp) - f(dm)) / (2 * eps)
+    return np.linalg.eigvals(J)
+
+
 def perturbation_test(dyn, z, y_ss, u_ss, a_ss, rel=0.05, duration=None, seed=SEED):
     '''Start at the fixed point with a random +-rel relative perturbation on y, u, a and check the
     state returns: returns the final max relative error over y, u, a.'''
@@ -214,20 +251,24 @@ def perturbation_test(dyn, z, y_ss, u_ss, a_ss, rel=0.05, duration=None, seed=SE
     with contextlib.redirect_stdout(io.StringIO()):
         dyn.run_simulation(np.tile(z[:, None], n), initial_state=state)
     s = dyn.unpack_state(dyn.last_state)
+    u_all = np.concatenate([s['u_cRF'], s['u_surround']])
+    a_all = np.concatenate([s['a_cRF'], s['a_surround']])
     return max(np.max(np.abs(s['y'] - y_ss)) / np.max(y_ss),
-               np.max(np.abs(s['u_cRF'] - u_ss[0])) / u_ss[0],
-               np.max(np.abs(s['a_cRF'] - a_ss[0])) / a_ss[0])
+               np.max(np.abs(u_all - u_ss[0])) / u_ss[0],
+               np.max(np.abs(a_all - a_ss[0])) / a_ss[0])
 
 
 def run_point(dyn, z, fp, tau_u, tau_a, duration):
-    '''Settling times (T_y, T_u, T_a) and the fixed point's max Re(eigenvalue) for one (tau_u, tau_a).'''
+    '''Settling times (T_y, T_u, T_a), the fixed point's max Re(eigenvalue) (full Jacobian:
+    stability) and the slowest eigenvalue on the symmetric subspace (settling mode).'''
     set_taus(dyn, tau_u, tau_a)
     y_ss, u_ss, a_ss = fp
     with np.errstate(over='ignore', invalid='ignore'):
         t, y, u, a = simulate_onset(dyn, z, duration)
         T = [settling_time(t, linf_rel_error(x, xs)) for x, xs in [(y, y_ss), (u, u_ss), (a, a_ss)]]
     eig, _ = fast_subsystem_jacobian(dyn, z, *fp)
-    return T, np.max(eig.real), dyn.dt
+    sym = symmetric_subspace_eigs(dyn, z, *fp)
+    return T, np.max(eig.real), sym[np.argmax(sym.real)], dyn.dt
 
 
 def trace(dyn, z, fp, tau_u, tau_a, duration=TRACE_DURATION):
@@ -239,10 +280,11 @@ def trace(dyn, z, fp, tau_u, tau_a, duration=TRACE_DURATION):
     rate_err = rate_rel_error(y, y_ss)
     T = {k: settling_time(t, e) for k, e in err.items()}
     eig, residual = fast_subsystem_jacobian(dyn, z, *fp)
+    sym = symmetric_subspace_eigs(dyn, z, *fp)
     return dict(t=t, y_mean=y.mean(0), u_mean=u.mean(0), a_mean=a.mean(0),
                 err_y=err['y'], err_u=err['u'], err_a=err['a'], rate_err=rate_err,
                 T_y=T['y'], T_u=T['u'], T_a=T['a'], T_rate=settling_time(t, rate_err),
-                eig=eig, fp_residual=residual, dt=dyn.dt, tau_u=tau_u, tau_a=tau_a)
+                eig=eig, sym_eig=sym, slow_sym=sym[np.argmax(sym.real)], fp_residual=residual, dt=dyn.dt, tau_u=tau_u, tau_a=tau_a)
 
 
 def git_commit():
@@ -278,27 +320,29 @@ def main(smoke=False):
     t0 = time.time()
     orig = trace(dyn, z, fp, tau_u0, tau_a0, trace_duration)
     print(f"[original] T_y = {orig['T_y']:.2f}, T_u = {orig['T_u']:.2f}, T_a = {orig['T_a']:.2f} ms "
-          f"(rates 1 %: {orig['T_rate']:.2f} ms); max Re(lambda) = {orig['eig'].real.max():.4g} /ms "
-          f"({time.time() - t0:.1f} s)")
+          f"(rates 1 %: {orig['T_rate']:.2f} ms); max Re(lambda) = {orig['eig'].real.max():.4g} /ms, "
+          f"slowest symmetric mode = {orig['slow_sym']:.4g} /ms ({time.time() - t0:.1f} s)")
 
     # ---- 2. Sweep (tau_u, tau_a) ----
     T_sweep = np.full((len(tau_u_grid), len(tau_a_grid), 3), np.nan)
     max_re = np.full((len(tau_u_grid), len(tau_a_grid)), np.nan)
     dt_sweep = np.full_like(max_re, np.nan)
+    slow_sym = np.full(max_re.shape, np.nan, dtype=complex)
     t0 = time.time()
     for i, tu in enumerate(tau_u_grid):
         for j, ta in enumerate(tau_a_grid):
-            T_sweep[i, j], max_re[i, j], dt_sweep[i, j] = run_point(dyn, z, fp, tu, ta, sweep_duration)
+            T_sweep[i, j], max_re[i, j], slow_sym[i, j], dt_sweep[i, j] = run_point(
+                dyn, z, fp, tu, ta, sweep_duration)
     print(f"sweep: {T_sweep.shape[0] * T_sweep.shape[1]} points in {time.time() - t0:.1f} s")
     T_max = np.max(T_sweep, axis=2)                        # nan if any population unsettled
     feasible = (T_max <= SETTLE_DEADLINE) & (max_re < 0)
 
     # Pick the feasible point closest to the original time constants (log distance) whose 8 grid
-    # neighbours are also feasible. Settling is not monotonic in (tau_u, tau_a): the slowest
-    # mode is always the u leak (-1/tau_u), and isolated points settle fast only because the
-    # onset transient happens to excite that mode weakly, which is specific to this stimulus.
-    # Requiring an interior point avoids picking one of those pockets. Fallbacks: any feasible
-    # point, then the fastest stable point.
+    # neighbours are also feasible. Settling is not monotonic in (tau_u, tau_a): isolated points
+    # settle fast because the onset transient excites the slowest symmetric mode with a small
+    # amplitude (or the mode is oscillatory and crosses into the band at a favourable phase),
+    # which is specific to this stimulus. Requiring an interior point avoids picking one of
+    # those pockets. Fallbacks: any feasible point, then the fastest stable point.
     interior = np.zeros_like(feasible)
     for a in range(1, feasible.shape[0] - 1):
         for b in range(1, feasible.shape[1] - 1):
@@ -308,21 +352,25 @@ def main(smoke=False):
         dist = np.hypot(np.log(tau_u_grid[:, None] / tau_u0), np.log(tau_a_grid[None, :] / tau_a0))
         i, j = np.unravel_index(np.argmin(np.where(candidates, dist, np.inf)), dist.shape)
     else:
-        i, j = np.unravel_index(np.nanargmin(np.where(max_re < 0, T_max, np.nan)), T_max.shape)
+        stable_T = np.where(max_re < 0, T_max, np.nan)
+        if np.all(np.isnan(stable_T)):
+            raise RuntimeError("no stable sweep point settles within the sweep window")
+        i, j = np.unravel_index(np.nanargmin(stable_T), T_max.shape)
     tuned = trace(dyn, z, fp, tau_u_grid[i], tau_a_grid[j], trace_duration)
     print(f"[tuned] tau_u = {tau_u_grid[i]:.3g} ms, tau_a = {tau_a_grid[j]:.3g} ms: "
           f"T_y = {tuned['T_y']:.2f}, T_u = {tuned['T_u']:.2f}, T_a = {tuned['T_a']:.2f} ms")
 
     # ---- 3. Checks ----
     # dt convergence: settling times of the original and tuned points (and the stiffest grid
-    # corner) at dt/4 vs the sweep's dt.
+    # corner) at dt/4 vs the sweep's dt. The original point needs the long trace window to settle.
     conv = []
-    for tu, ta in [(tau_u0, tau_a0), (tau_u_grid[i], tau_a_grid[j]), (tau_u_grid[0], tau_a_grid[0])]:
-        T_coarse, _, dt_c = run_point(dyn, z, fp, tu, ta, sweep_duration)
+    for tu, ta, dur in [(tau_u0, tau_a0, trace_duration), (tau_u_grid[i], tau_a_grid[j], sweep_duration),
+                        (tau_u_grid[0], tau_a_grid[0], sweep_duration)]:
+        T_coarse, _, _, dt_c = run_point(dyn, z, fp, tu, ta, dur)
         set_taus(dyn, tu, ta)
-        t, y, u, a = simulate_onset(dyn, z, sweep_duration, dt=dt_c / 4)
+        t, y, u, a = simulate_onset(dyn, z, dur, dt=dt_c / 4)
         T_fine = [settling_time(t, linf_rel_error(x, xs)) for x, xs in zip((y, u, a), fp)]
-        conv.append(dict(tau_u=tu, tau_a=ta, dt=dt_c, T_dt=T_coarse, T_dt_over_4=T_fine))
+        conv.append(dict(tau_u=tu, tau_a=ta, window_ms=dur, dt=dt_c, T_dt=T_coarse, T_dt_over_4=T_fine))
         print(f"  dt check tau_u={tu:.3g}, tau_a={ta:.3g}: dt={dt_c:.4g} -> {np.round(T_coarse, 3)}, "
               f"dt/4 -> {np.round(T_fine, 3)}")
     pert = {}
@@ -336,7 +384,7 @@ def main(smoke=False):
     contrast_check = []
     for c in ROBUST_CONTRASTS:
         z_c = stim_gen.oriented_drive(STIM_THETA, c, STIM_ROUTE)
-        T_c, re_c, _ = run_point(dyn, z_c, analytic_fixed_point(dyn, z_c),
+        T_c, re_c, _, _ = run_point(dyn, z_c, analytic_fixed_point(dyn, z_c),
                                  tau_u_grid[i], tau_a_grid[j], sweep_duration)
         contrast_check.append(dict(contrast=c, T_y=T_c[0], T_u=T_c[1], T_a=T_c[2], max_re_eig=re_c))
         print(f"  tuned point, contrast {c}: T(y, u, a) = {np.round(T_c, 2)} ms")
@@ -347,7 +395,7 @@ def main(smoke=False):
     npz_path = os.path.join(OUT_DIR, f"normalization_settling{tag}.npz")
     save = dict(z=z, y_ss=fp[0], u_ss=fp[1][0], a_ss=fp[2][0],
                 tau_u_grid=tau_u_grid, tau_a_grid=tau_a_grid, T_sweep=T_sweep, max_re_eig=max_re,
-                dt_sweep=dt_sweep, feasible=feasible, interior=interior, tuned_idx=np.array([i, j]))
+                dt_sweep=dt_sweep, slow_sym_eig=slow_sym, feasible=feasible, interior=interior, tuned_idx=np.array([i, j]))
     for prefix, d in [('orig', orig), ('tuned', tuned)]:
         for k, v in d.items():
             save[f"{prefix}_{k}"] = v
@@ -366,17 +414,20 @@ def main(smoke=False):
         integrator='V1Dynamics_Surround.run_simulation (fixed-step RK4)',
         dt_rule=f"min({DT_DEFAULT}, min(tau_y, tau_u, tau_a) / {DT_TAU_RATIO}) ms",
         trace_duration_ms=trace_duration, sweep_duration_ms=sweep_duration,
-        settle_tol=SETTLE_TOL, settle_deadline_ms=SETTLE_DEADLINE,
-        settle_metric='max_i |x_i - x_i*| / max_i |x_i*| <= tol for the rest of the window',
+        settle_tol=SETTLE_TOL, settle_deadline_ms=SETTLE_DEADLINE, min_dwell_ms=MIN_DWELL,
+        settle_metric='max_i |x_i - x_i*| / max_i |x_i*| <= tol for the rest of the window '
+                      '(and for at least min_dwell_ms before the window ends)',
         tau_u_grid=tau_u_grid.tolist(), tau_a_grid=tau_a_grid.tolist(),
         tuned=dict(tau_u=float(tau_u_grid[i]), tau_a=float(tau_a_grid[j]),
                    rule='feasible grid point whose 8 neighbours are feasible, nearest the '
                         'defaults in log(tau) distance'),
         results=dict(
             original=dict(T_y=orig['T_y'], T_u=orig['T_u'], T_a=orig['T_a'], T_rate=orig['T_rate'],
-                          max_re_eig=float(orig['eig'].real.max()), fp_residual=orig['fp_residual'], dt=orig['dt']),
+                          max_re_eig=float(orig['eig'].real.max()), fp_residual=orig['fp_residual'], dt=orig['dt'],
+                slowest_symmetric_eig=[float(orig['slow_sym'].real), float(orig['slow_sym'].imag)]),
             tuned=dict(T_y=tuned['T_y'], T_u=tuned['T_u'], T_a=tuned['T_a'], T_rate=tuned['T_rate'],
-                       max_re_eig=float(tuned['eig'].real.max()), fp_residual=tuned['fp_residual'], dt=tuned['dt']),
+                       max_re_eig=float(tuned['eig'].real.max()), fp_residual=tuned['fp_residual'], dt=tuned['dt'],
+                slowest_symmetric_eig=[float(tuned['slow_sym'].real), float(tuned['slow_sym'].imag)]),
             n_feasible=int(feasible.sum()), n_points=int(feasible.size),
             n_unstable=int(np.sum(max_re >= 0)),
             n_interior=int(interior.sum()),

@@ -47,7 +47,8 @@ from the blank-stimulus steady state ($\boldsymbol{y} = 0$, $u = \sigma^2/4$,
 $a = \sqrt{u}/(1-\sqrt{u})$), held for 5 ms before onset.
 
 Settling time of population $x \in \{y, u, a\}$: the first time after which
-$\max_i |x_i(t) - x_i^*| / \max_i |x_i^*| \le 0.01$ for the rest of the window. For the firing
+$\max_i |x_i(t) - x_i^*| / \max_i |x_i^*| \le 0.01$ for the rest of the window, provided the band
+is held for at least 20 ms before the window ends (otherwise "not settled"). For the firing
 rates (Fig. 2) the discrepancy is
 $\|\lfloor\boldsymbol{y}(t)\rfloor^2 - \boldsymbol{y}^{*2}\|_2 / \|\boldsymbol{y}^{*2}\|_2$.
 
@@ -78,12 +79,21 @@ time courses, 60 ms for each sweep point.
 - Fixed-point residual of the right-hand side at the analytic fixed point: $1.1\times10^{-15}$.
 - Linear stability: finite-difference Jacobian of the reduced $(\boldsymbol{y}, \boldsymbol{u}, \boldsymbol{a})$
   system at the fixed point. For the original and tuned parameters all eigenvalues have negative
-  real part; the slowest is exactly $-1/\tau_u$ ($-0.0333$ and $-0.189\ \text{ms}^{-1}$). Four sweep
-  points ($\tau_u = 0.47$ ms, $\tau_a \ge 1.13$ ms) are unstable.
+  real part. Four sweep points ($\tau_u = 0.47$ ms, $\tau_a \ge 1.13$ ms) are unstable.
+- Settling mode: the full Jacobian's slowest eigenvalue, exactly $-1/\tau_u$, belongs to the
+  $u_i - u_j$ difference modes, which a spatially uniform onset does not excite. The settling time
+  is set instead by the slowest eigenvalue on the invariant subspace with uniform $u$ and $a$:
+  $-0.0347\ \text{ms}^{-1}$ (original; $\ln 100 / 0.0347 = 133$ ms vs. 129.6 ms observed) and
+  $-0.266\ \text{ms}^{-1}$ (tuned; 17.3 ms vs. 20.5 ms). In 46 of the 64 feasible sweep points this
+  mode is a complex pair (damped ringing); at the tuned point it is real.
 - Perturbation: ±5 % random perturbations of $y$, $u$, $a$ at the fixed point decay to a relative
   error of $3\times10^{-6}$ within $10\max(\tau)$.
-- Time-step convergence: settling times change by < 0.03 ms when $\Delta t$ is divided by 4
-  (original, tuned and stiffest grid corner).
+- Time-step convergence: settling times change by < 0.04 ms (below one step) when $\Delta t$ is
+  divided by 4 (original, tuned and stiffest grid corner). An independent check against an
+  implicit Radau integrator (rtol $10^{-10}$) agreed to within one $\Delta t$.
+- Independent re-implementation (78 neurons, per-neuron $u$ and $a$, no $v$/$\mu$ in the state)
+  matched the model run to $3\times10^{-17}$, and the feasible set was unchanged when re-scored
+  with a 400 ms window.
 - Gains stayed exactly zero in every run (asserted).
 - Gain-adaptation and target-feasibility checks: not applicable (adaptation off).
 
@@ -98,6 +108,8 @@ time courses, 60 ms for each sweep point.
 - Tuned parameters ($\tau_u = 5.3$ ms, $\tau_a = 0.2$ ms): 18.6 ms (y), 20.0 ms (u), 20.5 ms (a);
   rates within 1 % after 21.3 ms. At contrasts 0.125, 0.25 and 0.5 the slowest population settles
   in 26.2, 27.8 and 22.4 ms.
-- Settling is not monotonic in $(\tau_u, \tau_a)$: isolated points outside the robust region (for
-  example $\tau_u = 30$, $\tau_a = 2.26$ ms, 31 ms) settle quickly because the onset transient
-  happens to excite the slow $-1/\tau_u$ mode weakly. These are specific to the stimulus.
+- Settling is not monotonic in $(\tau_u, \tau_a)$: isolated points (for example $\tau_u = 30$,
+  $\tau_a = 2.26$ ms, 31 ms; $\tau_u = 7.5$, $\tau_a = 0.2$ ms, 11.5 ms vs. about 20 ms for its
+  neighbours) settle quickly because the onset excites the slowest symmetric mode with a small
+  amplitude or at a favourable phase. These pockets are specific to the stimulus, so the tuned
+  point was required to have all eight grid neighbours feasible.
