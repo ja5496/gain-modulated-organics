@@ -372,6 +372,7 @@ class V1Dynamics_Surround:
         # below - built from the split blocks exactly like full_gain_feedback already
         # concatenates cRF_gain_feedback/surround_gain_feedback further down.
         a_plus_full = np.concatenate([a_plus_cRF] + [a_plus_surround] * (N_SETS - 1))
+        u_plus_full = np.concatenate([u_plus_cRF] + [u_plus_surround] * (N_SETS - 1))
 
         theta_t = self.theta_t
 
@@ -407,7 +408,7 @@ class V1Dynamics_Surround:
         input_drive = self.beta * z_t
 
         # Local gain feedback matrix that can be applied to the full y dynamics
-        full_gain_feedback = (a_plus_full / (1 + a_plus_full)) * np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
+        full_gain_feedback = u_plus_full * np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
 
         sigma_term = (self.sigma / 2) ** 2
 
