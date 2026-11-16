@@ -54,7 +54,7 @@ def frame(seed=7, n=N_RF, k=K):
 W_SMALL = frame()
 
 
-def small_model(options=sv.CODEBASE, theta=None, **kw):
+def small_model(options=sv.PREVIOUS, theta=None, **kw):
     theta = np.full(K, 0.01) if theta is None else theta
     kw.setdefault('N_RF', N_RF)
     kw.setdefault('N_SETS', N_SETS)
@@ -223,7 +223,7 @@ def test_rhs_single_set_has_inert_surround_copy():
     rng = np.random.default_rng(2)
     theta = rng.uniform(0.001, 0.02, K)
     p = sv.ModelParams()
-    for opt in (sv.CODEBASE, sv.NEW):
+    for opt in (sv.PREVIOUS, sv.NEW):
         m = small_model(opt, theta=theta, N_SETS=1)
         state = random_state(rng, 2, m)
         z = rng.standard_normal((2, N_RF))
@@ -313,7 +313,7 @@ def make_old(W, theta, n, NS, W_yy, dt=0.1, gains_nonneg=True, params=None):
 
 def run_old_and_new(W, theta, n, NS, z_pres, steps, delay, W_yy=None, params=None, gains_nonneg=True,
                     baseline_ms=30.0, dt=0.1):
-    '''Runs V1Dynamics_Surround and AdaptiveORGaNICs(CODEBASE) on the same presentations, with the
+    '''Runs V1Dynamics_Surround and AdaptiveORGaNICs(CODEBASE, its current equations) on the same presentations, with the
     delayed surround signal held at the blank-settled value until the first delayed sample exists
     (each model settles its own baseline). Returns (old outputs, old model, new result, new model).'''
     W_yy = np.eye(n) if W_yy is None else W_yy
@@ -360,9 +360,12 @@ def compare_old_new(out, dyn, res, model, steps, tol):
     new_final = model.unpack(res['state'])
     errs['y (raw, final)'] = np.abs(new_final['y'][0] - old_final['y']).max()
     errs['y (raw, presentation ends)'] = np.abs(np.maximum(res['y_end'][0], 0).T - y_h[:, steps - 1::steps]).max()
-    errs['mu cRF (final)'] = np.abs(new_final['mu_cRF'][0] - old_final['mu_cRF']).max()
-    errs['mu surround (final)'] = np.abs(new_final['mu_surround'][0] - old_final['mu_surround']).max()
-    errs['mu cRF (history end)'] = np.abs(new_final['mu_cRF'][0] - mu_c[:, -1]).max()
+    # V1Dynamics_Surround tracks the running mean of c (K); this module tracks it in neuron space
+    # (N_RF), and W.T @ mu is the same quantity (Eq. dmu is linear).
+    W = model.W
+    errs['mu cRF (final)'] = np.abs(W.T @ new_final['mu_cRF'][0] - old_final['mu_cRF']).max()
+    errs['mu surround (final)'] = np.abs(W.T @ new_final['mu_surround'][0] - old_final['mu_surround']).max()
+    errs['mu cRF (history end)'] = np.abs(W.T @ new_final['mu_cRF'][0] - mu_c[:, -1]).max()
     for name, e in errs.items():
         assert e < tol, f'{name}: {e:.2e}'
     return max(errs.values())
@@ -436,7 +439,7 @@ def test_delay_buffer_holds_the_state_n_lag_steps_back():
     q(state after step t - n_lag) (the codebase convention: surround_msg_hist[t - n_lag]), and the
     supplied baseline for t < n_lag, for an n_lag that does not divide the run length.'''
     theta, z, W_yy, params = _fast_scenario(seed=24, n_pres=5)
-    m = small_model(sv.CODEBASE, theta=theta, params=sv.ModelParams(**params), surround_delay=0.7)
+    m = small_model(sv.PREVIOUS, theta=theta, params=sv.ModelParams(**params), surround_delay=0.7)
     assert m.n_lag == 7
     calls = spy_on(m)
     q0 = np.random.default_rng(0).uniform(0, 0.1, (1, N_TOT))
@@ -500,7 +503,7 @@ def test_fixed_point_matches_analytic(gating, placement):
        a/(1+a) = sqrt(u),  v = D(g) W.T y  (interneuron placement) or W.T y (principal),
     to 1e-6 relative (CLAUDE.md), confirmed with root-finding on the RHS (1e-9), with u* < 1,
     z' >= 0 and all Jacobian eigenvalues in the left half-plane.'''
-    opt = replace(sv.CODEBASE, gating=gating, gain_placement=placement, rectify_c=(gating == 'u'))
+    opt = replace(sv.PREVIOUS, gating=gating, gain_placement=placement, rectify_c=(gating == 'u'))
     m = small_model(opt)
     z, cases = _fixed_point_cases()
     for label, gc, gs in cases:
@@ -558,7 +561,7 @@ def test_gain_placements_are_equivalent_for_frozen_gains(gating):
     for rectify_c in (False, True):
         runs = {}
         for pl in ('principal', 'interneuron'):
-            m = small_model(replace(sv.CODEBASE, gating=gating, gain_placement=pl, rectify_c=rectify_c))
+            m = small_model(replace(sv.PREVIOUS, gating=gating, gain_placement=pl, rectify_c=rectify_c))
             runs[pl] = m.settle(z, gc, gs, settle_ms=150.0, record_traces=True)
         tp, ti = runs['principal']['traces'], runs['interneuron']['traces']
         for name in ('y', 'u', 'a'):
@@ -611,7 +614,7 @@ def test_gains_are_nonnegative_at_every_step():
     actually reached, and the same run without the clamp does go negative.'''
     theta, z, W_yy, params = _fast_scenario(seed=92, n_pres=30)
     z_steps = np.repeat(z, 80, axis=0)                       # (2400, N_TOT), one step each
-    for name, opt in (('codebase', sv.CODEBASE), ('new', sv.NEW)):
+    for name, opt in (('codebase', sv.PREVIOUS), ('new', sv.NEW)):
         m = small_model(opt, theta=theta, params=sv.ModelParams(**params), surround_delay=1.3)
         g = m.simulate(z_steps, 1)['g_end'][0]
         assert g.shape[0] == z_steps.shape[0]
@@ -624,7 +627,7 @@ def test_gains_are_nonnegative_at_every_step():
               f'max g {g.max():.2f}; without clamp min g {g2.min():.2f}')
 
 
-@pytest.mark.parametrize('name,opt', [('codebase', sv.CODEBASE), ('new', sv.NEW),
+@pytest.mark.parametrize('name,opt', [('codebase', sv.PREVIOUS), ('new', sv.NEW),
                                       ('new, rectified variance', replace(sv.NEW, rectified_variance=True))])
 def test_constant_input_gains_decay_to_zero_and_stay(name, opt):
     '''CLAUDE.md Verification 5. Constant input: c -> mu, so dg/dt -> -theta_t/tau_g until g = 0,
@@ -713,7 +716,7 @@ def test_rk4_is_fourth_order_on_a_smooth_trajectory():
     rng = np.random.default_rng(91)
     gc, gs = 0.3 * rng.random(K), 0.3 * rng.random(K)
     z0, z1 = 0.05 + 0.05 * rng.random((1, N_TOT)), 0.05 + 0.05 * rng.random((1, N_TOT))
-    for name, opt in (('codebase', sv.CODEBASE), ('new', sv.NEW)):
+    for name, opt in (('codebase', sv.PREVIOUS), ('new', sv.NEW)):
         start = small_model(opt, dt=0.025).settle(z0, gc, gs, settle_ms=450.0)['state']
         tr = {}
         for dt in (0.1, 0.05, 0.025):
@@ -728,7 +731,7 @@ def test_rk4_is_fourth_order_on_a_smooth_trajectory():
 
 
 @pytest.mark.parametrize('delay', [0.0, 4.0])
-@pytest.mark.parametrize('name,opt', [('codebase', sv.CODEBASE), ('new', sv.NEW)])
+@pytest.mark.parametrize('name,opt', [('codebase', sv.PREVIOUS), ('new', sv.NEW)])
 def test_halving_dt_changes_an_adaptation_run_by_less_than_1e3(name, opt, delay):
     '''CLAUDE.md Verification 8, on a run with switching stimuli, adapting gains (accelerated),
     the clamp and the surround delay (the delayed signal is sampled once per step, an O(dt)
@@ -762,7 +765,7 @@ def test_batched_run_equals_separate_runs():
     z = rng.uniform(0.0, 0.5, (B, 8, N_TOT))
     p = sv.ModelParams(tau_g=5.0, tau_mu=50.0, tau_v=5.0)
     q0 = rng.uniform(0, 0.05, (B, N_TOT))
-    for opt in (sv.CODEBASE, sv.NEW):
+    for opt in (sv.PREVIOUS, sv.NEW):
         mb = small_model(opt, theta=theta, params=p, N_matrix=Nmat, surround_delay=1.3)
         rb = mb.simulate(z, 60, q_baseline=q0)
         assert rb['y_end'].shape == (B, 8, N_TOT) and rb['g_end'].shape == (B, 8, 2 * K)
@@ -809,9 +812,9 @@ def test_FINDING_zero_response_noise_changes_the_codebase_equations(kind, amp):
     forced to True (simulation_variants.py lines 215-218).'''
     theta, z, _, params = _fast_scenario(seed=111, n_pres=6)
     p = sv.ModelParams(**params)
-    ref = small_model(sv.CODEBASE, theta=theta, params=p).simulate(z, 80, record_traces=True)
+    ref = small_model(sv.PREVIOUS, theta=theta, params=p).simulate(z, 80, record_traces=True)
     assert ref['traces']['y'].min() < -0.01                  # the scenario has negative responses
-    m = small_model(sv.CODEBASE, theta=theta, params=p, noise=sv.NoiseOptions(kind, amp))
+    m = small_model(sv.PREVIOUS, theta=theta, params=p, noise=sv.NoiseOptions(kind, amp))
     res = m.simulate(z, 80, rng=np.random.default_rng(5))
     err_y = np.abs(res['y_end'] - ref['y_end']).max()
     err_g = np.abs(res['g_end'] - ref['g_end']).max()
@@ -1026,7 +1029,7 @@ def test_poisson_input_estimate_is_unbiased_with_the_documented_variance(ref_lev
 def test_poisson_input_infinite_rate_is_noise_free():
     theta, z, _, params = _fast_scenario(seed=132, n_pres=6)
     p = sv.ModelParams(**params)
-    for opt in (sv.CODEBASE, sv.NEW):
+    for opt in (sv.PREVIOUS, sv.NEW):
         ref = small_model(opt, theta=theta, params=p).simulate(z, 80)
         res = small_model(opt, theta=theta, params=p, noise=sv.NoiseOptions('poisson_input', np.inf)).simulate(z, 80)
         assert np.array_equal(res['y_end'], ref['y_end']) and np.array_equal(res['g_end'], ref['g_end'])

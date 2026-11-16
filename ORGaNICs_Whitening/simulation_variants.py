@@ -4,7 +4,10 @@
 Flagged variants of the joint normalization + adaptation circuit. Nothing in
 simulation.py is changed: this module re-implements V1Dynamics_Surround's equations with
 every alternative studied in the supplementary investigation behind an option, so that the
-codebase ("old") and revised ("new") equations run side by side.
+previous ("old") and current equations run side by side. CODEBASE is the form now in
+V1Dynamics_Surround (identical to NEW: u+ gating, v = low-pass of g*c, gains driven by
+(c - mu)^2, rectified c). PREVIOUS is the form before that change (a+/(1+a+) gating, v =
+low-pass of c, gains driven by the filtered v).
 
 Time unit: ms (as in simulation.py). Integration: classical RK4 with fixed step dt, as in
 V1Dynamics_Surround.run_simulation; gains are clamped to >= 0 after every step.
@@ -19,19 +22,24 @@ Variables (B = batch of independent simulations run in parallel)
     f  (B, 2, K)   c low-pass filtered at tau_v (only used by variance_signal='filtered' when
                    gain_placement='interneuron'; equals v when gain_placement='principal')
     mu (B, 2, N_RF) slow running mean of the principal responses; W.T @ mu is the running mean
-                   of c (Eq. dmu is linear, so tracking y and projecting is the same as tracking c)
+                   of c (Eq. dmu is linear, so tracking y and projecting is the same as tracking c).
+                   V1Dynamics_Surround tracks the same quantity directly in interneuron space:
+                   its mu_cRF (K,) equals W.T @ this mu_cRF.
 
 Equation options (EquationOptions)
-    gating              'a'  feedback gated by a+/(1+a+)                      [codebase]
-                        'u'  feedback gated by u+                             [Eq. 1]
-    gain_placement      'principal'    feedback W (g*v),  tau_v dv/dt = -v + c    [codebase]
-                        'interneuron'  feedback W v,      tau_v dv/dt = -v + g*c  [Eq. 4]
-    variance_signal     'filtered'  tau_g dg/dt = (c_filtered - mu)^2 - theta_t   [codebase: uses v]
-                        'instant'   tau_g dg/dt = (c - mu)^2 - theta_t            [Eq. 5]
-    rectify_c           False  c = W.T y                                      [codebase]
-                        True   c = W.T max(y, 0)                              [Eqs. 1-6]
+    gating              'a'  feedback gated by a+/(1+a+)                      [previous]
+                        'u'  feedback gated by u+                             [Eq. 1, codebase]
+    gain_placement      'principal'    feedback W (g*v),  tau_v dv/dt = -v + c    [previous]
+                        'interneuron'  feedback W v,      tau_v dv/dt = -v + g*c  [Eq. 4, codebase]
+    variance_signal     'filtered'  tau_g dg/dt = (c_filtered - mu)^2 - theta_t   [previous: uses v]
+                        'instant'   tau_g dg/dt = (c - mu)^2 - theta_t            [Eq. 5, codebase]
+    rectify_c           False  c = W.T y                                      [previous]
+                        True   c = W.T max(y, 0)                              [Eqs. 1-6, codebase]
     rectified_variance  True   tau_g dg/dt = max(c - mu, 0)^2 - theta_t       [Eq. 15]
     normalization       False  no u, a, W_yy; beta = 1; ungated feedback      [Eqs. 9-12]
+
+The EquationOptions field defaults are the PREVIOUS form (kept so existing option
+combinations keep their meaning); use CODEBASE for the equations of V1Dynamics_Surround.
 
 Other options: arbitrary normalization weights N (N_TOT, N_TOT), noise (NoiseOptions), and the
 surround -> cRF conduction delay of V1Dynamics_Surround.
@@ -65,10 +73,13 @@ class EquationOptions:
         assert self.variance_signal in ('filtered', 'instant')
 
 
-# The equations exactly as implemented in simulation.V1Dynamics_Surround
-CODEBASE = EquationOptions()
 # Eqs. 1-6 of the instructions (u+ gating, gain inside the v equation, variance from c)
 NEW = EquationOptions(gating='u', gain_placement='interneuron', variance_signal='instant', rectify_c=True)
+# The equations exactly as implemented in simulation.V1Dynamics_Surround (since it adopted Eqs. 1-6)
+CODEBASE = NEW
+# The form V1Dynamics_Surround used before (a+/(1+a+) gating, gain on the feedback, variance of
+# the tau_v-filtered v, unrectified c)
+PREVIOUS = EquationOptions()
 
 
 @dataclass(frozen=True)
@@ -109,7 +120,7 @@ class ModelParams:
     '''Defaults are the values in simulation.V1Dynamics_Surround (ms).'''
     tau_y: float = 0.4
     tau_a: float = 0.2
-    tau_u: float = 30.0
+    tau_u: float = 5.0
     tau_v: float = 30.0
     tau_g: float = 500.0
     tau_mu: float = 2000.0
