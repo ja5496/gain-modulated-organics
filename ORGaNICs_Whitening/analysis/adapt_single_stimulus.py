@@ -49,7 +49,7 @@ N_RF       = 13                    # Number of primary neurons per receptive fie
 N_SETS     = 6                     # 1 classical RF (cRF) + 5 surround sets
 CRF_IDX    = 0                     # Index of cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
-TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_low_c.csv")
+TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 
 ADAPTOR_CONTRAST     = 1.0         # contrast of the sustained adaptor (same as adapt_ensembles.py's ensembles)
 TUNING_WIDTH         = 0.75

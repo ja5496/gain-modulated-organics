@@ -206,7 +206,7 @@ class V1Dynamics_Surround:
 
         # Target covariance of one RF's responses to a uniform ensemble (see
         # frame.py:compute_uniform_target_covariance)
-        self.uniform_target_covariance = 0.15*np.loadtxt(target_covariance_path, delimiter=",")
+        self.uniform_target_covariance = 1.0*np.loadtxt(target_covariance_path, delimiter=",")
         assert self.uniform_target_covariance.shape == (N_RF, N_RF), (
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
