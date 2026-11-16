@@ -1,6 +1,6 @@
 # Model equations
 
-This is the source of truth for the model equations. It is transcribed from the manuscript's Methods ("Full Equations" and "Steady State Derivation"). Equation labels (dy, du, da, dv, dg, dmu, y_steady, z_prime, ...) match the manuscript's `\label{eqn:...}` keys; use them in code comments, e.g. `# Eq. dy: recurrent drive`. Citation keys are kept as `[key]`.
+This is the source of truth for the model equations. It is transcribed from the manuscript's Methods ("Full Equations" and "Steady State Derivation"). Equation labels (dy, du, da, dv, dg, dmu, y_steady, z_prime, ...) match the manuscript's `\label{eqn:...}` keys; use them in code comments, e.g. `# Eq. dy: recurrent drive`. Citation keys are kept as `[key]`. Eq. dy and its derivation now differ from the manuscript: the gain feedback is gated by $\boldsymbol{u}^+$ (transcription note 7).
 
 Notation: boldface lowercase letters are vectors (one component per neuron), boldface capitals are synaptic weight matrices, and everything else is a constant. $\odot$ is the element-wise (Hadamard) product. Vector quotients such as $\frac{1}{1+\boldsymbol{a}^+}$ are element-wise. $\boldsymbol{D}(\boldsymbol{g})$ is the diagonal matrix with $\boldsymbol{g}$ on its diagonal.
 
@@ -11,7 +11,7 @@ Notation: boldface lowercase letters are vectors (one component per neuron), bol
 | $\boldsymbol{y}$ | $N$ | Principal-neuron membrane potentials; $\boldsymbol{y}^+$ are their firing rates |
 | $\boldsymbol{u}$ | $N$ | Normalization interneurons (from ORGaNICs) |
 | $\boldsymbol{a}$ | $N$ | Normalization interneurons (from ORGaNICs) |
-| $\boldsymbol{v}$ | $K$ | "Variance" interneurons (from Duong et al.): projections of principal activity along the frame directions, not variance estimates themselves |
+| $\boldsymbol{v}$ | $K$ | "Variance" interneurons (from Duong et al.): low-pass-filtered, gain-scaled projections $\boldsymbol{g}\odot\boldsymbol{c}$ of principal activity along the frame directions, not variance estimates themselves |
 | $\boldsymbol{g}$ | $K$ | Interneuron gains |
 | $\boldsymbol{\mu}$ | $K$ | Low-pass-filtered (time-averaged) interneuron input current |
 | $\boldsymbol{c}$ | $K$ | Input current to $\boldsymbol{v}$: $\boldsymbol{c} = \boldsymbol{W}_{yv}^\top \sqrt{\boldsymbol{y}^+}$ |
@@ -34,6 +34,8 @@ Time constants:
 |---|---|---|---|---|---|
 | 0.2 ms | 15.0 ms | 0.1 ms | 15.0 ms | 2.0 s | 2.0 s |
 
+These are the manuscript's values. `simulation.V1Dynamics_Surround` currently uses $\tau_y = 0.4$ ms, $\tau_u = 5$ ms, $\tau_a = 0.2$ ms, $\tau_v = 30$ ms, $\tau_g = 0.5$ s, $\tau_\mu = 2.0$ s.
+
 ## Rectification
 
 The "$+$" superscript means rectify and then raise to an exponent; it estimates firing rates from membrane potentials:
@@ -55,7 +57,7 @@ The principal-cell response is the sum of three things:
 
 **Eq. dy**
 $$
-\tau_y\frac{d\boldsymbol{y}}{dt} = -\boldsymbol{y} + \beta\,\boldsymbol{z} + \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yy}\sqrt{\boldsymbol{y}^+} - \left(\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yv}\boldsymbol{v}
+\tau_y\frac{d\boldsymbol{y}}{dt} = -\boldsymbol{y} + \beta\,\boldsymbol{z} + \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yy}\sqrt{\boldsymbol{y}^+} - \boldsymbol{u}^+\odot\boldsymbol{W}_{yv}\boldsymbol{v}
 $$
 
 **Eq. du**
@@ -93,7 +95,7 @@ $$
 
 - **Normalization ($\boldsymbol{u}$, $\boldsymbol{a}$), from ORGaNICs [heeger_oscillatory_2019, heeger_recurrent_2020].** Eqs. du and da provide recurrent feedback that keeps the network almost always in a normalized state.
 - **Recovering single-layer ORGaNICs.** Set the last term of Eq. dy to zero and ignore Eqs. dv and dg (equivalently, $\boldsymbol{g} = 0$). The fixed point of that reduced system closely approximates standard normalization with $n = 2$ [pal_hierarchical_2025].
-- **Adaptation ($\boldsymbol{v}$, $\boldsymbol{g}$), from Duong et al. [duong_adaptive_2023-1, duong_adaptive_2023-2].** $\boldsymbol{v}$ tracks projections of principal activity along the $K$ frame directions (the columns of $\boldsymbol{W}_{yv}$). Subtracting $\boldsymbol{\mu}$ from $\boldsymbol{c}$ and squaring estimates the marginal variance along each direction. Eq. dg then adjusts each gain by comparing that estimate with its homeostatic target $\boldsymbol{\theta_t}$.
+- **Adaptation ($\boldsymbol{v}$, $\boldsymbol{g}$), from Duong et al. [duong_adaptive_2023-1, duong_adaptive_2023-2].** $\boldsymbol{v}$ tracks gain-scaled projections of principal activity, $\boldsymbol{g}\odot\boldsymbol{c}$, along the $K$ frame directions (the columns of $\boldsymbol{W}_{yv}$), and $\boldsymbol{W}_{yv}\boldsymbol{v}$ is subtracted from the principal cells (Eq. dy). Subtracting $\boldsymbol{\mu}$ from $\boldsymbol{c}$ and squaring estimates the marginal variance along each direction. Eq. dg then adjusts each gain by comparing that estimate with its homeostatic target $\boldsymbol{\theta_t}$.
 - **Each interneuron does three things:**
   1. senses its average synaptic input $\boldsymbol{\mu}$
   2. computes the squared difference between that average and its momentary input
@@ -105,7 +107,7 @@ $$
 
 ### Modifications to Duong et al. needed for joint normalization and adaptation
 
-1. **Prefactor $\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}$ on the gain feedback in Eq. dy.** It scales the gain feedback so the overall response magnitude stays normalized throughout adaptation; Eq. y_steady3 shows why.
+1. **Gating the gain feedback by $\boldsymbol{u}^+$ in Eq. dy.** At the fixed point the recurrent term leaves $\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}\boldsymbol{y} = \boldsymbol{u}^+\boldsymbol{y}$ (Eq. sqrt_u), so gating the gain feedback by the same factor scales it with the normalization and keeps the overall response magnitude normalized throughout adaptation; Eq. y_steady3 shows why. The manuscript gates with $\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}$, which equals $\boldsymbol{u}^+$ at the fixed point: same fixed point, different transients.
 2. **Explicit mean-centering in Eq. dg.** Duong et al. assume mean-centered inputs [duong_adaptive_2023-1]. Here, mean-centering the inputs themselves would alter the response magnitude and interfere with normalization. So mean-centering happens only inside the gain update: the gains then follow second-order statistics, $(\boldsymbol{z}-\langle\boldsymbol{z}\rangle)^2$, rather than first-order ones, $\boldsymbol{z}^2$.
 
 ## Fixed point
@@ -130,7 +132,7 @@ Assumptions:
 - **Time-scale separation:** $\boldsymbol{g}$ is fixed relative to the fast dynamics.
 - $\boldsymbol{W}_{yy} = \boldsymbol{I}$.
 - **Membrane potentials are dominated by nonnegative values,** so $\sqrt{\boldsymbol{y}^+} \approx \boldsymbol{y}$, $\boldsymbol{a}^+ \approx \boldsymbol{a}$ and $\boldsymbol{u}^+ \approx |\boldsymbol{u}|^{1/2}$.
-- **$\boldsymbol{a}$ is uniform** across neurons. This is exact when $\boldsymbol{N}$ is the all-ones matrix.
+- **$\boldsymbol{u}$ and $\boldsymbol{a}$ are uniform** across neurons. This is exact when $\boldsymbol{N}$ is the all-ones matrix.
 - $\beta = 1/2$.
 
 From Eq. dv with $\boldsymbol{g}$ fixed:
@@ -143,7 +145,7 @@ Substituting into Eqs. dy, du and da and setting the derivatives to zero:
 
 **Eq. dy_0**
 $$
-0 = -\boldsymbol{y} + \beta\,\boldsymbol{z} + \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yy}\sqrt{\boldsymbol{y}^+} - \left(\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\sqrt{\boldsymbol{y}^+}
+0 = -\boldsymbol{y} + \beta\,\boldsymbol{z} + \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yy}\sqrt{\boldsymbol{y}^+} - \boldsymbol{u}^+\odot\boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\sqrt{\boldsymbol{y}^+}
 $$
 
 **Eq. du_0**
@@ -160,21 +162,7 @@ With $\boldsymbol{W}_{yy} = \boldsymbol{I}$, grouping the $\boldsymbol{y}$ terms
 
 **Eq. y_steady2**
 $$
-\left[\boldsymbol{I} - \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{I} + \left(\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]\boldsymbol{y} = \beta\,\boldsymbol{z}
-$$
-
-Simplifying and factoring:
-
-**Eq. y_steady3**
-$$
-\left(\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}\right)\left[\boldsymbol{I} + \boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]\boldsymbol{y} = \beta\,\boldsymbol{z}
-$$
-
-This is why the prefactor is needed: it lets the covariance-transformation matrix $\left[\boldsymbol{I} + \boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]$ factor out. With $\boldsymbol{a}$ uniform, multiply by its inverse:
-
-**Eq. y_steady4**
-$$
-\left(\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}\right)\boldsymbol{y} = \left[\boldsymbol{I} + \boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]^{-1}\beta\,\boldsymbol{z}
+\left[\boldsymbol{I} - \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{I} + \boldsymbol{u}^+\odot\boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]\boldsymbol{y} = \beta\,\boldsymbol{z}
 $$
 
 Solving Eq. da_0 for $\boldsymbol{u}$ in terms of $\boldsymbol{a}$:
@@ -184,7 +172,21 @@ $$
 |\boldsymbol{u}|^{1/2} = \frac{\boldsymbol{a}}{1+\boldsymbol{a}}
 $$
 
-Using $\boldsymbol{a}^+ \approx \boldsymbol{a}$, substitute into the left side of Eq. y_steady4:
+so, using $\boldsymbol{a}^+ \approx \boldsymbol{a}$, $\boldsymbol{I} - \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{I} = \left(\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}\right) = \boldsymbol{u}^+$ and the bracket factors:
+
+**Eq. y_steady3**
+$$
+\boldsymbol{u}^+\odot\left[\boldsymbol{I} + \boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]\boldsymbol{y} = \beta\,\boldsymbol{z}
+$$
+
+This is why the gating is needed: it lets the covariance-transformation matrix $\left[\boldsymbol{I} + \boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]$ factor out. With $\boldsymbol{u}$ uniform, multiply by its inverse:
+
+**Eq. y_steady4**
+$$
+\boldsymbol{u}^+\,\boldsymbol{y} = \left[\boldsymbol{I} + \boldsymbol{W}_{yv}\boldsymbol{D}(\boldsymbol{g})\boldsymbol{W}_{yv}^\top\right]^{-1}\beta\,\boldsymbol{z}
+$$
+
+With $\boldsymbol{u}^+ = |\boldsymbol{u}|^{1/2}$:
 
 **Eq. y_steady5**
 $$
@@ -214,4 +216,5 @@ These are differences from the manuscript text, or things it leaves unstated.
 3. **Symbol $N$ is overloaded.** It is both the number of principal neurons and the normalization matrix $\boldsymbol{N}$. In fixed-point formulas, $\boldsymbol{N}\boldsymbol{z'}^2$ means the matrix applied to the element-wise square.
 4. **Missing cross-references.** The manuscript refers to a standard normalization fixed point ("Equation norm_fixed", with $n = 2$) and a covariance-ellipse figure ("fig:cov_ellipse"). Neither is in the pasted section, so neither is reproduced here.
 5. **Squares are element-wise.** $(\boldsymbol{c}-\boldsymbol{\mu})^2$, $\boldsymbol{y}^2$ and $\boldsymbol{z'}^2$ are all element-wise squares.
-6. **Small edits.** Spelling in the prose was corrected ("inhereted", "superscipt"), and `\bm` was converted to `\boldsymbol` so the math renders in Markdown. No equations were changed apart from note 1.
+6. **Small edits.** Spelling in the prose was corrected ("inhereted", "superscipt"), and `\bm` was converted to `\boldsymbol` so the math renders in Markdown. No equations were changed apart from notes 1 and 7.
+7. **Eq. dy gating changed from the manuscript (code change, November 2026).** The manuscript gates the gain feedback with $\frac{\boldsymbol{a}^+}{1+\boldsymbol{a}^+}$; Eq. dy here (and `simulation.V1Dynamics_Surround`) gates it with $\boldsymbol{u}^+$. The derivation (Eqs. dy_0, y_steady2-5) was rewritten accordingly; the fixed point (Eq. final_y_steady) is unchanged. Eqs. dv, dg and dmu are as in the manuscript; the code previously differed from them (it low-pass filtered $\boldsymbol{W}_{yv}^\top\boldsymbol{y}$ without $\boldsymbol{g}$, put $\boldsymbol{g}$ on the feedback, drove $\boldsymbol{g}$ with the filtered $\boldsymbol{v}$ and tracked $\boldsymbol{\mu}$ in neuron space) and now implements them as written.
