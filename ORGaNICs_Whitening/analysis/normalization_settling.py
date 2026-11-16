@@ -75,7 +75,8 @@ DT_TAU_RATIO    = 4.0      # dt = min(DT_DEFAULT, min(tau_y, tau_u, tau_a) / DT_
 ROBUST_CONTRASTS = [0.125, 0.25, 0.5, 1.0]   # contrasts for the tuned point's robustness check
 SEED            = 0        # nothing here is random; set for the record
 
-# ---- Sweep grids: half-octave steps that contain the code defaults (tau_u = 30, tau_a = 0.2)
+# ---- Sweep grids: half-octave steps that contain the original code defaults (tau_u = 30, tau_a = 0.2;
+# the code now uses tau_u = 5, so the "original" point of a new run is (5, 0.2))
 # and the docs/equations.md (tau_u, tau_a) = (15, 0.1); tau_y stays at the code's 0.4 ms, so
 # the docs' full parameter set (tau_y = 0.2) is not part of the sweep ----
 TAU_U_GRID = 30.0 * 2.0 ** (np.arange(-12, 3) / 2)    # 0.47 ... 60 ms (15 values)
