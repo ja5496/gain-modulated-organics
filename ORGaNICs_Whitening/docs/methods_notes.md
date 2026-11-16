@@ -113,3 +113,92 @@ time courses, 60 ms for each sweep point.
   neighbours) settle quickly because the onset excites the slowest symmetric mode with a small
   amplitude or at a favourable phase. These pockets are specific to the stimulus, so the tuned
   point was required to have all eight grid neighbours feasible.
+
+## Model revision: gain feedback through v, variance statistic on c (V1Dynamics_Surround)
+
+Code: `simulation.py` (`V1Dynamics_Surround._derivatives`), mirrored in
+`analysis/response_tools.py` (`frozen_derivatives`). Tests: `tests/test_simulation_surround.py`.
+
+### Equations implemented
+
+$$
+\begin{aligned}
+\tau_y \frac{d\boldsymbol{y}}{dt} &= -\boldsymbol{y} + \beta\,\boldsymbol{z} + \left(\frac{1}{1+\boldsymbol{a}^+}\right)\boldsymbol{W}_{yy}\sqrt{\boldsymbol{y}^+} - \boldsymbol{u}^+ \odot \boldsymbol{W}_{yv}\boldsymbol{v}\\
+\tau_u \frac{d\boldsymbol{u}}{dt} &= -\boldsymbol{u} + \left(\frac{\sigma}{2}\right)^2 + \boldsymbol{N}\left(\boldsymbol{y}^+ \odot (\boldsymbol{u}^+)^2\right)\\
+\tau_a \frac{d\boldsymbol{a}}{dt} &= -\boldsymbol{a} + \boldsymbol{u}^+ + \boldsymbol{a}\odot\boldsymbol{u}^+\\
+\tau_v \frac{d\boldsymbol{v}}{dt} &= -\boldsymbol{v} + \boldsymbol{g}\odot\boldsymbol{c}, \qquad \boldsymbol{c} = \boldsymbol{W}_{yv}^\top\sqrt{\boldsymbol{y}^+}\\
+\tau_g \frac{d\boldsymbol{g}}{dt} &= (\boldsymbol{c}-\boldsymbol{\mu})^2 - \boldsymbol{\theta}_t\\
+\tau_\mu \frac{d\boldsymbol{\mu}}{dt} &= -\boldsymbol{\mu} + \boldsymbol{c}
+\end{aligned}
+$$
+
+$\boldsymbol{v}$, $\boldsymbol{g}$, $\boldsymbol{\mu}$, $\boldsymbol{c} \in \mathbb{R}^K$ are local to each receptive field
+(one cRF copy and one copy shared by the identical surround sets); $\boldsymbol{\mu}$ is now
+$K$-dimensional. Gains are clamped, $\boldsymbol{g} \leftarrow \max(\boldsymbol{g}, 0)$, after every step
+(`gains_nonneg=True`, as in all analysis scripts).
+
+Previous form (commit d63ab08): $\tau_v \dot{\boldsymbol{v}} = -\boldsymbol{v} + \boldsymbol{W}_{yv}^\top\boldsymbol{y}$,
+feedback $\boldsymbol{u}^+ \odot \boldsymbol{W}_{yv}(\boldsymbol{g}\odot\boldsymbol{v})$,
+$\tau_g \dot{\boldsymbol{g}} = (\boldsymbol{v} - \boldsymbol{W}_{yv}^\top\boldsymbol{\mu})^2 - \boldsymbol{\theta}_t$,
+$\tau_\mu\dot{\boldsymbol{\mu}} = -\boldsymbol{\mu} + \boldsymbol{y}$ ($\boldsymbol{\mu}\in\mathbb{R}^{N}$).
+Before d63ab08 the feedback was gated by $\boldsymbol{a}^+/(1+\boldsymbol{a}^+)$ instead of $\boldsymbol{u}^+$; the
+two agree at the fixed point because Eq. da gives $a/(1+a) = \sqrt{u}$ there.
+
+### Parameters
+
+$\beta = 0.5$, $\sigma = 0.15$; $\tau_y = 0.4$, $\tau_u = 5$, $\tau_a = 0.2$, $\tau_v = 30$, $\tau_g = 500$,
+$\tau_\mu = 2000$ ms (code values; `docs/equations.md` lists different ones). $N_\text{RF} = 13$,
+$N_\text{sets} = 6$, frame `N13_mercedes_K182_Frame.csv` ($K = 182$). $\boldsymbol{\theta}_t =
+\operatorname{diag}(\boldsymbol{W}_{yv}^\top \boldsymbol{C}\boldsymbol{W}_{yv})$ with $\boldsymbol{C}$ = 0.15 × the uniform
+low-contrast target covariance (mean $9.5\times10^{-5}$, range $9.7\times10^{-7}$–$3.9\times10^{-4}$).
+
+### Integration
+
+Fixed-step RK4, $\Delta t = 0.1$ ms (`run_simulation`), stimulus held constant within a step, gain
+clamp after each step.
+
+### Comparison with the previous form
+
+With gains frozen and $\boldsymbol{y} \ge 0$, the new $\boldsymbol{v}$ equals $\boldsymbol{g}\odot$ the old one at
+all times (same linear filter, constant $\boldsymbol{g}$), so the principal-neuron trajectories are
+identical. Simulated from the blank steady state with 9 gain sets (zero; gains adapted by either
+form to a grating or an ensemble; 3× those) and 4 stimuli, 400 ms: $\max_t |\boldsymbol{y}_\text{new} -
+\boldsymbol{y}_\text{old}| / \max|\boldsymbol{y}^*| \le 3\times10^{-15}$ in the 31 cases with $\boldsymbol{z}' \ge 0$.
+In the 5 cases with negative $\boldsymbol{z}'$ (min $-0.012$; gains adapted at 90° probed at 45°) the
+analytic fixed point does not apply, both forms converge ($|\dot{\boldsymbol{y}}| \sim 10^{-16}$) and
+their fixed points differ by up to $2\times10^{-3}$, because the old form fed raw (negative)
+$\boldsymbol{y}$ of the surround into $\boldsymbol{v}$.
+
+Settling (all neurons within 1 % of $\boldsymbol{y}^*$, held $\ge 20$ ms): 18–27 ms with $\boldsymbol{g} = 0$;
+36–81 ms with adapted gains, identical in both forms and limited by $\tau_v$ (worst case over 6
+cases: 81, 41, 33, 23, 19 ms for $\tau_v$ = 30, 15, 10, 5, 2 ms).
+
+Adaptation from a zero state (script settings): sustained grating (4.2 s), adapted gains
+correlate $r = 1.000$ between forms (new/old median ratio 1.06). Uniform ensemble, 30 ms per
+stimulus (8.4 s): the old statistic $(\boldsymbol{v} - \boldsymbol{W}_{yv}^\top\boldsymbol{\mu})^2$ averaged $13\,\theta_t$
+(median) in the second half while $(\boldsymbol{c} - \boldsymbol{\mu})^2$ averaged $41\,\theta_t$: the
+$\tau_v = 30$ ms filter removed about two thirds of the variance. Under the new form gains are
+larger (median ratio 2.3, $r = 0.88$). In neither form had the gains converged by 8.4 s (mean gain
+still rising 6–8 % over the last 0.84 s).
+
+### Verification
+
+- Right-hand side equals an independent per-neuron implementation of the six equations at random
+  states (rtol $10^{-12}$); analytic fixed point with frozen nonzero gains is a zero of the
+  right-hand side ($<10^{-12}$); under constant input from $\boldsymbol{\mu} = \boldsymbol{c}^*$, gains decrease at
+  rate $\theta_t/\tau_g$ and stay at 0 (`tests/test_simulation_surround.py`).
+- $\boldsymbol{g} \ge 0$ at every step of all adaptation runs.
+- Independent verification (model-verifier, separate implementation): right-hand side matches a
+  full model with every surround set explicit to $\le 1.7\times10^{-15}$ (N_SETS 1, 2, 6; random
+  $\boldsymbol{W}_{yy}$ and $\boldsymbol{N}$ too). Frozen-gain fixed point is an exact root (residual
+  $1.4\times10^{-16}$); fast-subsystem Jacobian (1326-dim) has all Re $\lambda < 0$, slowest
+  $-0.032\ \text{ms}^{-1}$ (set by $\tau_v$); 20 % perturbations decay to $3\times10^{-8}$ in 300 ms.
+- Gain adaptation, N = 2, K = 3 (shortened $\tau_g = 40$ ms, $\tau_\mu = 1$ s, 60 s run, feasible
+  target): $\langle(c-\mu)^2\rangle/\theta_t - 1 = +1.6, -0.3, -8.5\,\%$ (SE about 7.5 %); response
+  covariance within 6.2 % (relative Frobenius) of the target, sampling SE about 8 %.
+- Gain adaptation, N_RF = 13, K = 182: not converged within the runs tried (36 s, shortened
+  $\tau_g$); the target is feasible in the quasi-static limit (180/182 directions within 5.5 %).
+  Not yet verified for the production model.
+- Caveat: in a saturated-normalization N = 2 test, all gains collapsed to 0 even though the target
+  was achievable, because raising a gain raised the variance there; the gain rule can fail to find
+  feasible targets in that regime.
