@@ -100,8 +100,7 @@ def run_adaptation_phase(dyn, stim_gen, cond):
 
     if cond == 'no adaptation':
         zeros_K = np.zeros(K)
-        zeros_N = np.zeros(N_RF)
-        return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N
+        return zeros_K, zeros_K, zeros_K, zeros_K, zeros_K, zeros_K
 
     adaptor = stim_gen.oriented_drive(ADAPTOR_THETA, ADAPTOR_CONTRAST, cond)
     stream = np.tile(adaptor[:, None], ADAPTATION_STEPS)   # same stimulus at every timestep

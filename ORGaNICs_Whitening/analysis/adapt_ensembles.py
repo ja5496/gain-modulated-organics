@@ -117,8 +117,7 @@ def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
 
     if cond == 'no adaptation':
         zeros_K = np.zeros(K)
-        zeros_N = np.zeros(N_RF)
-        return zeros_K, zeros_K, zeros_K, zeros_K, zeros_N, zeros_N, (None, None)
+        return zeros_K, zeros_K, zeros_K, zeros_K, zeros_K, zeros_K, (None, None)
 
     stream, centers = stim_gen.generate_surround_ensembles(
         ADAPT_LOCATION_FOR_COND[cond], biased=BIASED_FOR_COND[cond], duration=STIMULUS_STEPS,
@@ -140,11 +139,11 @@ def run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=0.0):
     if cond == 'adapt CRF only':
         g_surround = np.zeros(K)
         v_surround = np.zeros(K)
-        mu_surround = np.zeros(N_RF)
+        mu_surround = np.zeros(K)
     elif cond == 'adapt surround only':
         g_cRF = np.zeros(K)
         v_cRF = np.zeros(K)
-        mu_cRF = np.zeros(N_RF)
+        mu_cRF = np.zeros(K)
 
     # If the ensemble never drives an interneuron's variance above theta_t, every gain clips to 0.
     g_active = g_cRF if cond != 'adapt surround only' else g_surround

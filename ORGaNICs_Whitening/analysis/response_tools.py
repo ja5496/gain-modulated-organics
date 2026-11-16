@@ -62,12 +62,16 @@ def frozen_derivatives(state, z_t, dyn, g_cRF, g_surround):
     a_plus = dyn.half_wave_rectify(a, 1.0)
     sqrt_y_plus = np.sqrt(y_plus)
 
-    dv_cRF_dt = (-v_cRF + dyn.frame.W.T @ y[:N_RF]) / dyn.tau_v
-    dv_surround_dt = (-v_surround + dyn.frame.W.T @ y[N_RF:2*N_RF]) / dyn.tau_v
+    # c = W_yv^T sqrt(y+) per RF (surround: representative set 1)
+    c_cRF = dyn.frame.W.T @ sqrt_y_plus[:N_RF]
+    c_surround = (dyn.frame.W.T @ sqrt_y_plus[N_RF:2*N_RF] if dyn.N_SETS >= 2
+                  else np.zeros(K))      # no surround set at N_SETS == 1
+    dv_cRF_dt = (-v_cRF + g_cRF * c_cRF) / dyn.tau_v                  # Eq. dv
+    dv_surround_dt = (-v_surround + g_surround * c_surround) / dyn.tau_v
 
-    cRF_gain_feedback = dyn.frame.W @ (g_cRF * v_cRF)
-    surround_gain_feedback = dyn.frame.W @ (g_surround * v_surround)
-    full_gain_feedback = (a_plus / (1 + a_plus)) * np.concatenate([cRF_gain_feedback] + [surround_gain_feedback] * (dyn.N_SETS - 1))
+    cRF_gain_feedback = dyn.frame.W @ v_cRF                            # Eq. dy: W_yv v
+    surround_gain_feedback = dyn.frame.W @ v_surround
+    full_gain_feedback = u_plus * np.concatenate([cRF_gain_feedback] + [surround_gain_feedback] * (dyn.N_SETS - 1))
 
     recurrent_drive = (1.0 / (1.0 + a_plus)) * (dyn.W_yy @ sqrt_y_plus)
     input_drive = dyn.beta * z_t
@@ -86,7 +90,8 @@ def get_response_online(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n
                         rectify=True):
     '''
     Settles y/u/a/v for a fixed probe stimulus (RK4, n_steps) with gains frozen. Starts from
-    y = u = a = 0 and v = W.T @ mu every call, so probes don't depend on sweep order.
+    y = u = a = 0 and v = g * mu (v's steady state for the mean input current mu, K per RF)
+    every call, so probes don't depend on sweep order.
     Returns (firing rates, v_cRF_final, v_surround_final) - the signed membrane potential y in
     place of the firing rates if rectify=False.
     '''
@@ -94,8 +99,8 @@ def get_response_online(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n
     K = dyn.frame.K
     dt = dyn.dt
 
-    v_cRF_init = dyn.frame.W.T @ mu_cRF
-    v_surround_init = dyn.frame.W.T @ mu_surround
+    v_cRF_init = g_cRF * mu_cRF
+    v_surround_init = g_surround * mu_surround
 
     state = np.zeros(3 * N_TOT + 2 * K)
     state[3*N_TOT:3*N_TOT+K] = v_cRF_init
@@ -128,8 +133,8 @@ def get_response_traced(dyn, stimulus, g_cRF, g_surround, mu_cRF, mu_surround, n
     K = dyn.frame.K
     dt = dyn.dt
 
-    v_cRF_init = dyn.frame.W.T @ mu_cRF
-    v_surround_init = dyn.frame.W.T @ mu_surround
+    v_cRF_init = g_cRF * mu_cRF
+    v_surround_init = g_surround * mu_surround
 
     state = np.zeros(3 * N_TOT + 2 * K)
     state[3*N_TOT:3*N_TOT+K] = v_cRF_init
