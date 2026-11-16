@@ -215,7 +215,7 @@ class V1Dynamics_Surround:
 
         self.tau_y = 0.4       # time constant of primary neuron (fast)
         self.tau_a = 0.2       # time constant of inhibitory neurons in normalization pool (fast)
-        self.tau_u = 30.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
+        self.tau_u = 5.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
         self.tau_g = 500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
         self.tau_v = 30.0    # time constant of excitatory neurons in normalization pool (medium to fast)
         self.tau_mu = 2000.0  # time constant of mean-response tracker (very slow, basically sets a prior)
@@ -391,7 +391,7 @@ class V1Dynamics_Surround:
 
         # cRF Adaptation Dynamics
         dg_cRF_dt = ((v_cRF - self.frame.W.T @ mu_cRF) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above) CHANGED FROM 
-        dv_cRF_dt = (-v_cRF + self.frame.W.T @ y[:N_RF]) / self.tau_v # Estimation of variance of cRF neurons
+        dv_cRF_dt = (-v_cRF + self.frame.W.T @ sqrt_y_plus[:N_RF]) / self.tau_v # Estimation of variance of cRF neurons
         cRF_gain_feedback = self.frame.W @ (g_cRF * v_cRF) # unchanged: suppression still scales with raw v_cRF, not the mean-corrected version
 
         # Surround Adaptation Dynamics

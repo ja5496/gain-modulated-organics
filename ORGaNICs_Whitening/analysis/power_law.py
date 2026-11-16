@@ -54,7 +54,7 @@ N_SETS = 6                     # 1 classical RF (cRF) + 5 surround sets
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 ADAPT_LOC = 'adapt CRF only'   # no spatial cRF/surround distinction in these experiments
-ADAPT_CONTRAST = 0.8
+ADAPT_CONTRAST = 1.0
 PROBE_CONTRAST = 0.8
 # Figure 1 orientation environments, all von Mises with peaks evenly spaced 60° apart:
 # name -> (peak orientation in degrees, concentration kappa)
