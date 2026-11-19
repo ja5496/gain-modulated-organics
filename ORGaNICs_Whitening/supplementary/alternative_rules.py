@@ -19,11 +19,11 @@ Rules (columns of the figure):
 In every case the gains are clamped to g >= 0, and the probe responses are computed from the
 analytical fixed point (Eq. S17), which holds for any feedback of the form W D(g) W^T.
 
-Rows of the figure (as in adapt_single_stimulus.py):
-  1  a subset of cRF gains during adaptation to the cRF + surround adaptor
-  2  contrast-response functions of the cRF population (l2 norm) at the adaptor orientation
-  3  tuning curves of the flank neuron (69.2 deg, 20.8 deg from the 90 deg adaptor)
-  4  membrane potential y of the adaptor-tuned cRF neuron vs contrast
+Rows of the figure (Fig. 1b,c of the main text, from adapt_single_stimulus.py):
+  1  contrast-response functions of the cRF population (l2 norm of the 13 firing rates) at the
+     adaptor orientation
+  2  tuning curves of the flank neuron (69.2 deg, 20.8 deg from the 90 deg adaptor)
+The gain trajectories and membrane-potential curves are still saved in the .npz.
 
 Run from ORGaNICs_Whitening/:
     python supplementary/alternative_rules.py            # simulate, save .npz, plot
@@ -218,25 +218,16 @@ def plot():
     report(d)
     ps.apply()
     C, ang = d['crf_contrasts'], d['probe_angles_deg']
-    t_s = d['gain_t_ms'] / 1000
     adaptor_deg = np.degrees(ASS.ADAPTOR_THETA)
     colors = dict(ASS.CONDITION_COLOR)
     colors['adapt CRF only'] = '#E6B800'      # darker yellow so it reads on white
 
-    fig, axes = plt.subplots(4, 3, figsize=(ps.FULL_WIDTH, 190 * ps.MM))
-    fig.subplots_adjust(left=0.1, right=0.98, top=0.95, bottom=0.06, wspace=0.42, hspace=0.62)
-    greens = plt.get_cmap('Greens')(np.linspace(0.45, 0.95, 5))
+    fig, axes = plt.subplots(2, 3, figsize=(ps.FULL_WIDTH, 100 * ps.MM))
+    fig.subplots_adjust(left=0.1, right=0.98, top=0.9, bottom=0.11, wspace=0.42, hspace=0.55)
 
     for j, rule in enumerate(RULES):
-        ax_g, ax_c, ax_t, ax_v = axes[:, j]
-        ax_g.set_title(RULE_LABEL[rule], fontsize=10, fontweight='bold', pad=10)
-
-        g_hist = d[f'{rule}/g_hist']
-        idx = np.linspace(0, g_hist.shape[0] - 1, 5).astype(int)
-        for c, k in zip(greens, idx):
-            ax_g.plot(t_s, g_hist[k], color=c, lw=1.0)
-        ax_g.set_xlabel('Time (s)')
-        ax_g.set_xlim(0, t_s[-1])
+        ax_c, ax_t = axes[:, j]
+        ax_c.set_title(RULE_LABEL[rule], fontsize=10, fontweight='bold', pad=10)
 
         norm = d[f'{rule}/crf/no_adaptation'].max()
         for cond in ASS.CONDITIONS:
@@ -264,26 +255,16 @@ def plot():
         ax_t.set_ylim(bottom=0)
         ax_t.legend(loc='upper right', fontsize=7, handlelength=1.0, bbox_to_anchor=(1.05, 1.0))
 
-        vnorm = d[f'{rule}/vm/no_adaptation'].max()
-        for cond in ['no adaptation', 'adapt CRF and surround']:
-            ax_v.plot(C, d[f'{rule}/vm/{cond.replace(" ", "_")}'] / vnorm, color=colors[cond], lw=1.25)
-        ps.ref_line(ax_v, 0.0, axis='h')
-        ax_v.set_xscale('log')
-        ax_v.set_xlabel('Contrast')
-
         if j == 0:
-            ax_g.set_ylabel('Gain subset')
             ax_c.set_ylabel('Norm. response')
             ax_t.set_ylabel('Norm. response')
-            ax_v.set_ylabel('Norm. potential')
 
-    # shared y ranges across columns for rows 2-4
-    for row in (1, 2, 3):
-        lo = min(ax.get_ylim()[0] for ax in axes[row])
+    # shared y ranges across columns
+    for row in (0, 1):
         hi = max(ax.get_ylim()[1] for ax in axes[row])
         for ax in axes[row]:
-            ax.set_ylim(lo, hi)
-    axes[1, 0].legend(loc='upper left', fontsize=7, handlelength=1.2)
+            ax.set_ylim(0, hi)
+    axes[0, 0].legend(loc='upper left', fontsize=7, handlelength=1.2)
 
     ps.label_panels(fig, axes.T.ravel())
     os.makedirs(os.path.dirname(FIG_BASE), exist_ok=True)
