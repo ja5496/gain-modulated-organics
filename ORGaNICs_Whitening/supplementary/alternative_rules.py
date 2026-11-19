@@ -20,8 +20,8 @@ In every case the gains are clamped to g >= 0, and the probe responses are compu
 analytical fixed point (Eq. S17), which holds for any feedback of the form W D(g) W^T.
 
 Rows of the figure (Fig. 1b,c of the main text, from adapt_single_stimulus.py):
-  1  contrast-response functions of the cRF population (l2 norm of the 13 firing rates) at the
-     adaptor orientation
+  1  contrast-response functions of the cRF population (mean firing rate of the 13 cRF neurons)
+     at the adaptor orientation
   2  tuning curves of the flank neuron (69.2 deg, 20.8 deg from the 90 deg adaptor)
 The gain trajectories and membrane-potential curves are still saved in the .npz.
 
@@ -136,9 +136,12 @@ def run_rule(rule, stim_gen, adapt_steps):
         zmin[cond] = min(zmin.get(cond, np.inf), zp[crf].min())
         return get_response_offline(dyn, probes, M[cond], rectify=rectify)
 
-    # Row 2: contrast-response functions (l2 norm of the cRF population) at the adaptor orientation
+    # Contrast-response functions at the adaptor orientation: mean firing rate of the cRF
+    # population (l2 norm kept for comparison with adapt_single_stimulus.py)
     P_c = np.stack([full(ASS.ADAPTOR_THETA, c) for c in ASS.CRF_CONTRASTS], axis=1)
-    crf_curves = {cond: np.linalg.norm(respond(cond, P_c)[crf], axis=0) for cond in ASS.CONDITIONS}
+    rates_c = {cond: respond(cond, P_c)[crf] for cond in ASS.CONDITIONS}
+    crf_curves = {cond: rates_c[cond].mean(axis=0) for cond in ASS.CONDITIONS}
+    crf_l2 = {cond: np.linalg.norm(rates_c[cond], axis=0) for cond in ASS.CONDITIONS}
 
     # Row 3: flank-neuron tuning curves
     angles = np.linspace(0, np.pi, ASS.N_PROBES, endpoint=False)
@@ -155,6 +158,7 @@ def run_rule(rule, stim_gen, adapt_steps):
     for cond in ASS.CONDITIONS:
         key = cond.replace(' ', '_')
         out[f'{rule}/crf/{key}'] = crf_curves[cond]
+        out[f'{rule}/crf_l2/{key}'] = crf_l2[cond]
         out[f'{rule}/flank/{key}'] = flank[cond]
         out[f'{rule}/vm/{key}'] = vm[cond]
         out[f'{rule}/g_cRF_final/{key}'] = frozen[cond][0]
@@ -256,7 +260,7 @@ def plot():
         ax_t.legend(loc='upper right', fontsize=7, handlelength=1.0, bbox_to_anchor=(1.05, 1.0))
 
         if j == 0:
-            ax_c.set_ylabel('Norm. response')
+            ax_c.set_ylabel('Norm. mean rate')
             ax_t.set_ylabel('Norm. response')
 
     # shared y ranges across columns
