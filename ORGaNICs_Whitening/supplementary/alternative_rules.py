@@ -65,7 +65,10 @@ import adapt_ensembles as AE                                          # noqa: E4
 RULES = ['covariance', 'variance', 'first_order']
 RULE_LABEL = {'covariance': 'Covariance homeostasis',
               'variance': 'Variance normalization',
-              'first_order': 'First-order homeostasis'}
+              'first_order': 'First-order equalization'}
+ADAPTOR_LABEL = {'no adaptation': 'No adaptation', 'adapt CRF only': 'Small adaptor',
+                 'adapt surround only': 'Annulus adaptor', 'adapt CRF and surround': 'Large adaptor'}
+OUT_NAME = None                 # figure basename override (CLI --out)
 FIRST_ORDER_CONTRAST = 0.8      # contrast of the large grating that sets theta_1
 N_TARGET_ANGLES = 180           # orientations averaged to obtain theta_1
 GAIN_SUBSAMPLE = 10             # store every 10th step of the gain trajectories
@@ -90,7 +93,7 @@ def results_path():
 
 
 def fig_base():
-    return FIG_STEM + _suffix()
+    return os.path.join(HERE, 'figures', OUT_NAME) if OUT_NAME else FIG_STEM + _suffix()
 
 
 class GainRuleDynamics(V1Dynamics_Surround):
@@ -350,13 +353,12 @@ def plot():
 
     for j, rule in enumerate(RULES):
         ax_c, ax_t = axes[:, j]
-        title = RULE_LABEL[rule] + ('\n(Poisson noise)' if (rule == 'variance' and VAR_NOISE is not None) else '')
-        ax_c.set_title(title, fontsize=10, fontweight='bold', pad=10)
+        ax_c.set_title(RULE_LABEL[rule], fontsize=10, fontweight='bold', pad=10)
 
         norm = d[f'{rule}/crf/no_adaptation'].max()
         for cond in ASS.CONDITIONS:
             ax_c.plot(C, d[f'{rule}/crf/{cond.replace(" ", "_")}'] / norm, color=colors[cond], lw=1.25,
-                      label=ASS.CONDITION_LABEL[cond])
+                      label=ADAPTOR_LABEL[cond])
         ax_c.set_xscale('log')
         ax_c.set_xlabel('Contrast')
         ax_c.set_ylim(bottom=0)
@@ -381,7 +383,7 @@ def plot():
 
         if j == 0:
             ax_c.set_ylabel('Norm. mean rate')
-            ax_t.set_ylabel('Norm. response')
+            ax_t.set_ylabel('Norm. firing rate')
 
     # shared y ranges across columns
     for row in (0, 1):
@@ -411,7 +413,9 @@ if __name__ == '__main__':
                     help='Poisson-like noise in the gain pathway (rho = 1: noise s.d. equal to the '
                          'unadapted signal of the adaptor-tuned neuron; the strongest setting of '
                          'noise_sweep.py) for the variance-normalization rule only')
+    ap.add_argument('--out', default=None, help='figure basename (default: fig_alternative_rules + suffixes)')
     a = ap.parse_args()
+    OUT_NAME = a.out
     FANO = a.fano
     if a.variance_noise:
         # rho = 1 at s_ref = unadapted response of the adaptor-tuned cRF neuron to the cRF adaptor
