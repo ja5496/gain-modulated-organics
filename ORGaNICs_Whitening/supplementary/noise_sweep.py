@@ -104,7 +104,11 @@ def job(args):
         amp = rho * s_ref if kind == 'white' else rho ** 2 * s_ref
         A.NOISE = dict(kind=kind, loc=loc, amp=amp, bin_steps=to_steps(NOISE_BIN_MS, ASS.DT))
     sg = stim_gen()
-    out = A.run_rule(rule, sg, adapt_steps)
+    try:
+        out = A.run_rule(rule, sg, adapt_steps)
+    except Exception as e:   # record the failure and keep sweeping
+        return dict(rule=rule, kind=kind, loc=loc, rho=rho, error=repr(e),
+                    **{m: np.nan for m in METRICS}, g_max_cRF=np.nan)
     dyn = A.build(rule, sg)   # for the probes (noise-free fixed point)
     g = {c: (out[f'{rule}/g_cRF_final/{c.replace(" ", "_")}'],
              out[f'{rule}/g_surround_final/{c.replace(" ", "_")}']) for c in ASS.CONDITIONS}
@@ -192,6 +196,9 @@ def plot():
     for rule in A.RULES:
         print(f'\n{A.RULE_LABEL[rule]}')
         for r in sorted((r for r in rows if r['rule'] == rule), key=lambda r: (r['kind'], r['loc'], r['rho'])):
+            if 'error' in r:
+                print(f"  {r['kind']:8s} {r['loc']:9s} rho={r['rho']:<5} FAILED: {r['error']}")
+                continue
             print(f"  {r['kind']:8s} {r['loc']:9s} rho={r['rho']:<5} " +
                   ' '.join(f"{m}={r[m]:+.3f}" for m in METRICS) + f"  gmax={r['g_max_cRF']:.3f}")
 

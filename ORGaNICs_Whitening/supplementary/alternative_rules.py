@@ -222,6 +222,9 @@ def run_rule(rule, stim_gen, adapt_steps):
     print(f'\n=== {RULE_LABEL[rule]} ({PROTOCOL}) ===')
     adapt = adapt_single if PROTOCOL == 'single' else adapt_ensemble
     dyn, frozen, g_hist, adaptor_theta = adapt(rule, stim_gen, adapt_steps)
+    bad = [c for c, v in frozen.items() if not np.all(np.isfinite(np.asarray(v)))]
+    if bad:
+        raise FloatingPointError(f'non-finite gains after adaptation in {bad}')
     assert all(np.all(np.asarray(v) >= 0) for v in frozen.values())
 
     crf = slice(0, ASS.N_RF)
