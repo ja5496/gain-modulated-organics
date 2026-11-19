@@ -31,6 +31,8 @@ Run from ORGaNICs_Whitening/:
     python supplementary/alternative_rules.py --smoke    # short adaptation (smoke test, not saved)
     add --fano F to put Poisson-like noise (Fano factor F) in the gain pathway; outputs get a
     _fanoF suffix
+    add --protocol ensemble to adapt as in adapt_ensembles.py (biased ensemble, 8.4 s, 40 ms
+    surround delay) instead of to one prolonged adaptor; outputs get an _ensemble suffix
 '''
 
 import argparse
@@ -56,8 +58,9 @@ from simulation import Frame, V1Dynamics_Surround                     # noqa: E4
 from stimuli import StimulusGenerator                                 # noqa: E402
 from tunings import V1Tunings                                         # noqa: E402
 from response_tools import (offline_gain_operator, get_response_offline,  # noqa: E402
-                            curve_peak_deg, to_steps)
+                            curve_peak_deg, to_steps, settled_surround_msg)
 import adapt_single_stimulus as ASS                                   # noqa: E402
+import adapt_ensembles as AE                                          # noqa: E402
 
 RULES = ['covariance', 'variance', 'first_order']
 RULE_LABEL = {'covariance': 'Covariance homeostasis',
@@ -67,13 +70,14 @@ FIRST_ORDER_CONTRAST = 0.8      # contrast of the large grating that sets theta_
 N_TARGET_ANGLES = 180           # orientations averaged to obtain theta_1
 GAIN_SUBSAMPLE = 10             # store every 10th step of the gain trajectories
 FANO = 0.0                      # Fano factor of the Poisson-like noise in the gain pathway (CLI --fano)
+PROTOCOL = 'single'             # 'single' (adapt_single_stimulus.py) or 'ensemble' (adapt_ensembles.py)
 
 RESULTS_BASE = os.path.join(HERE, 'results', 'alternative_rules')
 FIG_STEM = os.path.join(HERE, 'figures', 'fig_alternative_rules')
 
 
 def _suffix():
-    return '' if FANO == 0 else f'_fano{FANO:g}'
+    return ('' if PROTOCOL == 'single' else f'_{PROTOCOL}') + ('' if FANO == 0 else f'_fano{FANO:g}')
 
 
 def results_path():
@@ -130,11 +134,12 @@ def identity_frame(n):
     return SimpleNamespace(W=np.eye(n), dim=n, K=n)
 
 
-def build(rule, stim_gen):
+def build(rule, stim_gen, target_cov_path=None):
     tunings = V1Tunings(N=ASS.N_RF)
     frame = Frame(csv_path=ASS.FRAME_PATH) if rule == 'covariance' else identity_frame(ASS.N_RF)
     dyn = GainRuleDynamics(tunings, frame, dt=ASS.DT, N_RF=ASS.N_RF, N_SETS=ASS.N_SETS,
-                           target_covariance_path=ASS.TARGET_COV_PATH, gains_nonneg=True)
+                           target_covariance_path=target_cov_path or ASS.TARGET_COV_PATH,
+                           gains_nonneg=True)
     dyn.fano = FANO
     dyn.first_order = rule == 'first_order'
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True,
@@ -152,17 +157,44 @@ def build(rule, stim_gen):
     return dyn
 
 
-def run_rule(rule, stim_gen, adapt_steps):
+def adapt_single(rule, stim_gen, adapt_steps):
+    '''Fig. 1 protocol (adapt_single_stimulus.py): one prolonged adaptor per condition.'''
     dyn = build(rule, stim_gen)
     ASS.ADAPTATION_STEPS = adapt_steps
     ASS.SIM_HISTORY.clear()
-    print(f'\n=== {RULE_LABEL[rule]} (K = {dyn.frame.K}) ===')
-    frozen = {cond: ASS.run_adaptation_phase(dyn, stim_gen, cond) for cond in ASS.CONDITIONS}
-    assert all(np.all(np.asarray(v[:2]) >= 0) for v in frozen.values())
+    frozen = {cond: ASS.run_adaptation_phase(dyn, stim_gen, cond)[:2] for cond in ASS.CONDITIONS}
+    g_hist = ASS.SIM_HISTORY['adapt CRF and surround']
+    return dyn, frozen, g_hist, ASS.ADAPTOR_THETA
+
+
+def adapt_ensemble(rule, stim_gen, adapt_steps):
+    '''Fig. 3 protocol (adapt_ensembles.run_adaptation_phase): biased ensemble (adaptor shown 1/3
+    of the time) of 30 ms gratings at contrast 0.8, routed per condition; low-contrast target;
+    40 ms surround delay, with the surround's settled baseline signal before it arrives. As in
+    adapt_ensembles.py, the region that only sees the flat baseline has its gains zeroed.'''
+    dyn = build(rule, stim_gen, AE.TARGET_COV_PATH)
+    flat = stim_gen.oriented_drive(0.0, 0.0, 'no adaptation')
+    msg = settled_surround_msg(dyn, flat, AE.BASELINE_SETTLE_STEPS)
+    dyn.set_surround_delay(AE.SURROUND_DELAY)
+    AE.SIM_HISTORY.clear()
+    K = dyn.frame.K
+    frozen = {'no adaptation': (np.zeros(K), np.zeros(K))}
+    for cond in ASS.CONDITIONS[1:]:
+        frozen[cond] = AE.run_adaptation_phase(dyn, stim_gen, cond, surround_msg_baseline=msg)[:2]
+    g_hist = AE.SIM_HISTORY['adapt CRF and surround']['g_cRF_hist']
+    adaptor_theta = stim_gen.theta_inputs[stim_gen.num_angles // 2]
+    return dyn, frozen, g_hist, adaptor_theta
+
+
+def run_rule(rule, stim_gen, adapt_steps):
+    print(f'\n=== {RULE_LABEL[rule]} ({PROTOCOL}) ===')
+    adapt = adapt_single if PROTOCOL == 'single' else adapt_ensemble
+    dyn, frozen, g_hist, adaptor_theta = adapt(rule, stim_gen, adapt_steps)
+    assert all(np.all(np.asarray(v) >= 0) for v in frozen.values())
 
     crf = slice(0, ASS.N_RF)
     full = lambda th, c: stim_gen.oriented_drive(th, c, 'adapt CRF and surround')
-    M = {cond: offline_gain_operator(dyn, *frozen[cond][:2]) for cond in ASS.CONDITIONS}
+    M = {cond: offline_gain_operator(dyn, *frozen[cond]) for cond in ASS.CONDITIONS}
     zmin = {}
 
     def respond(cond, probes, rectify=True):
@@ -172,7 +204,7 @@ def run_rule(rule, stim_gen, adapt_steps):
 
     # Contrast-response functions at the adaptor orientation: mean firing rate of the cRF
     # population (l2 norm kept for comparison with adapt_single_stimulus.py)
-    P_c = np.stack([full(ASS.ADAPTOR_THETA, c) for c in ASS.CRF_CONTRASTS], axis=1)
+    P_c = np.stack([full(adaptor_theta, c) for c in ASS.CRF_CONTRASTS], axis=1)
     rates_c = {cond: respond(cond, P_c)[crf] for cond in ASS.CONDITIONS}
     crf_curves = {cond: rates_c[cond].mean(axis=0) for cond in ASS.CONDITIONS}
     crf_l2 = {cond: np.linalg.norm(rates_c[cond], axis=0) for cond in ASS.CONDITIONS}
@@ -187,8 +219,8 @@ def run_rule(rule, stim_gen, adapt_steps):
     # Row 4: membrane potential of the adaptor-tuned cRF neuron vs contrast
     vm = {cond: respond(cond, P_c, rectify=False)[crf][adaptor_idx] for cond in ASS.CONDITIONS}
 
-    g_hist = ASS.SIM_HISTORY['adapt CRF and surround'][:, ::GAIN_SUBSAMPLE]
-    out = {}
+    g_hist = g_hist[:, ::GAIN_SUBSAMPLE]
+    out = {'adaptor_deg': np.degrees(adaptor_theta)}
     for cond in ASS.CONDITIONS:
         key = cond.replace(' ', '_')
         out[f'{rule}/crf/{key}'] = crf_curves[cond]
@@ -201,14 +233,22 @@ def run_rule(rule, stim_gen, adapt_steps):
     out[f'{rule}/g_hist'] = g_hist
     out[f'{rule}/theta'] = dyn.theta_first if rule == 'first_order' else dyn.theta_t
     out[f'{rule}/flank_idx'] = flank_idx
+    if PROTOCOL == 'ensemble':
+        out[f'{rule}/theta_note'] = 'theta from ' + os.path.basename(AE.TARGET_COV_PATH)
     return out
 
 
 def simulate(smoke=False):
     np.random.seed(0)
-    stim_gen = StimulusGenerator(N_RF=ASS.N_RF, N_SETS=ASS.N_SETS, num_angles=ASS.N_RF,
-                                 tuning_width=ASS.TUNING_WIDTH)
-    adapt_ms = 200.0 if smoke else 4200.0
+    if PROTOCOL == 'single':
+        adapt_ms = 200.0 if smoke else 4200.0
+        stim_gen = StimulusGenerator(N_RF=ASS.N_RF, N_SETS=ASS.N_SETS, num_angles=ASS.N_RF,
+                                     tuning_width=ASS.TUNING_WIDTH)
+    else:
+        adapt_ms = 300.0 if smoke else AE.ADAPTATION_DURATION
+        stim_gen = StimulusGenerator(N_RF=AE.N_RF, N_SETS=AE.N_SETS, num_angles=AE.N_RF,
+                                     stream_length=to_steps(adapt_ms, ASS.DT, 'adapt_ms'),
+                                     tuning_width=AE.TUNING_WIDTH, contrast=AE.ENSEMBLE_CONTRAST)
     adapt_steps = to_steps(adapt_ms, ASS.DT, 'adapt_ms')
     out = {}
     for rule in RULES:
@@ -222,9 +262,15 @@ def simulate(smoke=False):
         return
     os.makedirs(os.path.dirname(results_path()), exist_ok=True)
     np.savez(results_path(), **out)
-    params = dict(seed=0, dt_ms=ASS.DT, adapt_ms=adapt_ms, adaptor_theta_deg=np.degrees(ASS.ADAPTOR_THETA),
-                  adaptor_contrast=ASS.ADAPTOR_CONTRAST, probe_contrast=ASS.PROBE_CONTRAST,
-                  target_cov=os.path.basename(ASS.TARGET_COV_PATH), frame=os.path.basename(ASS.FRAME_PATH),
+    single = PROTOCOL == 'single'
+    params = dict(seed=0, protocol=PROTOCOL, dt_ms=ASS.DT, adapt_ms=adapt_ms,
+                  adaptor_theta_deg=float(out['adaptor_deg']),
+                  adaptor_contrast=ASS.ADAPTOR_CONTRAST if single else AE.ENSEMBLE_CONTRAST,
+                  probe_contrast=ASS.PROBE_CONTRAST,
+                  surround_delay_ms=0.0 if single else AE.SURROUND_DELAY,
+                  stimulus_ms=None if single else AE.STIMULUS_DURATION,
+                  target_cov=os.path.basename(ASS.TARGET_COV_PATH if single else AE.TARGET_COV_PATH),
+                  frame=os.path.basename(ASS.FRAME_PATH),
                   first_order_contrast=FIRST_ORDER_CONTRAST, rules=RULE_LABEL, fano=FANO,
                   git_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=REPO_ROOT,
                                             capture_output=True, text=True).stdout.strip(),
@@ -256,7 +302,7 @@ def plot():
     report(d)
     ps.apply()
     C, ang = d['crf_contrasts'], d['probe_angles_deg']
-    adaptor_deg = np.degrees(ASS.ADAPTOR_THETA)
+    adaptor_deg = float(d['adaptor_deg']) if 'adaptor_deg' in d else np.degrees(ASS.ADAPTOR_THETA)
     colors = dict(ASS.CONDITION_COLOR)
     colors['adapt CRF only'] = '#E6B800'      # darker yellow so it reads on white
 
@@ -317,8 +363,11 @@ if __name__ == '__main__':
     ap.add_argument('--smoke', action='store_true')
     ap.add_argument('--fano', type=float, default=0.0,
                     help='Fano factor of the Poisson-like noise in the gain pathway (0 = none)')
+    ap.add_argument('--protocol', choices=['single', 'ensemble'], default='single',
+                    help="adaptation protocol: 'single' (adapt_single_stimulus.py) or 'ensemble' (adapt_ensembles.py)")
     a = ap.parse_args()
     FANO = a.fano
+    PROTOCOL = a.protocol
     if a.smoke:
         simulate(smoke=True)
     else:
