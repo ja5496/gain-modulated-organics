@@ -29,6 +29,8 @@ Run from ORGaNICs_Whitening/:
     python supplementary/alternative_rules.py            # simulate, save .npz, plot
     python supplementary/alternative_rules.py --plot     # replot from the saved .npz
     python supplementary/alternative_rules.py --smoke    # short adaptation (smoke test, not saved)
+    add --fano F to put Poisson-like noise (Fano factor F) in the gain pathway; outputs get a
+    _fanoF suffix
 '''
 
 import argparse
@@ -64,28 +66,63 @@ RULE_LABEL = {'covariance': 'Covariance homeostasis',
 FIRST_ORDER_CONTRAST = 0.8      # contrast of the large grating that sets theta_1
 N_TARGET_ANGLES = 180           # orientations averaged to obtain theta_1
 GAIN_SUBSAMPLE = 10             # store every 10th step of the gain trajectories
+FANO = 0.0                      # Fano factor of the Poisson-like noise in the gain pathway (CLI --fano)
 
-RESULTS = os.path.join(HERE, 'results', 'alternative_rules.npz')
-FIG_BASE = os.path.join(HERE, 'figures', 'fig_alternative_rules')
+RESULTS_BASE = os.path.join(HERE, 'results', 'alternative_rules')
+FIG_STEM = os.path.join(HERE, 'figures', 'fig_alternative_rules')
 
 
-class FirstOrderDynamics(V1Dynamics_Surround):
-    '''V1Dynamics_Surround with the gain equation replaced by first-order homeostasis:
-    tau_g dg/dt = c - theta_1 (cRF and the representative surround set). Every other equation,
-    including the u+-gated feedback W v and tau_v dv/dt = -v + g c, is the parent's.'''
+def _suffix():
+    return '' if FANO == 0 else f'_fano{FANO:g}'
 
-    theta_first = None   # (K,) first-order targets, set before running
+
+def results_path():
+    return RESULTS_BASE + _suffix() + '.npz'
+
+
+def fig_base():
+    return FIG_STEM + _suffix()
+
+
+class GainRuleDynamics(V1Dynamics_Surround):
+    '''V1Dynamics_Surround with the gain pathway (Eqs. dg, dmu) recomputed so that it can
+    (i) read a noisy copy of the interneuron input current and (ii) use first-order homeostasis.
+    Every other equation, including the u+-gated feedback W v and tau_v dv/dt = -v + g c (which
+    uses the noise-free c), is the parent's.
+
+    Noise: Gaussian approximation to Poisson spiking, as in stimuli.py (variance = Fano factor x
+    mean). Each principal cell's signal r = sqrt(y+) = floor(y), as received by the gain pathway,
+    is r + sqrt(fano * r) * xi with xi ~ N(0, 1) drawn independently per neuron at every time step
+    (held across the four RK4 evaluations of that step) and projected through the frame:
+    c_noisy = W^T (r + sqrt(fano r) xi). With fano = 0 and first_order = False the derivatives
+    are identical to V1Dynamics_Surround's.'''
+
+    fano = 0.0           # Fano factor of the noise in the gain pathway
+    first_order = False  # tau_g dg/dt = c - theta_first instead of (c - mu)^2 - theta_t
+    theta_first = None   # (K,) first-order targets
+
+    _calls = 0
+    _xi = None
 
     def _derivatives(self, state, z_t, surround_msg_delayed):
         d = super()._derivatives(state, z_t, surround_msg_delayed)
-        K, N_RF = self.frame.K, self.N_RF
-        sqrt_y_plus = np.maximum(state[:N_RF * self.N_SETS], 0.0)          # sqrt(y+) = floor(y)
-        c_cRF = self.frame.W.T @ sqrt_y_plus[:N_RF]
-        c_surround = (self.frame.W.T @ sqrt_y_plus[N_RF:2 * N_RF] if self.N_SETS >= 2
-                      else np.zeros(K))
-        # Eq. dg replaced: first-order homeostasis (no mean subtraction, no squaring)
-        d[self._off_g_cRF:self._off_g_cRF + K] = (c_cRF - self.theta_first) / self.tau_g
-        d[self._off_g_surround:self._off_g_surround + K] = (c_surround - self.theta_first) / self.tau_g
+        K, N_RF, W = self.frame.K, self.N_RF, self.frame.W
+        if self._calls % 4 == 0:   # run_simulation evaluates _derivatives 4 times per RK4 step
+            self._xi = np.random.standard_normal((2, N_RF))
+        self._calls += 1
+
+        r = np.maximum(state[:N_RF * self.N_SETS], 0.0)          # sqrt(y+) = floor(y)
+        r_sets = [r[:N_RF], r[N_RF:2 * N_RF] if self.N_SETS >= 2 else np.zeros(N_RF)]
+        mu = [state[self._off_mu_cRF:self._off_mu_cRF + K],
+              state[self._off_mu_surround:self._off_mu_surround + K]]
+        for j, (off_g, off_mu) in enumerate([(self._off_g_cRF, self._off_mu_cRF),
+                                             (self._off_g_surround, self._off_mu_surround)]):
+            c = W.T @ (r_sets[j] + np.sqrt(self.fano * r_sets[j]) * self._xi[j])
+            if self.first_order:
+                d[off_g:off_g + K] = (c - self.theta_first) / self.tau_g             # first-order rule
+            else:
+                d[off_g:off_g + K] = ((c - mu[j]) ** 2 - self.theta_t) / self.tau_g   # Eq. dg
+            d[off_mu:off_mu + K] = (-mu[j] + c) / self.tau_mu                          # Eq. dmu
         return d
 
 
@@ -95,14 +132,11 @@ def identity_frame(n):
 
 def build(rule, stim_gen):
     tunings = V1Tunings(N=ASS.N_RF)
-    if rule == 'covariance':
-        frame, cls = Frame(csv_path=ASS.FRAME_PATH), V1Dynamics_Surround
-    elif rule == 'variance':
-        frame, cls = identity_frame(ASS.N_RF), V1Dynamics_Surround
-    else:
-        frame, cls = identity_frame(ASS.N_RF), FirstOrderDynamics
-    dyn = cls(tunings, frame, dt=ASS.DT, N_RF=ASS.N_RF, N_SETS=ASS.N_SETS,
-              target_covariance_path=ASS.TARGET_COV_PATH, gains_nonneg=True)
+    frame = Frame(csv_path=ASS.FRAME_PATH) if rule == 'covariance' else identity_frame(ASS.N_RF)
+    dyn = GainRuleDynamics(tunings, frame, dt=ASS.DT, N_RF=ASS.N_RF, N_SETS=ASS.N_SETS,
+                           target_covariance_path=ASS.TARGET_COV_PATH, gains_nonneg=True)
+    dyn.fano = FANO
+    dyn.first_order = rule == 'first_order'
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True,
                           verbose=False)
     if rule == 'first_order':
@@ -186,18 +220,18 @@ def simulate(smoke=False):
     if smoke:
         report(out)
         return
-    os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
-    np.savez(RESULTS, **out)
+    os.makedirs(os.path.dirname(results_path()), exist_ok=True)
+    np.savez(results_path(), **out)
     params = dict(seed=0, dt_ms=ASS.DT, adapt_ms=adapt_ms, adaptor_theta_deg=np.degrees(ASS.ADAPTOR_THETA),
                   adaptor_contrast=ASS.ADAPTOR_CONTRAST, probe_contrast=ASS.PROBE_CONTRAST,
                   target_cov=os.path.basename(ASS.TARGET_COV_PATH), frame=os.path.basename(ASS.FRAME_PATH),
-                  first_order_contrast=FIRST_ORDER_CONTRAST, rules=RULE_LABEL,
+                  first_order_contrast=FIRST_ORDER_CONTRAST, rules=RULE_LABEL, fano=FANO,
                   git_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=REPO_ROOT,
                                             capture_output=True, text=True).stdout.strip(),
                   date=datetime.datetime.now().isoformat(timespec='seconds'))
-    with open(RESULTS.replace('.npz', '_params.json'), 'w') as f:
+    with open(results_path().replace('.npz', '_params.json'), 'w') as f:
         json.dump(params, f, indent=2)
-    print('saved', RESULTS)
+    print('saved', results_path())
 
 
 def report(d):
@@ -218,7 +252,7 @@ def report(d):
 
 
 def plot():
-    d = dict(np.load(RESULTS))
+    d = dict(np.load(results_path()))
     report(d)
     ps.apply()
     C, ang = d['crf_contrasts'], d['probe_angles_deg']
@@ -271,17 +305,20 @@ def plot():
     axes[0, 0].legend(loc='upper left', fontsize=7, handlelength=1.2)
 
     ps.label_panels(fig, axes.T.ravel())
-    os.makedirs(os.path.dirname(FIG_BASE), exist_ok=True)
+    os.makedirs(os.path.dirname(fig_base()), exist_ok=True)
     for ext in ('pdf', 'png'):
-        fig.savefig(f'{FIG_BASE}.{ext}', dpi=ps.DPI)
-    print('saved', FIG_BASE + '.{pdf,png}')
+        fig.savefig(f'{fig_base()}.{ext}', dpi=ps.DPI)
+    print('saved', fig_base() + '.{pdf,png}')
 
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--plot', action='store_true')
     ap.add_argument('--smoke', action='store_true')
+    ap.add_argument('--fano', type=float, default=0.0,
+                    help='Fano factor of the Poisson-like noise in the gain pathway (0 = none)')
     a = ap.parse_args()
+    FANO = a.fano
     if a.smoke:
         simulate(smoke=True)
     else:
