@@ -16,7 +16,7 @@ Methodology:
 2. The final gains are frozen and the network is probed with full-field gratings (response_tools:
    closed-form fixed point by default, settled RK4 dynamics if online=True).
 3. Figures: a subset of g_cRF vs time; contrast-response functions of the cRF subpopulation
-   (l2 norm of its response) at the adaptor orientation; tuning curves of a flank neuron 20.8 deg
+   (mean firing rate) at the adaptor orientation; tuning curves of a flank neuron 20.8 deg
    from the adaptor; and a membrane-potential contrast-response function (signed, non-rectified y
    of the adaptor-tuned cRF neuron) beside that neuron's firing rate, before vs. after the
    cRF + surround adaptor, which reuses that condition's frozen gains.
@@ -198,11 +198,13 @@ if __name__ == "__main__":
     print("Computing contrast response functions...")
 
     def crf_curve(cond):
-        '''cRF population response magnitude (l2 norm over the N_RF cRF neurons) vs contrast.'''
+        '''Mean firing rate of the N_RF cRF neurons vs contrast. (The mean rate is conserved at
+        saturation by normalization; the l2 norm used previously also tracked the shape of the
+        population profile.)'''
         M = gain_operator(cond)
         resp = np.zeros(N_CONTRASTS)
         for i, c in enumerate(tqdm(CRF_CONTRASTS, desc=f"    {cond}", leave=False)):
-            resp[i] = np.linalg.norm(probe_response(cond, full_field_probe(ADAPTOR_THETA, c), M)[crf_slice])
+            resp[i] = probe_response(cond, full_field_probe(ADAPTOR_THETA, c), M)[crf_slice].mean()
         return resp
 
     curves_by_condition = {cond: crf_curve(cond) for cond in CONDITIONS}
