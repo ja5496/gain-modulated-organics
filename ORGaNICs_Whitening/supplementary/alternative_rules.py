@@ -247,7 +247,7 @@ def plot():
         for cond in flank_conds:
             curve = d[f'{rule}/flank/{cond.replace(" ", "_")}']
             shift = ((curve_peak_deg(curve, ang) - ctrl + 90) % 180) - 90
-            lab = None if cond == 'no adaptation' else fr'$\Delta\theta$ = {shift:+.1f}°'
+            lab = None if cond == 'no adaptation' else fr'$\Delta\theta$ = {shift:+.2f}°'
             ax_t.plot(ang, curve / fnorm, color=colors[cond], lw=1.25, label=lab)
         ps.ref_line(ax_t, ctrl, axis='v')
         ax_t.annotate('', xy=(adaptor_deg, 0.80), xytext=(adaptor_deg, 0.97),
