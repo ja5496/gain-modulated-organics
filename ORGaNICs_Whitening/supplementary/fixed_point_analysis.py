@@ -55,9 +55,10 @@ STIMULUS_MS = 30.0            # each ensemble stimulus is held for 30 ms
 ENV_CENTER_DEG, ENV_KAPPA = 90.0, 3.0   # power_law.py environment B
 ADAPT_MS = 2000.0             # adaptation before the probe
 PROBE_MS = 100.0              # probe window
-PROBE_THETA_DEG = 90.0        # probe at the peak of the environment
+PROBE_THETA_DEG = 45.0        # probe orientation
 PROBE_CONTRAST = 0.8          # as power_law.PROBE_CONTRAST
 N_GAINS_SHOWN = 8             # gains plotted: the largest cRF gains at the start of the probe
+TAU_V = 10.0                  # ms; overrides V1Dynamics_Surround's default tau_v (30 ms)
 
 RESULTS = os.path.join(HERE, 'results', 'fixed_point_analysis.npz')
 FIG_BASE = os.path.join(HERE, 'figures', 'fig_fixed_point_analysis')
@@ -68,6 +69,7 @@ def build():
     frame = Frame(csv_path=FRAME_PATH)
     dyn = V1Dynamics_Surround(tunings, frame, dt=DT, N_RF=N_RF, N_SETS=N_SETS,
                               target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
+    dyn.tau_v = TAU_V
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
     assert dyn.n_lag == 0, 'this analysis uses no surround delay'
     return dyn
@@ -170,31 +172,34 @@ def plot():
     report(d)
     ps.apply()
     t = d['t_ms']
+    peak = d['rate_star_cRF'][:, -1].max()   # peak fixed-point rate across the cRF neurons
 
-    fig, axes = plt.subplots(3, 1, figsize=(ps.HALF_WIDTH, 120 * ps.MM), sharex=True,
-                             gridspec_kw=dict(hspace=0.35))
+    fig, axes = plt.subplots(1, 3, figsize=(ps.FULL_WIDTH, 55 * ps.MM),
+                             gridspec_kw=dict(wspace=0.5))
     ax_g, ax_y, ax_e = axes
-    fig.subplots_adjust(left=0.2, right=0.96, top=0.96, bottom=0.1)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.22)
 
     # Gains: the largest cRF gains at the start of the probe, shades of green
     idx = np.argsort(d['g_cRF_start'])[::-1][:N_GAINS_SHOWN]
     greens = plt.get_cmap('Greens')(np.linspace(0.45, 0.95, N_GAINS_SHOWN))
     for c, k in zip(greens, idx):
         ax_g.plot(t, d['g_cRF'][k], color=c, lw=1.0)
-    ax_g.set_ylabel('Gain, $g_k$')
+    ax_g.set_ylabel('Gain subset')
 
-    # cRF firing rates (shades of red) and their analytical fixed points (dashed)
+    # cRF firing rates, shades of red
     reds = plt.get_cmap('Reds')(np.linspace(0.35, 0.95, N_RF))
     for i in range(N_RF):
         ax_y.plot(t, d['rate_cRF'][i], color=reds[i], lw=1.0)
-        ax_y.plot(t, d['rate_star_cRF'][i], color=reds[i], lw=0.8, ls=(0, (3, 2)))
     ax_y.set_ylabel(r'Firing rate, $y^{+}$')
 
-    # MSE between simulated and analytical rates
-    ax_e.semilogy(t, d['mse'], color='black', lw=1.25)
-    ax_e.set_ylabel('MSE')
-    ax_e.set_xlabel('Time from probe onset (ms)')
-    ax_e.set_xlim(0, t[-1])
+    # RMSE between simulated and analytical rates, relative to the peak fixed-point rate
+    ax_e.semilogy(t, np.sqrt(d['mse']) / peak, color='black', lw=1.25)
+    ax_e.set_ylabel('RMSE / peak rate')
+
+    for ax in axes:
+        ax.set_xlim(0, t[-1])
+        ax.set_xticks([0, 50, 100])
+        ax.set_xlabel('Time (ms)')
 
     ps.label_panels(fig, axes)
     os.makedirs(os.path.dirname(FIG_BASE), exist_ok=True)
