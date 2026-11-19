@@ -71,6 +71,7 @@ N_TARGET_ANGLES = 180           # orientations averaged to obtain theta_1
 GAIN_SUBSAMPLE = 10             # store every 10th step of the gain trajectories
 FANO = 0.0                      # Fano factor of the Poisson-like noise in the gain pathway (CLI --fano)
 PROTOCOL = 'single'             # 'single' (adapt_single_stimulus.py) or 'ensemble' (adapt_ensembles.py)
+NOISE = None                    # optional dict(kind, loc, amp, bin_steps) applied by build() (noise_sweep.py)
 VAR_SCALE = 1.0                 # variance-normalization targets = VAR_SCALE * diag(Sigma_target) (CLI --var-scale)
 
 RESULTS_BASE = os.path.join(HERE, 'results', 'alternative_rules')
@@ -91,44 +92,67 @@ def fig_base():
 
 
 class GainRuleDynamics(V1Dynamics_Surround):
-    '''V1Dynamics_Surround with the gain pathway (Eqs. dg, dmu) recomputed so that it can
-    (i) read a noisy copy of the interneuron input current and (ii) use first-order homeostasis.
-    Every other equation, including the u+-gated feedback W v and tau_v dv/dt = -v + g c (which
-    uses the noise-free c), is the parent's.
+    '''V1Dynamics_Surround with optional noise and an optional first-order gain rule. Eqs. dg and
+    dmu (and, for noise_loc='response', Eq. dv) are recomputed here; every other equation is the
+    parent's. With noise_kind='none' and first_order=False the derivatives are identical to
+    V1Dynamics_Surround's.
 
-    Noise: Gaussian approximation to Poisson spiking, as in stimuli.py (variance = Fano factor x
-    mean). Each principal cell's signal r = sqrt(y+) = floor(y), as received by the gain pathway,
-    is r + sqrt(fano * r) * xi with xi ~ N(0, 1) drawn independently per neuron at every time step
-    (held across the four RK4 evaluations of that step) and projected through the frame:
-    c_noisy = W^T (r + sqrt(fano r) xi). With fano = 0 and first_order = False the derivatives
-    are identical to V1Dynamics_Surround's.'''
+    Noise (xi ~ N(0, 1), independent per neuron, held for noise_bin_steps time steps and across
+    the four RK4 evaluations of each step; the cRF and the representative surround set get
+    independent samples, and every surround set shares the representative sample, as the model's
+    shared surround copy requires):
+      noise_kind   'white'    s + amp * xi                (constant variance amp^2)
+                   'poisson'  s + sqrt(amp * s+) * xi     (variance = Fano factor amp x signal, the
+                                                           Gaussian approximation in stimuli.py)
+      noise_loc    'gain'      s = r = sqrt(y+) as read by the gain pathway only: c in Eqs. dg, dmu
+                   'response'  s = r as read by the adaptation interneurons: c in Eqs. dv, dg, dmu
+                   'input'     s = z, the input drive of every principal cell (whole circuit)
+    '''
 
-    fano = 0.0           # Fano factor of the noise in the gain pathway
+    noise_kind = 'none'
+    noise_loc = 'gain'
+    noise_amp = 0.0
+    noise_bin_steps = 1
     first_order = False  # tau_g dg/dt = c - theta_first instead of (c - mu)^2 - theta_t
     theta_first = None   # (K,) first-order targets
 
     _calls = 0
     _xi = None
 
+    def _noise(self, s, xi):
+        if self.noise_kind == 'white':
+            return s + self.noise_amp * xi
+        return s + np.sqrt(self.noise_amp * np.maximum(s, 0.0)) * xi
+
     def _derivatives(self, state, z_t, surround_msg_delayed):
-        d = super()._derivatives(state, z_t, surround_msg_delayed)
-        K, N_RF, W = self.frame.K, self.N_RF, self.frame.W
-        if self._calls % 4 == 0:   # run_simulation evaluates _derivatives 4 times per RK4 step
+        K, N_RF, N_SETS, W = self.frame.K, self.N_RF, self.N_SETS, self.frame.W
+        # run_simulation evaluates _derivatives 4 times per RK4 step
+        if self._calls % 4 == 0 and (self._calls // 4) % self.noise_bin_steps == 0:
             self._xi = np.random.standard_normal((2, N_RF))
         self._calls += 1
+        noisy = self.noise_kind != 'none'
 
-        r = np.maximum(state[:N_RF * self.N_SETS], 0.0)          # sqrt(y+) = floor(y)
-        r_sets = [r[:N_RF], r[N_RF:2 * N_RF] if self.N_SETS >= 2 else np.zeros(N_RF)]
-        mu = [state[self._off_mu_cRF:self._off_mu_cRF + K],
-              state[self._off_mu_surround:self._off_mu_surround + K]]
-        for j, (off_g, off_mu) in enumerate([(self._off_g_cRF, self._off_mu_cRF),
-                                             (self._off_g_surround, self._off_mu_surround)]):
-            c = W.T @ (r_sets[j] + np.sqrt(self.fano * r_sets[j]) * self._xi[j])
+        if noisy and self.noise_loc == 'input':
+            z_t = self._noise(z_t, np.concatenate([self._xi[0]] + [self._xi[1]] * (N_SETS - 1)))
+        d = super()._derivatives(state, z_t, surround_msg_delayed)
+
+        r = np.maximum(state[:N_RF * N_SETS], 0.0)          # sqrt(y+) = floor(y)
+        r_sets = [r[:N_RF], r[N_RF:2 * N_RF] if N_SETS >= 2 else np.zeros(N_RF)]
+        offs = [(self._off_g_cRF, self._off_mu_cRF, self._off_v_cRF),
+                (self._off_g_surround, self._off_mu_surround, self._off_v_surround)]
+        for j, (off_g, off_mu, off_v) in enumerate(offs):
+            r_j = (self._noise(r_sets[j], self._xi[j])
+                   if noisy and self.noise_loc in ('gain', 'response') else r_sets[j])
+            c = W.T @ r_j
+            mu = state[off_mu:off_mu + K]
             if self.first_order:
                 d[off_g:off_g + K] = (c - self.theta_first) / self.tau_g             # first-order rule
             else:
-                d[off_g:off_g + K] = ((c - mu[j]) ** 2 - self.theta_t) / self.tau_g   # Eq. dg
-            d[off_mu:off_mu + K] = (-mu[j] + c) / self.tau_mu                          # Eq. dmu
+                d[off_g:off_g + K] = ((c - mu) ** 2 - self.theta_t) / self.tau_g      # Eq. dg
+            d[off_mu:off_mu + K] = (-mu + c) / self.tau_mu                             # Eq. dmu
+            if noisy and self.noise_loc == 'response':
+                g = state[off_g:off_g + K]
+                d[off_v:off_v + K] = (-state[off_v:off_v + K] + g * c) / self.tau_v    # Eq. dv
         return d
 
 
@@ -142,7 +166,11 @@ def build(rule, stim_gen, target_cov_path=None):
     dyn = GainRuleDynamics(tunings, frame, dt=ASS.DT, N_RF=ASS.N_RF, N_SETS=ASS.N_SETS,
                            target_covariance_path=target_cov_path or ASS.TARGET_COV_PATH,
                            gains_nonneg=True)
-    dyn.fano = FANO
+    if FANO > 0:   # --fano: Poisson-like noise in the gain pathway, resampled every step
+        dyn.noise_kind, dyn.noise_loc, dyn.noise_amp, dyn.noise_bin_steps = 'poisson', 'gain', FANO, 1
+    if NOISE is not None:
+        dyn.noise_kind, dyn.noise_loc = NOISE['kind'], NOISE['loc']
+        dyn.noise_amp, dyn.noise_bin_steps = NOISE['amp'], NOISE['bin_steps']
     dyn.first_order = rule == 'first_order'
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True,
                           verbose=False)
