@@ -24,17 +24,17 @@ import os
 import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # analysis/ -- for `import Surround_simulated_responses`
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # analysis/ -- for `import adapt_ensembles`
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from tqdm import tqdm
-from simulation_whiten import Frame, V1Dynamics_Surround
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 from analysis import Analytic_responses as ar
-import Surround_simulated_responses as SSR   # reuses run_adaptation_phase -- see gain computation below
+import adapt_ensembles as AE   # shared ADAPTATION_STEPS / STIMULUS_STEPS
 from typing import Literal
 from scipy.linalg import block_diag
 
@@ -43,7 +43,7 @@ N_SETS     = 5                    # 1 classical RF (cRF) + 6 surround sets
 N_TOTAL    = N_RF * N_SETS         # Full primary-neuron population
 CRF_IDX    = 0                     # Which of the 7 sets is the cRF (arbitrary; sets are symmetric)
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_Frame.csv")
-# Same target-covariance file V1Dynamics_Surround loads for theta_t (simulation_whiten.py) -
+# Same target-covariance file V1Dynamics_Surround loads for theta_t (simulation.py) -
 # used below so the PCA whitening diagnostic's "T" matches the live model's target exactly.
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance.csv")
 N_matrix = np.ones((N_TOTAL, N_TOTAL))
@@ -55,6 +55,7 @@ Beta  = 0.5
 
 ENSEMBLE_CONTRAST = 1.0      # Contrast of the adaptation ensembles (baseline & adaptor)
 TUNING_WIDTH      = 0.75     # Width of the gaussian stimulus profiles
+INPUT_BOUND       = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, tuning_width=TUNING_WIDTH).max_drive   # fixed input bound (see StimulusGenerator)
 N_CONTRASTS   = 20           # Number of contrasts to probe with
 CRF_CONTRASTS = np.logspace(-2, 0, N_CONTRASTS)
 PROBE_CONTRAST = 0.8         
@@ -71,22 +72,22 @@ def half_wave_rectify(y):      # Estimates primary neuron firing rate from membr
     return np.maximum(y, 0.0) ** 2
 
 def probe_local_profile(input_theta, contrast, tuning_width=TUNING_WIDTH):
-    '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding. Currently
-    unused by any figure below (probe_input_drive, which normalizes AFTER replication -- not this
-    function's own per-block normalization -- is what every contrast/tuning-curve figure uses);
+    '''Local (single-RF, N_RF-long) Gaussian probe profile, before spatial embedding: one block of
+    probe_input_drive's probe. Currently unused by any figure below (they use probe_input_drive);
     kept as a building block for any single-local-block diagnostic added later.'''
     theta_grid = np.linspace(0, np.pi, N_RF, endpoint=False)    # Evenly spaced orientation preferences for neurons
     delta = theta_grid - input_theta                            # Distance between neuron preference from stimulus orientation
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2             # Shift by 90 degrees to match other scripts
     profile = np.exp(-delta**2 / (2 * tuning_width**2))         # Gaussian profile
-    profile = contrast * profile / np.linalg.norm(profile)      # Normalize and scale by contrast
+    profile = contrast * profile / INPUT_BOUND                  # Scale by contrast, divide by the fixed input bound
     return profile
 
 def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     '''Always probing with a stimulus that covers both cRF and surround, no matter the adaptation
-    state. Normalizes the FULL replicated (N_TOTAL,) vector to unit norm, matching
-    Surround_simulated_responses.py's own probe_input_drive exactly -- normalizing each local
-    block to unit norm BEFORE replicating (the old behavior here) inflates the total probe energy
+    state. Scales the replicated (N_TOTAL,) profile by contrast and divides it by the fixed input
+    bound, matching StimulusGenerator.oriented_drive(..., 'adapt CRF and surround') exactly (for a
+    full-field probe the bound is the probe's own norm at contrast 1, to within 0.04%) -- normalizing
+    each local block to unit norm BEFORE replicating (an older behavior here) inflates the total probe energy
     by an extra factor of sqrt(N_SETS), which shifts the effective semi-saturation contrast by
     that same factor (c50 = sigma/sqrt(N_SETS) instead of sigma, for the M=0 baseline). That's
     what was making sigma=0.15 look "wrong" -- the response formula was correct, the probe
@@ -97,7 +98,7 @@ def probe_input_drive(input_theta, contrast, tuning_width=TUNING_WIDTH):
     delta = (delta + np.pi / 2) % np.pi - np.pi / 2
     profile = np.exp(-delta**2 / (2 * tuning_width**2))
     full_profile = np.concatenate([profile] * N_SETS)
-    return contrast * full_profile / np.linalg.norm(full_profile)
+    return contrast * full_profile / INPUT_BOUND
 
 def block_diag_M(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     '''M = W @ diag(g) W.T '''
@@ -146,12 +147,12 @@ def block_diag_W(frame, g_opt, adapt_location: Literal['adapt CRF only', 'adapt 
 def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'adapt surround only', 'adapt CRF and surround', 'no adaptation']):
     match adapt_location:
         case 'adapt CRF only':
-            baseline = np.full(N_RF, 0.2)            
+            baseline = np.full(N_RF, 0.2 / INPUT_BOUND)            
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([stimuli] + [baseline] * repeats)
             return full_stimuli
         case 'adapt surround only':
-            baseline = np.full(N_RF, 0.2)
+            baseline = np.full(N_RF, 0.2 / INPUT_BOUND)
             repeats = N_SETS - 1
             full_stimuli = np.concatenate([baseline] + [stimuli] * repeats)
             return full_stimuli
@@ -159,7 +160,7 @@ def full_spatial_stimuli(stimuli, adapt_location: Literal['adapt CRF only', 'ada
             full_stimuli = np.concatenate([stimuli] * N_SETS)
             return full_stimuli
         case 'no adaptation':
-            baseline = np.full(N_RF, 0.2)            
+            baseline = np.full(N_RF, 0.2 / INPUT_BOUND)            
             full_stimuli = np.concatenate([baseline] * N_SETS)
             return full_stimuli
 
@@ -226,7 +227,7 @@ if __name__ == "__main__":
     def M_from_cached(cond):
         '''M = block_diag(W diag(g_cRF) W.T, [W diag(g_surround) W.T] * (N_SETS-1)) -- matches
         V1Dynamics_Surround's own replication assumption (one shared g_surround, tiled across all
-        surround RFs; see full_gain_feedback in simulation_whiten.py's _derivatives).'''
+        surround RFs; see full_gain_feedback in simulation.py's _derivatives).'''
         g_cRF, g_surround = cached_gains[cond]
         M_cRF = frame.W @ np.diag(g_cRF) @ frame.W.T
         M_surround = frame.W @ np.diag(g_surround) @ frame.W.T
@@ -236,7 +237,7 @@ if __name__ == "__main__":
     M_by_condition = {cond: M_from_cached(cond) for cond in CONDITIONS}
 
     stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF,
-                                 stream_length=SSR.ADAPT_STREAM_LENGTH,
+                                 stream_length=AE.ADAPTATION_STEPS,
                                  tuning_width=TUNING_WIDTH, contrast=ENSEMBLE_CONTRAST)
     adaptor_idx = N_RF // 2
     adaptor_rad = stim_gen.theta_inputs[adaptor_idx]
@@ -251,11 +252,11 @@ if __name__ == "__main__":
     # PCA whitening diagnostic below -- a representative ensemble draw, not tied to gain
     # computation (gains come from the cache above), so a single fresh, noisy draw is enough here.
     stream_uni, centers_uni = stim_gen.generate_surround_ensembles(
-        'adapt CRF and surround', biased=False, duration=SSR.DURATION,
+        'adapt CRF and surround', biased=False, duration=AE.STIMULUS_STEPS,
         add_poisson_noise=True, return_angles=True)
     stimuli_uni = list(stream_uni[:N_RF, :].T)
     stream_bias, centers_bias = stim_gen.generate_surround_ensembles(
-        'adapt CRF and surround', biased=True, duration=SSR.DURATION,
+        'adapt CRF and surround', biased=True, duration=AE.STIMULUS_STEPS,
         add_poisson_noise=True, return_angles=True)
     stimuli_bias = list(stream_bias[:N_RF, :].T)
 

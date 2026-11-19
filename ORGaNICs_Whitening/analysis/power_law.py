@@ -8,7 +8,8 @@ peaks evenly spaced in orientation and different widths (see ENVIRONMENTS). Pane
 orientation distributions and the power-law test of Tring, Dipoppa &
 Ringach (2023, Nat. Commun., "A power law describes the magnitude of adaptation in neural
 populations of primary visual cortex") - log ratio of population response magnitudes between
-two environments vs. log ratio of the stimulus probabilities.
+two environments vs. log ratio of the stimulus probabilities. A companion figure zooms the power
+law to |log10 P ratio| <= RESTRICTED_FIT_RANGE.
 
 Figure 3: Contrast response functions after adapting to low/medium/high contrast ensembles.
 
@@ -30,30 +31,37 @@ from matplotlib.ticker import MultipleLocator
 from tqdm import tqdm
 from scipy.linalg import block_diag
 from scipy.special import i0
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
-from simulation_whiten import Frame, V1Dynamics_Surround
-from Surround_simulated_responses import get_response_offline, probe_input_drive
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
+from simulation import Frame, V1Dynamics_Surround
+from response_tools import get_response_offline, to_steps
+
+# ---- Durations (ms, the units of the model's time constants) ----
+DT = 0.1                       # simulation time step
+# Length of every adaptation stream: several tau_g (1000 ms in V1Dynamics_Surround) so the gains
+# converge
+ADAPTATION_DURATION = 4200.0
+STIMULUS_DURATION = 30.0        # time each stimulus in an adaptation stream is held for
+
+# ---- The same durations in timesteps ----
+ADAPTATION_STEPS = to_steps(ADAPTATION_DURATION, DT, 'ADAPTATION_DURATION')
+STIMULUS_STEPS = to_steps(STIMULUS_DURATION, DT, 'STIMULUS_DURATION')
 
 # ---- Parameters ----
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 N_RF = 13                      # Number of primary neurons per receptive field
-N_SETS = 6                     # 1 classical RF (cRF) + 5 surround sets; must match Surround_simulated_responses.N_SETS,
-                               # which sizes both get_response_offline's (I+M) and probe_input_drive
+N_SETS = 6                     # 1 classical RF (cRF) + 5 surround sets
 FRAME_PATH = os.path.join(REPO_ROOT, "data/frames/N13_mercedes_K182_Frame.csv")
 TARGET_COV_PATH = os.path.join(REPO_ROOT, "data/target_covs/uniform_target_covariance_mid_c.csv")
 ADAPT_LOC = 'adapt CRF only'   # no spatial cRF/surround distinction in these experiments
-ADAPT_CONTRAST = 0.8
-PROBE_CONTRAST = 0.6
+ADAPT_CONTRAST = 1.0
+PROBE_CONTRAST = 0.8
 # Figure 1 orientation environments, all von Mises with peaks evenly spaced 60° apart:
 # name -> (peak orientation in degrees, concentration kappa)
 ENVIRONMENTS = {'A': (30.0, 6.0),    # tall and skinny
                 'B': (90.0, 3.0),    # in between
                 'C': (150.0, 1.5)}   # short and wide
 
-# tau_g=750 (V1Dynamics_Surround) needs several tau_g of adaptation time to converge; at dt=0.1
-# this gives ~4 tau_g (~98% settled) for every adaptation/probe stream below.
-STREAM_LENGTH = 100000
 PROBE_RES = 13                 # probe orientations; keep a multiple of N_RF so probes land on neuron preferences
 RATE_FLOOR = 1e-3              # responses below this (log10 = -3) are treated as zero (excluded from the log moments)
 RESTRICTED_FIT_RANGE = 1.0     # Figure 1's dotted power-law fit uses only points with |log10 P ratio| <= this
@@ -71,20 +79,21 @@ def offline_gain_operator(dyn, state):
     return block_diag(M_cRF, *([M_surround] * (N_SETS - 1)))
 
 
-def probe_responses(dyn, M, probe_angles, contrast):
+def probe_responses(dyn, stim_gen, M, probe_angles, contrast):
     """
-    cRF population response vectors (N_RF, n_probes) to Gaussian probes (probe_input_drive) at
-    each of probe_angles, with gains frozen in M (from offline_gain_operator), settled via
-    get_response_offline.
+    cRF population response vectors (N_RF, n_probes) to full-field Gaussian probes
+    (stim_gen.oriented_drive) at each of probe_angles, with gains frozen in M (from
+    offline_gain_operator), settled via get_response_offline.
     """
     resp = np.zeros((N_RF, len(probe_angles)))
     for i, theta in enumerate(probe_angles):
-        resp[:, i] = get_response_offline(dyn, probe_input_drive(theta, contrast), M)[:N_RF]
+        probe = stim_gen.oriented_drive(theta, contrast, 'adapt CRF and surround')
+        resp[:, i] = get_response_offline(dyn, probe, M)[:N_RF]
     return resp
 
 
 def von_mises_orientation_density(theta, center, kappa):
-    '''Probability density over orientation [0, pi) of stimuli_whiten's von Mises environments:
+    '''Probability density over orientation [0, pi) of stimuli's von Mises environments:
     np.random.vonmises(center, kappa) is drawn on the full circle and then folded mod pi, so
     p(theta) = f(theta) + f(theta + pi) = cosh(kappa cos(theta - center)) / (pi I0(kappa)).'''
     return np.cosh(kappa * np.cos(theta - center)) / (np.pi * i0(kappa))
@@ -150,10 +159,11 @@ def Dario_fig1(dyn, stim_gen):
     population response magnitudes (l2 norm of the response vector) between two environments X, Y
     vs. log10 ratio of the stimulus probabilities, fit by a line without intercept
     (r_X/r_Y = (p_X/p_Y)^beta, pooled over pairs) - over all points (solid) and over only points
-    with |log10 P ratio| <= RESTRICTED_FIT_RANGE (dotted). Only the cRF block is analyzed."""
+    with |log10 P ratio| <= RESTRICTED_FIT_RANGE (dotted). A second figure repeats the power-law
+    panel with only those points and the dotted fit. Only the cRF block is analyzed."""
     print(' ----------- FIGURE 1 -----------')
     # Probe exactly at the neuron preferences (np.linspace(0, pi, N_RF, endpoint=False), as in
-    # probe_input_drive/stimuli_whiten); 180° is excluded since it's the same orientation as 0°
+    # stimuli); 180° is excluded since it's the same orientation as 0°
     probe_angles = np.linspace(0, np.pi, PROBE_RES, endpoint=False)
 
     print("\n--- Running Adaptation Stage ---")
@@ -161,13 +171,13 @@ def Dario_fig1(dyn, stim_gen):
     for env, (center_deg, kappa) in ENVIRONMENTS.items():
         print(f"Adapting to environment {env} (von Mises, peak {center_deg:g}°, kappa {kappa:g})...")
         dyn.run_simulation(stim_gen.generate_surround_ensembles(ADAPT_LOC, von_mises=True, von_mises_center=center_deg,
-                                                                von_mises_kappa=kappa))
+                                                                von_mises_kappa=kappa, duration=STIMULUS_STEPS))
         final_states[env] = dyn.last_state
 
     # --- Probe Stage: gains frozen at each adapted state, probed with the offline fixed point
     # (cRF block only) ---
     print("\n--- Running Probe Stage ---")
-    resp = {env: probe_responses(dyn, offline_gain_operator(dyn, state), probe_angles, PROBE_CONTRAST)
+    resp = {env: probe_responses(dyn, stim_gen, offline_gain_operator(dyn, state), probe_angles, PROBE_CONTRAST)
             for env, state in final_states.items()}
 
     # Response magnitude = l2 norm of each probe's population response vector (as in Tring et al.)
@@ -194,6 +204,7 @@ def Dario_fig1(dyn, stim_gen):
 
     # --- Figure ---
     fig, (ax_dist, ax_pow) = plt.subplots(1, 2, figsize=(13, 5.5))
+    fig_in, ax_pow_in = plt.subplots(figsize=(6.5, 5.5))   # power law zoomed to RESTRICTED_FIT_RANGE
     colors = {'A': '#4169E1', 'B': '#D2042D', 'C': '#B8860B'}   # royal blue, cherry red, dark yellow
     pair_styles = {('A', 'B'): ('#6A3D9A', 'o'), ('A', 'C'): ('#0F6B2F', 's'),   # purple circles, green squares,
                    ('B', 'C'): ('#E07000', '^')}                                  # orange triangles
@@ -203,7 +214,7 @@ def Dario_fig1(dyn, stim_gen):
     fs_label = 24
     fs_ticks = 16
     axis_lw = 1.5
-    for ax in (ax_dist, ax_pow):
+    for ax in (ax_dist, ax_pow, ax_pow_in):
         for spine in ax.spines.values():
             spine.set_linewidth(axis_lw)
 
@@ -226,36 +237,45 @@ def Dario_fig1(dyn, stim_gen):
     ax.set_yticks([])
     ax.tick_params(axis='x', length=0, labelsize=fs_ticks)
 
-    # Right: log response-magnitude ratio vs log probability ratio, one marker per probe orientation
-    ax = ax_pow
-    ax.axhline(0, color='lightgray', lw=1, zorder=0)
-    ax.axvline(0, color='lightgray', lw=1, zorder=0)
-    for X, Y in pairs:
-        color, marker = pair_styles[(X, Y)]
-        ax.scatter(log_p_ratio[(X, Y)], log_r_ratio[(X, Y)], color=color, alpha=point_alpha, marker=marker,
-                   s=point_size, edgecolors='white', linewidths=1, zorder=3)
-    x_fit = np.array([x_all.min(), x_all.max()])
-    fit_all_line, = ax.plot(x_fit, beta * x_fit, color='#333333', lw=2, zorder=2,
-                            label=fr'$\beta = {beta:.2f}$, $R^2 = {r_squared:.2f}$')
-    # Restricted fit, drawn only over the range it was fit on
-    x_fit_in = np.clip(x_fit, -RESTRICTED_FIT_RANGE, RESTRICTED_FIT_RANGE)
-    fit_in_line, = ax.plot(x_fit_in, beta_in * x_fit_in, color='#333333', lw=2.5, ls=':', zorder=2,
-                           label=fr'$\beta = {beta_in:.2f}$, $R^2 = {r_squared_in:.2f}$')
-    ax.set_xlabel(r'$\log_{10}\,[P_X(\theta)\,/\,P_Y(\theta)]$', fontsize=fs_label)
-    ax.set_ylabel(r'$\log_{10}\,[r_X(\theta)\,/\,r_Y(\theta)]$', fontsize=fs_label)
-    ax.xaxis.set_major_locator(MultipleLocator(1))   # a tick label at every integer
-    # Three y ticks symmetric about 0: the largest one-significant-figure value inside both y limits
-    y_extent = min(abs(lim) for lim in ax.get_ylim())
-    decade = 10 ** np.floor(np.log10(y_extent))
-    y_tick = np.floor(y_extent / decade + 1e-9) * decade
-    ax.set_yticks([-y_tick, 0, y_tick])
-    ax.set_yticklabels([f'−{y_tick:g}', '0', f'{y_tick:g}'])
-    ax.tick_params(labelsize=fs_ticks, width=axis_lw)
-    add_pair_legend(ax, pairs, pair_styles, colors, alpha=point_alpha, markersize=np.sqrt(point_size),
-                    loc='lower left')
-    ax.legend(handles=[fit_all_line, fit_in_line], loc='upper right', fontsize=14)
+    def draw_power_law(ax, fits, x_limit=np.inf):
+        '''Log response-magnitude ratio vs log probability ratio, one marker per probe orientation,
+        keeping only points with |log10 P ratio| <= x_limit. fits: (beta, R^2, x endpoints, line kwargs).'''
+        ax.axhline(0, color='lightgray', lw=1, zorder=0)
+        ax.axvline(0, color='lightgray', lw=1, zorder=0)
+        for X, Y in pairs:
+            color, marker = pair_styles[(X, Y)]
+            keep = np.abs(log_p_ratio[(X, Y)]) <= x_limit
+            ax.scatter(log_p_ratio[(X, Y)][keep], log_r_ratio[(X, Y)][keep], color=color, alpha=point_alpha,
+                       marker=marker, s=point_size, edgecolors='white', linewidths=1, zorder=3)
+        fit_lines = [ax.plot(x_fit, b * x_fit, color='#333333', zorder=2,
+                             label=fr'$\beta = {b:.2f}$, $R^2 = {r2:.2f}$', **line_kwargs)[0]
+                     for b, r2, x_fit, line_kwargs in fits]
+        ax.set_xlabel(r'$\log_{10}\,[P_X(\theta)\,/\,P_Y(\theta)]$', fontsize=fs_label)
+        ax.set_ylabel(r'$\log_{10}\,[r_X(\theta)\,/\,r_Y(\theta)]$', fontsize=fs_label)
+        ax.xaxis.set_major_locator(MultipleLocator(1))   # a tick label at every integer
+        # Three y ticks symmetric about 0: the largest one-significant-figure value inside both y limits
+        y_extent = min(abs(lim) for lim in ax.get_ylim())
+        decade = 10 ** np.floor(np.log10(y_extent))
+        y_tick = np.floor(y_extent / decade + 1e-9) * decade
+        ax.set_yticks([-y_tick, 0, y_tick])
+        ax.set_yticklabels([f'−{y_tick:g}', '0', f'{y_tick:g}'])
+        ax.tick_params(labelsize=fs_ticks, width=axis_lw)
+        add_pair_legend(ax, pairs, pair_styles, colors, alpha=point_alpha, markersize=np.sqrt(point_size),
+                        loc='lower left')
+        ax.legend(handles=fit_lines, loc='upper right', fontsize=14)
 
-    plt.tight_layout()
+    # Right: all points with both fits; the restricted fit is drawn only over the range it was fit on
+    x_fit = np.array([x_all.min(), x_all.max()])
+    x_fit_in = np.clip(x_fit, -RESTRICTED_FIT_RANGE, RESTRICTED_FIT_RANGE)
+    fit_all = (beta, r_squared, x_fit, dict(lw=2))
+    fit_in = (beta_in, r_squared_in, x_fit_in, dict(lw=2.5, ls=':'))
+    draw_power_law(ax_pow, [fit_all, fit_in])
+    fig.tight_layout()
+
+    # Separate figure: only the points within RESTRICTED_FIT_RANGE, with their (dotted) fit
+    draw_power_law(ax_pow_in, [fit_in], x_limit=RESTRICTED_FIT_RANGE)
+    fig_in.tight_layout()
+
     plt.show()
 
 
@@ -266,15 +286,18 @@ def Dario_fig3(dyn, stim_gen):
 
     print("\n--- Running Adaptation Stage ---")
     print("Adapting to high contrast stream...")
-    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=0, adapt_location=ADAPT_LOC))
+    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=0, adapt_location=ADAPT_LOC,
+                                                         duration=STIMULUS_STEPS))
     state_hi = dyn.last_state
 
     print("Adapting to medium contrast stream...")
-    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-1.5, adapt_location=ADAPT_LOC))
+    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-1.5, adapt_location=ADAPT_LOC,
+                                                         duration=STIMULUS_STEPS))
     state_med = dyn.last_state
 
     print("Adapting to low contrast stream...")
-    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-3, adapt_location=ADAPT_LOC))
+    dyn.run_simulation(stim_gen.generate_contrast_stream(peak_ln_contrast=-3, adapt_location=ADAPT_LOC,
+                                                         duration=STIMULUS_STEPS))
     state_lo = dyn.last_state
 
     probe_contrasts   = np.logspace(np.log10(0.04), np.log10(1.0), 20)
@@ -296,7 +319,8 @@ def Dario_fig3(dyn, stim_gen):
         for c in tqdm(probe_contrasts, desc=f"{label} contrast sweep", leave=True):
             resp = np.zeros((N_RF, PROBE_RES))
             for i, angle in enumerate(probe_angles_fig3):
-                y = get_response_offline(dyn, probe_input_drive(angle, c), M)
+                probe = stim_gen.oriented_drive(angle, c, 'adapt CRF and surround')
+                y = get_response_offline(dyn, probe, M)
                 resp[:, i] = y[:N_RF]
             _, mu_c, var_c = calc_moments(resp)
             mus.append(np.nanmean(mu_c))
@@ -336,13 +360,13 @@ if __name__ == "__main__":
     print("Initializing tunings, frame, stimulus generator, and dynamics...")
     tunings = V1Tunings(N=N_RF)
     frame = Frame(csv_path=FRAME_PATH)
-    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, stream_length=STREAM_LENGTH, contrast=ADAPT_CONTRAST)
-    dyn = V1Dynamics_Surround(tunings, frame, N_RF=N_RF, N_SETS=N_SETS,
+    stim_gen = StimulusGenerator(N_RF=N_RF, N_SETS=N_SETS, num_angles=N_RF, stream_length=ADAPTATION_STEPS, contrast=ADAPT_CONTRAST)
+    dyn = V1Dynamics_Surround(tunings, frame, dt=DT, N_RF=N_RF, N_SETS=N_SETS,
                                target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
 
     # Calibrate theta_t once, from a genuinely unbiased stream at a fixed low contrast (kept
     # separate from whatever contrast either figure below actually probes at - see
-    # Surround_simulated_responses.run_adaptation_phase's 'no adaptation' condition, same idea).
+    # adapt_ensembles.run_adaptation_phase's 'no adaptation' condition, same idea).
     # Shared by both figures, per the model's "fixed developmental prior" design
     # (docs/whitening_adaptation_notes.md).
     print("Calibrating theta_t...")

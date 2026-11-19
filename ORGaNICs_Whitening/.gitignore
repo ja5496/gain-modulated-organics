@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 *.pyd
 .DS_Store
+
+# Simulation outputs (regenerate with the scripts in analysis/)
+results/

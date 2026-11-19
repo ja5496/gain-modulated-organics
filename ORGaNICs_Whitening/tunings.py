@@ -3,9 +3,9 @@ import matplotlib.pyplot as plt
 from scipy.linalg import block_diag
 
 '''
----- tunings_whiten.py ----
+---- tunings.py ----
 This script generates recurrent weights for the primary neurons used by 
-simulation_whiten.py. Curves are raised cosine functions. 
+simulation.py. Curves are raised cosine functions. 
 
 '''
 

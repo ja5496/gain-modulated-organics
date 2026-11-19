@@ -62,7 +62,7 @@ assumptions -- flag any of these if they don't match intent:
      mean = variance = lambda and cannot itself be "centered at zero"; the mean-zero
      Gaussian version imposes that same variance-scales-with-the-mean statistic as an
      additive jitter on top of the deterministic profile (same mechanism as
-     stimuli_whiten.py's add_poisson_noise, Var = poisson_fano * mean). Repeated
+     stimuli.py's add_poisson_noise, Var = poisson_fano * mean). Repeated
      presentations are required: a single deterministic pass per category (as used for
      the noise-free Panel-1 ensembles) has no trial-to-trial variability to form a
      covariance from.
@@ -94,13 +94,13 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, FancyArrowPatch, Circle, Arc
 from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgba
-from stimuli_whiten import StimulusGenerator
-from frame_whiten import Frame
+from stimuli import StimulusGenerator
+from frame import Frame
 
 N_RF              = 13
 TUNING_WIDTH      = 0.75
 ENSEMBLE_CONTRAST = 0.6
-SIGMA_NORM        = 0.25    # matches frame_whiten.compute_uniform_target_covariance / V1Dynamics_Surround
+SIGMA_NORM        = 0.25    # matches frame.compute_uniform_target_covariance / V1Dynamics_Surround
 N_TRIALS_POISSON  = 200     # independent noisy replays used to estimate a Poisson-variance ensemble's covariance (Panel 2)
 FANO_VALUES       = [0.001, 0.01, 0.05, 0.1, 0.5]   # Panel 2's sweep (Fano=1.0 dropped from the plot by request)
 EIGVEC_FANO_VALUES = [0.0, 0.001, 0.01, 0.5]         # plot_eigenvector_heatmaps' 2x2 sweep
@@ -150,7 +150,7 @@ def add_poisson_variance(profile, n_trials, fano, rng):
     later in normalize_profiles -- with per-neuron variance = fano * that neuron's own
     drive on that presentation: noise_i ~ N(0, fano * profile_i). This is the Gaussian
     approximation to Poisson trial variability (Var = fano*mean, matching
-    stimuli_whiten.py's add_poisson_noise), NOT literal discrete Poisson sampling: an
+    stimuli.py's add_poisson_noise), NOT literal discrete Poisson sampling: an
     actual Poisson count is a non-negative integer with mean = variance = lambda and
     cannot be "centered at zero" -- the mean-zero Gaussian version imposes that same
     variance-scales-with-the-mean statistic as an additive jitter on the deterministic
@@ -394,7 +394,7 @@ def plot_covariance_whitening_frame(n_points=300, theta_t=1.0, std_major=2.0, st
                                      rotation_deg=35.0, n_std=1.5, seed=0, save_path=None):
     '''
     Figure 1 -- geometric intuition for a covariance transformation: an overcomplete 2D
-    frame (Mercedes frame, K=3 vectors w_1,w_2,w_3 for N=2, per frame_whiten.Frame) whitens
+    frame (Mercedes frame, K=3 vectors w_1,w_2,w_3 for N=2, per frame.Frame) whitens
     an anisotropic data cloud down to an isotropic one of radius theta_t.
 
     Construction:
@@ -408,7 +408,7 @@ def plot_covariance_whitening_frame(n_points=300, theta_t=1.0, std_major=2.0, st
         theta_t^2 * I for this exact finite sample, not just approximately after averaging --
         the drawn n_std-circle is therefore an exact fit to the transformed scatter, matching
         the drawn n_std-ellipse's exact fit to the original scatter.
-      - The Mercedes frame (frame_whiten.Frame(dim=2, frame_type='mercedes_tight'), an exact
+      - The Mercedes frame (frame.Frame(dim=2, frame_type='mercedes_tight'), an exact
         unit-norm TIGHT frame -- see that module's docstring) supplies w_1, w_2, w_3, drawn as
         arrows from the origin reaching just past the ORIGINAL ellipse's boundary (length tied
         to std_major, not to theta_t): at the theta_t/std_minor gap used here, an arrow scaled

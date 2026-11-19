@@ -1,0 +1,59 @@
+# paper.mplstyle - journal style for paper figures (Nature-family conventions).
+# Figures are drawn at final printed size: single column 89 mm, double column 183 mm
+# (see figures/_style.py for the width constants). Text 5-7 pt, sans-serif, lowercase bold
+# panel letters at 8 pt. Fonts embedded as TrueType (pdf.fonttype 42) so text stays editable.
+
+font.family:        sans-serif
+font.sans-serif:    Arial, Helvetica, Liberation Sans, DejaVu Sans
+mathtext.fontset:   custom
+mathtext.rm:        sans
+mathtext.it:        sans:italic
+mathtext.bf:        sans:bold
+mathtext.cal:       sans
+mathtext.fallback:  stixsans
+
+font.size:          7
+axes.labelsize:     7
+axes.titlesize:     7
+xtick.labelsize:    6
+ytick.labelsize:    6
+legend.fontsize:    6
+
+axes.linewidth:     0.5
+axes.spines.top:    False
+axes.spines.right:  False
+axes.labelpad:      2
+axes.titlepad:      3
+axes.edgecolor:     black
+axes.labelcolor:    black
+axes.prop_cycle:    cycler('color', ['0072B2', 'D55E00', '009E73', 'CC79A7', 'E69F00', '56B4E9', 'F0E442', '000000'])
+
+xtick.major.width:  0.5
+ytick.major.width:  0.5
+xtick.minor.width:  0.4
+ytick.minor.width:  0.4
+xtick.major.size:   2.5
+ytick.major.size:   2.5
+xtick.minor.size:   1.5
+ytick.minor.size:   1.5
+xtick.major.pad:    1.5
+ytick.major.pad:    1.5
+xtick.direction:    out
+ytick.direction:    out
+
+lines.linewidth:    1.0
+lines.markersize:   3
+lines.solid_capstyle: round
+
+legend.frameon:     False
+legend.handlelength: 1.5
+legend.handletextpad: 0.4
+legend.borderaxespad: 0.2
+legend.labelspacing: 0.25
+
+figure.dpi:         150
+savefig.dpi:        600
+savefig.transparent: False
+pdf.fonttype:       42
+ps.fonttype:        42
+svg.fonttype:       none

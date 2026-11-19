@@ -2,13 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
-from tunings_whiten import V1Tunings
-from stimuli_whiten import StimulusGenerator
+from tunings import V1Tunings
+from stimuli import StimulusGenerator
 from scipy.special import erf
 from scipy.linalg import block_diag
 
 '''
----- simulation_whiten.py ----
+---- simulation.py ----
 
 Stores RK4 Dynamics and simulation code for computational neural modeling of joint 
 adaptation and normalization in V1. Dynamics are designed for orientation adaptation. 
@@ -159,8 +159,8 @@ class V1Dynamics:
 class V1Dynamics_Surround:
     def __init__(self, v1_model, frame, dt=0.1, N_RF = 13, N_SETS = 7,
                  target_covariance_path="data/target_covs/uniform_target_covariance_high_c.csv",
-                 gains_nonneg=False, surround_delay=0.0):
-        self.v1 = v1_model     # Refers to tunings_whiten.py
+                 gains_nonneg=False, surround_delay=0.0, N_matrix=None):
+        self.v1 = v1_model     # Refers to tunings.py
         self.frame = frame     # Overcomplete frame (W)
         self.dt = dt           # Time step of simulation
         self.N_RF = N_RF       # Number of neurons in each small receptive field
@@ -168,8 +168,9 @@ class V1Dynamics_Surround:
         N_TOT = N_RF * N_SETS  # Total number of neurons in cRF and Surround
         # If True, g_cRF/g_surround are clamped to >=0 after every RK4 step in run_simulation, for
         # the entire adaptation phase - dg/dt itself has no such floor (it's a plain difference of
-        # squared terms, see _derivatives), so without this g can go negative and gain feedback
-        # (W @ (g*v)) can turn facilitatory rather than strictly suppressive.
+        # squared terms, see _derivatives), so without this g can go negative and v = low-pass of
+        # g * c flips sign. (Even with g >= 0 the feedback u+ * W @ v is not strictly suppressive:
+        # frame columns have mixed signs, so c and hence v can be negative.)
         self.gains_nonneg = gains_nonneg
 
         # Make single-RF W_yy block-diagonal (N_TOT, N_TOT):
@@ -178,16 +179,34 @@ class V1Dynamics_Surround:
             f"construct V1Tunings with N=N_RF (got shape {v1_model.W_yy.shape})."
         )
         self.W_yy = block_diag(*[v1_model.W_yy] * N_SETS)
-        # Normalization pool spans cRF and surround: every one of the N_TOT neurons pools together.
-        # Kept as a public attribute for callers that read it directly (e.g.
-        # Surround_simulated_responses.py's get_response_offline/frozen_derivatives,
-        # convergence_tests.py's analytic_response_operator) even though _derivatives itself now
-        # builds pool_cRF/pool_surround explicitly instead of matrix-multiplying by this.
-        self.N_matrix = np.ones((N_TOT, N_TOT))
+        # Normalization weights N (Eq. du), (N_TOT, N_TOT); default all ones (every neuron pools
+        # every neuron). _derivatives pools through it row by row, and response_tools.py's
+        # get_response_offline/frozen_derivatives read it directly. u/a/g/v/mu keep ONE shared
+        # representative surround copy (surround set 1). For identical stimuli in every surround set
+        # that copy is exact iff, for every surround set k, (i) k receives the same weights from the
+        # cRF as set 1, and (ii) k's weights from all surround sets, summed over sets (an N_RF x N_RF
+        # block), equal set 1's. Both are asserted here. Not checkable here: the surround sets must
+        # also receive identical stimuli and start from identical states.
+        if N_matrix is None:
+            N_matrix = np.ones((N_TOT, N_TOT))
+        N_matrix = np.asarray(N_matrix, dtype=float)
+        assert N_matrix.shape == (N_TOT, N_TOT), (
+            f"N_matrix must be ({N_TOT}, {N_TOT}) (got {N_matrix.shape})")
+
+        def from_surround(k):   # set k's rows over the surround columns, summed over source sets
+            return N_matrix[k*N_RF:(k+1)*N_RF, N_RF:].reshape(N_RF, N_SETS - 1, N_RF).sum(axis=1)
+        for k in range(2, N_SETS):
+            assert np.allclose(N_matrix[k*N_RF:(k+1)*N_RF, :N_RF], N_matrix[N_RF:2*N_RF, :N_RF]), (
+                f"surround set {k} receives different cRF weights than set 1 - the shared "
+                f"representative surround copy would be wrong")
+            assert np.allclose(from_surround(k), from_surround(1)), (
+                f"surround set {k} pools the surround differently from set 1 - the shared "
+                f"representative surround copy would be wrong")
+        self.N_matrix = N_matrix
 
         # Target covariance of one RF's responses to a uniform ensemble (see
-        # frame_whiten.py:compute_uniform_target_covariance)
-        self.uniform_target_covariance = np.loadtxt(target_covariance_path, delimiter=",")
+        # frame.py:compute_uniform_target_covariance)
+        self.uniform_target_covariance = 1.0*np.loadtxt(target_covariance_path, delimiter=",")
         assert self.uniform_target_covariance.shape == (N_RF, N_RF), (
             f"uniform_target_covariance at {target_covariance_path} has shape "
             f"{self.uniform_target_covariance.shape}, expected ({N_RF}, {N_RF})."
@@ -195,12 +214,12 @@ class V1Dynamics_Surround:
 
         self.theta_t = np.full(self.frame.K, 1.0) # Initial overestimate of target variances (not the values that will be used)
 
-        self.tau_y = 0.2       # time constant of primary neuron (fast)
-        self.tau_a = 0.1       # time constant of inhibitory neurons in normalization pool (fast)
-        self.tau_u = 15.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
-        self.tau_g = 2500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
-        self.tau_v = 20.0    # time constant of excitatory neurons in normalization pool (medium to fast)
-        self.tau_mu = 100000.0  # time constant of mean-response tracker (very slow, full context window needed)
+        self.tau_y = 0.4       # time constant of primary neuron (fast)
+        self.tau_a = 0.2       # time constant of inhibitory neurons in normalization pool (fast)
+        self.tau_u = 5.0      # time constant of excitatory neurons in normalization pool (fast, slower than y, a)
+        self.tau_g = 500.0   # time constant of excitatory neurons in normalization pool (very slow, full context window needed)
+        self.tau_v = 30.0    # time constant of excitatory neurons in normalization pool (medium to fast)
+        self.tau_mu = 2000.0  # time constant of mean-response tracker (very slow, basically sets a prior)
 
         self.sigma = 0.15      # semi-saturation constant in the equations (adjusted to give simulation sigma ~ 0.15)
         self.beta = 0.5        # Constant input gain, beta = 1/2 for normalization fixed point derivation
@@ -226,11 +245,11 @@ class V1Dynamics_Surround:
         self._off_v_cRF = self._off_g_surround + K
         self._off_v_surround = self._off_v_cRF + K
         self._off_mu_cRF = self._off_v_surround + K
-        self._off_mu_surround = self._off_mu_cRF + N_RF
-        self.state_size = self._off_mu_surround + N_RF
+        self._off_mu_surround = self._off_mu_cRF + K
+        self.state_size = self._off_mu_surround + K
 
     def set_surround_delay(self, surround_delay):
-        '''Set (or change) the surround->cRF communication delay, in seconds. 0.0 (default)
+        '''Set (or change) the surround->cRF communication delay, in ms (the time constants' units). 0.0 (default)
         reproduces the model's pre-delay behavior exactly. Callable after construction so a
         caller can compare multiple delays without reconstructing/recalibrating theta_t.'''
         assert surround_delay >= 0, f"surround_delay must be >= 0 (got {surround_delay})"
@@ -252,19 +271,21 @@ class V1Dynamics_Surround:
             g_surround=state[self._off_g_surround:self._off_g_surround+K],
             v_cRF=state[self._off_v_cRF:self._off_v_cRF+K],
             v_surround=state[self._off_v_surround:self._off_v_surround+K],
-            mu_cRF=state[self._off_mu_cRF:self._off_mu_cRF+N_RF],
-            mu_surround=state[self._off_mu_surround:self._off_mu_surround+N_RF],
+            mu_cRF=state[self._off_mu_cRF:self._off_mu_cRF+K],
+            mu_surround=state[self._off_mu_surround:self._off_mu_surround+K],
         )
 
     def half_wave_rectify(self, y, alpha=2.0):  # Used to estimate firing rates from membrane potential
         return (np.maximum(y,0)) ** alpha       # Rectify and raise to the power Beta (NOT input gain)
 
-    def calibrate_theta_t(self, v_cRF_hist=None, v_surround_hist=None, mu_cRF_hist=None, mu_surround_hist=None, C_zz_uniform=None,  
+    def calibrate_theta_t(self, c_cRF_hist=None, c_surround_hist=None, mu_cRF_hist=None, mu_surround_hist=None, C_zz_uniform=None,
                           verbose=True, circular_target=False, uniform_target=False):
         '''
         `circular` covariance target:
-            Sets self.theta_t as the mean of the empirical variance of (v - W.T@mu) over the second half 
-            histories so every interneuron shares one isotropic threshold. Returns the new theta_t. 
+            Sets self.theta_t as the mean of the empirical variance of (c - mu) over the second half
+            of the histories, so every interneuron shares one isotropic threshold. Returns the new
+            theta_t. c histories (K, n_steps) are W.T @ y_hist for that RF's rows of y_hist (y_hist
+            from run_simulation is already rectified); mu histories are run_simulation's (K, n_steps).
 
         `uniform` covariance target:
             Sets self.theta_t from the covariance of the uniform ensemble with no noise (C_zz_uniform). 
@@ -274,9 +295,9 @@ class V1Dynamics_Surround:
         overwrite is intentionally never a silent side effect.
         '''
         if circular_target:
-            half = v_cRF_hist.shape[1] // 2
-            resid_cRF = v_cRF_hist[:, half:] - self.frame.W.T @ mu_cRF_hist[:, half:]
-            resid_surround = v_surround_hist[:, half:] - self.frame.W.T @ mu_surround_hist[:, half:]
+            half = c_cRF_hist.shape[1] // 2
+            resid_cRF = c_cRF_hist[:, half:] - mu_cRF_hist[:, half:]
+            resid_surround = c_surround_hist[:, half:] - mu_surround_hist[:, half:]
             theta_t_before = self.theta_t.copy()
             self.theta_t = np.var(np.concatenate([resid_cRF, resid_surround], axis=1), axis=1)
             # Flatten to one scalar shared by every interneuron (isotropic target, i.e. the implied
@@ -298,19 +319,19 @@ class V1Dynamics_Surround:
         return self.theta_t
 
     def _surround_msg(self, state):
-        '''Surround's total instantaneous local pooling contribution, Sum_surround(y_plus *
-        u_plus**2), extracted from a raw (finalized) state vector. This is the "message" that
-        surround_delay clocks between the surround and the cRF (see _derivatives). Same formula
-        as _derivatives' surround_msg_now, kept in sync manually since this runs on a finalized
-        post-RK4-step state while that one runs on a live sub-step state. 0.0 at N_SETS==1 (no
-        surround blocks exist).'''
+        '''Surround's instantaneous contribution to each cRF neuron's pool (Eq. du),
+        N[cRF, surround] @ (y_plus * u_plus**2)_surround, shape (N_RF,), from a raw (finalized)
+        state vector. This is the "message" that surround_delay clocks between the surround and
+        the cRF (see _derivatives). Same formula as _derivatives' surround_msg_now, kept in sync
+        manually since this runs on a finalized post-RK4-step state while that one runs on a live
+        sub-step state. Zeros at N_SETS==1 (no surround blocks exist).'''
         N_RF, N_SETS = self.N_RF, self.N_SETS
         if N_SETS < 2:
-            return 0.0
+            return np.zeros(N_RF)
         y_plus_surround = self.half_wave_rectify(state[N_RF:N_RF*N_SETS], 2.0)
         u_plus_surround = self.half_wave_rectify(
             state[self._off_u_surround:self._off_u_surround+N_RF], 0.5)
-        return float(np.sum(y_plus_surround * (np.tile(u_plus_surround, N_SETS - 1) ** 2)))
+        return self.N_matrix[:N_RF, N_RF:] @ (y_plus_surround * (np.tile(u_plus_surround, N_SETS - 1) ** 2))
 
     def _derivatives(self, state, z_t, surround_msg_delayed):
         K = self.frame.K
@@ -338,9 +359,9 @@ class V1Dynamics_Surround:
         v_cRF = state[self._off_v_cRF:self._off_v_cRF+K]
         v_surround = state[self._off_v_surround:self._off_v_surround+K]
 
-        # Slow mean trackers:
-        mu_cRF = state[self._off_mu_cRF:self._off_mu_cRF+N_RF]
-        mu_surround = state[self._off_mu_surround:self._off_mu_surround+N_RF]
+        # Slow mean trackers of c (K each):
+        mu_cRF = state[self._off_mu_cRF:self._off_mu_cRF+K]
+        mu_surround = state[self._off_mu_surround:self._off_mu_surround+K]
 
         # Rectifications consistent with Asit's 'Heirarchical ORGaNICs' paper
         u_plus_cRF = self.half_wave_rectify(u_cRF, 0.5)
@@ -354,57 +375,68 @@ class V1Dynamics_Surround:
         # below - built from the split blocks exactly like full_gain_feedback already
         # concatenates cRF_gain_feedback/surround_gain_feedback further down.
         a_plus_full = np.concatenate([a_plus_cRF] + [a_plus_surround] * (N_SETS - 1))
+        u_plus_full = np.concatenate([u_plus_cRF] + [u_plus_surround] * (N_SETS - 1))
 
         theta_t = self.theta_t
 
         # At N_SETS=1 there is no surround block at all (y only holds the cRF's own N_RF
         # entries) - y[N_RF:2*N_RF] would otherwise silently come back empty and break every
-        # broadcast below against the (always N_RF/K-sized) mu_surround/v_surround/g_surround
-        # state. Treat the nonexistent surround as driven by zero input instead: mu_surround
-        # and v_surround then just decay toward 0 from their (zero) initial state and stay
+        # broadcast below against the (always K-sized) mu_surround/v_surround/g_surround
+        # state. Treat the nonexistent surround as driven by zero input instead: c_surround = 0,
+        # so mu_surround and v_surround decay toward 0 from their (zero) initial state and stay
         # there, and g_surround's target term becomes the constant -theta_t/tau_g, clamped to
         # 0 by run_simulation's gains_nonneg floor - i.e. surround adaptation is genuinely inert,
         # matching the single-RF (no surround) model this represents.
-        y_surround = y[N_RF:2*N_RF] if N_SETS >= 2 else np.zeros(N_RF)
+        sqrt_y_plus_surround = sqrt_y_plus[N_RF:2*N_RF] if N_SETS >= 2 else np.zeros(N_RF)
 
-        # Slow mean-tracking dynamics:
-        dmu_cRF_dt = (-mu_cRF + y[:N_RF]) / self.tau_mu
-        dmu_surround_dt = (-mu_surround + y_surround) / self.tau_mu
+        # c = W_yv^T sqrt(y+): input current to the v interneurons (Eqs. dv, dg, dmu), computed
+        # once per evaluation from the current y. Surround uses the representative set 1.
+        c_cRF = self.frame.W.T @ sqrt_y_plus[:N_RF]
+        c_surround = self.frame.W.T @ sqrt_y_plus_surround
 
-        # cRF Adaptation Dynamics
-        dg_cRF_dt = ((v_cRF - self.frame.W.T @ mu_cRF) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
-        dv_cRF_dt = (-v_cRF + self.frame.W.T @ y[:N_RF]) / self.tau_v # Estimation of variance of cRF neurons
-        cRF_gain_feedback = self.frame.W @ (g_cRF * v_cRF) # unchanged: suppression still scales with raw v_cRF, not the mean-corrected version
+        # Eq. dmu: running mean of c (K per RF)
+        dmu_cRF_dt = (-mu_cRF + c_cRF) / self.tau_mu
+        dmu_surround_dt = (-mu_surround + c_surround) / self.tau_mu
 
-        # Surround Adaptation Dynamics
-        dg_surround_dt = ((v_surround - self.frame.W.T @ mu_surround) ** 2 - theta_t) / self.tau_g # mean-corrected target set to theta_t (see above)
-        dv_surround_dt = (-v_surround + self.frame.W.T @ y_surround) / self.tau_v # Estimation of variance of surround neurons, using one surround RF and generalizing
-        surround_gain_feedback = self.frame.W @ (g_surround * v_surround) # unchanged: suppression still scales with raw v_surround
+        # Eq. dg: gains track the instantaneous squared deviation of c from its mean
+        dg_cRF_dt = ((c_cRF - mu_cRF) ** 2 - theta_t) / self.tau_g
+        dg_surround_dt = ((c_surround - mu_surround) ** 2 - theta_t) / self.tau_g
+
+        # Eq. dv: v low-pass filters the gain-scaled input g * c
+        dv_cRF_dt = (-v_cRF + g_cRF * c_cRF) / self.tau_v
+        dv_surround_dt = (-v_surround + g_surround * c_surround) / self.tau_v
+
+        # Eq. dy: gain feedback W_yv v (gated by u+ below); g already enters through v
+        cRF_gain_feedback = self.frame.W @ v_cRF
+        surround_gain_feedback = self.frame.W @ v_surround
 
         # W_yy @ sqrt(y1+), rectified/one-sided per Asit's equation (DC_y1_dynamics) -- the
         # old (sqrt_y_plus - sqrt_y_minus) reduced to y itself (max(y,0)-max(-y,0) = y,
         # identically), silently cancelling the rectification. Matches V1Dynamics's own
         # (already-correct) recurrent_drive line above.
-        recurrent_drive = (1.0 / (1.0 + a_plus_full)) * (self.W_yy @ sqrt_y_plus)
-        input_drive = self.beta * z_t
+        recurrent_drive = (1.0 / (1.0 + a_plus_full)) * (self.W_yy @ sqrt_y_plus)  # Eq. dy: recurrent drive
+        input_drive = self.beta * z_t                                                # Eq. dy: input drive
 
-        # Local gain feedback matrix that can be applied to the full y dynamics
-        full_gain_feedback = (a_plus_full / (1 + a_plus_full)) * np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
+        # Eq. dy: gain feedback u+ * W_yv v, local to each RF (surround sets share one copy)
+        full_gain_feedback = u_plus_full * np.concatenate([cRF_gain_feedback]+[surround_gain_feedback]*(N_SETS-1))
 
         sigma_term = (self.sigma / 2) ** 2
 
-        # --- Surround-delay pooling split ---
-        # cRF's own instantaneous contribution to the shared pool - both pathways below use this
-        # fresh, at whichever state _derivatives is evaluated at (k1..k4 alike).
-        own_cRF_term = np.sum(y_plus[:N_RF] * (u_plus_cRF ** 2))
-        # Surround's total instantaneous contribution: sum over ALL N_SETS-1 surround blocks'
-        # own y_plus*u_plus**2 (shared representative u_plus_surround, tiled). 0 at N_SETS==1.
-        surround_msg_now = (np.sum(y_plus[N_RF:] * (np.tile(u_plus_surround, N_SETS - 1) ** 2))
-                             if N_SETS >= 2 else 0.0)
+        # --- Eq. du: normalization pool N (y_plus * u_plus**2), split for the surround delay ---
+        # Per-neuron pool drive; surround blocks use the shared representative u_plus_surround, tiled.
+        u_plus_full = np.concatenate([u_plus_cRF] + [u_plus_surround] * (N_SETS - 1))
+        pool_drive = y_plus * (u_plus_full ** 2)
+        # Eq. du: cRF rows of N acting on the cRF's own neurons - used fresh at every RK4 substep.
+        own_cRF_term = self.N_matrix[:N_RF, :N_RF] @ pool_drive[:N_RF]
+        # Eq. du: cRF rows of N acting on the surround neurons (zeros at N_SETS==1). Same formula
+        # as _surround_msg.
+        surround_msg_now = (self.N_matrix[:N_RF, N_RF:] @ pool_drive[N_RF:]
+                            if N_SETS >= 2 else np.zeros(N_RF))
 
-        # Surround pathway: computed as normal, no delay - identical in value to the old single
-        # global pool_term, regardless of surround_delay/n_lag.
-        pool_surround = own_cRF_term + surround_msg_now
+        # Eq. du: surround pathway - the representative surround set's rows of N over the whole
+        # population, no delay, regardless of surround_delay/n_lag.
+        pool_surround = (self.N_matrix[N_RF:2*N_RF, :] @ pool_drive
+                         if N_SETS >= 2 else np.zeros(N_RF))
 
         # cRF pathway: the surround's contribution arrives surround_delay seconds late. At
         # n_lag==0 (the default), reuse surround_msg_now directly instead of run_simulation's
@@ -468,13 +500,14 @@ class V1Dynamics_Surround:
         g_surround_hist = np.zeros((K, n_steps))
         v_cRF_hist = np.zeros((K, n_steps))
         v_surround_hist = np.zeros((K, n_steps))
-        mu_cRF_hist = np.zeros((N_RF, n_steps))
-        mu_surround_hist = np.zeros((N_RF, n_steps))
+        mu_cRF_hist = np.zeros((K, n_steps))
+        mu_surround_hist = np.zeros((K, n_steps))
 
-        # Delayed-surround-message buffer (see _derivatives/_surround_msg). surround_msg_hist[t]
-        # holds the surround's total pooling contribution computed from the state AFTER step t's
-        # RK4 update - read back n_lag steps later, held at surround_msg_baseline before that.
-        surround_msg_hist = np.zeros(n_steps)
+        # Delayed-surround-message buffer (see _derivatives/_surround_msg). surround_msg_hist[:, t]
+        # holds the surround's contribution to each cRF neuron's pool, computed from the state AFTER
+        # step t's RK4 update - read back n_lag steps later, held at surround_msg_baseline (scalar
+        # or (N_RF,)) before that.
+        surround_msg_hist = np.zeros((N_RF, n_steps))
 
         mode_str = "Adaptive"
         print(f"Running {mode_str} Simulation ({n_steps} steps)...")
@@ -483,7 +516,7 @@ class V1Dynamics_Surround:
         for t in tqdm(range(n_steps)):
             z_t = stimulus_stream[:, t]
             lag_idx = t - n_lag
-            surround_msg_delayed = surround_msg_hist[lag_idx] if lag_idx >= 0 else surround_msg_baseline
+            surround_msg_delayed = surround_msg_hist[:, lag_idx] if lag_idx >= 0 else surround_msg_baseline
 
             # RK4 Simulation
             k1 = self._derivatives(state, z_t, surround_msg_delayed)
@@ -506,10 +539,10 @@ class V1Dynamics_Surround:
             g_surround_hist[:, t] = state[self._off_g_surround:self._off_g_surround+K]
             v_cRF_hist[:, t] = state[self._off_v_cRF:self._off_v_cRF+K]
             v_surround_hist[:, t] = state[self._off_v_surround:self._off_v_surround+K]
-            mu_cRF_hist[:, t] = state[self._off_mu_cRF:self._off_mu_cRF+N_RF]
-            mu_surround_hist[:, t] = state[self._off_mu_surround:self._off_mu_surround+N_RF]
+            mu_cRF_hist[:, t] = state[self._off_mu_cRF:self._off_mu_cRF+K]
+            mu_surround_hist[:, t] = state[self._off_mu_surround:self._off_mu_surround+K]
 
-            surround_msg_hist[t] = self._surround_msg(state)
+            surround_msg_hist[:, t] = self._surround_msg(state)
 
         print(f"Simulation complete in {time.time() - t0:.2f}s.")
         self.last_state = state.copy()

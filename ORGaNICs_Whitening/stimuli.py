@@ -3,14 +3,14 @@ import matplotlib.pyplot as plt
 from typing import Literal
 
 '''
----- stimuli_whiten.py ----
+---- stimuli.py ----
 Generates synthetic LGN responses to orientation gratings using gaussian functions.
 These responses are fed into our V1 dynamics as the input layer. 
 
 '''
 
 class StimulusGenerator:
-    def __init__(self, N=60, num_angles = 26, stream_length = 10920, tuning_width = 0.75, contrast=1.0, N_RF = 13, N_SETS = 5):
+    def __init__(self, N=13, num_angles = 26, stream_length = 10920, tuning_width = 0.75, contrast=1.0, N_RF = 13, N_SETS = 5):
         self.N = N # Number of primary neurons
         self.num_angles = num_angles # Number of distinct input orientations
         self.stream_length = stream_length # Total length of the input stream
@@ -24,6 +24,13 @@ class StimulusGenerator:
         self.theta_inputs = np.linspace(0, np.pi, num_angles, endpoint=False)
         # Preferred orientations of the N_RF receptive-field neurons. 
         self.theta_RF = np.linspace(0, np.pi, N_RF, endpoint=False)
+
+        # Fixed input bound: the norm of a contrast-1 grating covering all N_SETS RFs (its largest
+        # over orientation). generate_surround_ensembles and oriented_drive divide every stimulus by
+        # it, rather than by the stimulus's own norm, so each RF's drive depends only on its own input.
+        theta = np.linspace(0, np.pi, 100 * N_RF, endpoint=False)   # includes every neuron's preference
+        delta = (self.theta_RF[:, None] - theta[None, :] + np.pi/2) % np.pi - np.pi/2
+        self.max_drive = np.sqrt(N_SETS) * np.linalg.norm(np.exp(-delta**2 / (2 * tuning_width**2)), axis=0).max()
 
         
     def generate_input_ensembles(self, biased=False, mean_center=False,
@@ -168,10 +175,11 @@ class StimulusGenerator:
         # N_RF receptive-field neurons' own tuning curves - matrix of shape (N_RF, stream_length).
         delta_theta = self.theta_RF[:, np.newaxis] - centers[np.newaxis, :]
         delta_theta = (delta_theta + np.pi/2) % np.pi - np.pi/2  # wrap to [-π/2, π/2]
-        profile = np.exp(-delta_theta**2 / (2 * self.tuning_width**2)) 
+        profile = self.contrast * np.exp(-delta_theta**2 / (2 * self.tuning_width**2))   # contrast scales the stimulus only
 
-        # Extend each individual profile from N_RF neurons to the full N_RF * N_SETS population:
-        baseline = np.full((self.N_RF, profile.shape[1]), 0.2)
+        # Extend each individual profile from N_RF neurons to the full N_RF * N_SETS population;
+        # RFs the stimulus doesn't cover get a fixed, contrast-independent baseline:
+        baseline = np.full((self.N_RF, profile.shape[1]), 0.15)
         match adapt_location:
             case 'no adaptation':
                 full_profile = np.concatenate([baseline] * (self.N_SETS), axis=0)
@@ -182,8 +190,8 @@ class StimulusGenerator:
             case 'adapt CRF and surround':
                 full_profile = np.concatenate([profile] * (self.N_SETS), axis=0)
 
-        # 5. Normalize the full population vector to unit length, then scale by contrast.
-        profiles = self.contrast * full_profile / np.linalg.norm(full_profile, keepdims=True, axis=0)
+        # 5. Divide by the fixed input bound (see __init__), not by each stimulus's own norm.
+        profiles = full_profile / self.max_drive
 
         if add_poisson_noise:
             # Gaussian approximation to Poisson noise, applied independently at every
@@ -214,16 +222,43 @@ class StimulusGenerator:
 
         if return_angles:
             return profiles, centers
-        
+
 
         return profiles
-    
+
+    def oriented_drive(self, theta, contrast, adapt_location: Literal['no adaptation', 'adapt CRF only', 'adapt surround only', 'adapt CRF and surround'],
+                       baseline=0.15):
+        '''
+        Single oriented stimulus centered at theta (radians): a Gaussian profile over the N_RF
+        neurons' preferences scaled by contrast, routed into adapt_location exactly as in
+        generate_surround_ensembles (fixed, contrast-independent baseline elsewhere), divided by
+        the fixed input bound max_drive.
+
+        Returns:
+            np.ndarray: Shape ( N_RF * N_SETS , )
+        '''
+        delta = (self.theta_RF - theta + np.pi / 2) % np.pi - np.pi / 2
+        profile = contrast * np.exp(-delta**2 / (2 * self.tuning_width**2))
+        base = np.full(self.N_RF, baseline)
+        match adapt_location:
+            case 'no adaptation':
+                full = np.concatenate([base] * self.N_SETS)
+            case 'adapt CRF only':
+                full = np.concatenate([profile] + [base] * (self.N_SETS - 1))
+            case 'adapt surround only':
+                full = np.concatenate([base] + [profile] * (self.N_SETS - 1))
+            case 'adapt CRF and surround':
+                full = np.concatenate([profile] * self.N_SETS)
+            case _:
+                raise ValueError(f"Unknown adapt_location: {adapt_location!r}")
+        return full / self.max_drive
 
     def generate_contrast_stream(self, peak_ln_contrast, adapt_location, contrast_sigma=1.0,
-                                 return_metadata=False, **kwargs):
+                                 return_metadata=False, duration=20, **kwargs):
         '''
         Generates a stimulus stream scaled by contrasts drawn from a truncated
         log-normal distribution bounded between e^-3 and 1 (i.e., ln(contrast) ∈ [-3, 0]).
+        Only the stimulus is scaled; RFs it doesn't cover keep the fixed baseline.
 
         Args:
             peak_ln_contrast (float): ln(contrast) at which the distribution peaks (mode in log-space).
@@ -232,21 +267,22 @@ class StimulusGenerator:
             contrast_sigma (float): Standard deviation of the underlying normal distribution.
             return_metadata (bool): If True, return (stream, angles_per_pres, contrasts_per_pres)
                 where angles_per_pres and contrasts_per_pres are per-stimulus-presentation arrays.
+            duration (int): Timesteps each stimulus (orientation and contrast) is held for.
             **kwargs: Arguments to pass to generate_surround_ensembles (e.g. biased, von_mises).
 
         Returns:
             np.ndarray or tuple: Contrast-scaled stream, or 3-tuple if return_metadata=True.
         '''
-        # 1. Generate base normalized profiles from generate_surround_ensembles
+        # 1. Generate base profiles (at self.contrast) from generate_surround_ensembles
         if return_metadata:
-            profiles, centers = self.generate_surround_ensembles(adapt_location, return_angles=True, **kwargs)
+            profiles, centers = self.generate_surround_ensembles(adapt_location, return_angles=True,
+                                                                 duration=duration, **kwargs)
         else:
-            profiles = self.generate_surround_ensembles(adapt_location, **kwargs)
+            profiles = self.generate_surround_ensembles(adapt_location, duration=duration, **kwargs)
 
         # 2. Determine number of distinct stimulus presentations from the actual
         #    profile length (uniform path truncates to complete cycles, so
         #    profiles.shape[1] may be shorter than self.stream_length)
-        duration = 20  # Matches generate_surround_ensembles's own default
         num_inputs = profiles.shape[1] // duration
 
         # 3. peak_ln_contrast is the mean of the underlying normal (mode in log-space)
@@ -268,8 +304,10 @@ class StimulusGenerator:
         # 5. Expand contrast array to match the temporal stream length
         contrast_stream = np.repeat(contrasts, duration)
 
-        # 6. Scale the normalized profiles via NumPy broadcasting
-        stream = profiles * contrast_stream
+        # 6. Scale the stimulus by each presentation's contrast; the fixed baseline in RFs it
+        #    doesn't cover stays as it is.
+        blank = self.oriented_drive(0.0, 0.0, adapt_location)[:, None]   # baseline only; theta unused
+        stream = blank + (profiles - blank) * contrast_stream
         if return_metadata:
             angles_per_pres = centers[::duration]   # one angle per presentation
             return stream, angles_per_pres, contrasts
