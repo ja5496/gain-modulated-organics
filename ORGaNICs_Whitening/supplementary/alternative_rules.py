@@ -72,6 +72,7 @@ GAIN_SUBSAMPLE = 10             # store every 10th step of the gain trajectories
 FANO = 0.0                      # Fano factor of the Poisson-like noise in the gain pathway (CLI --fano)
 PROTOCOL = 'single'             # 'single' (adapt_single_stimulus.py) or 'ensemble' (adapt_ensembles.py)
 NOISE = None                    # optional dict(kind, loc, amp, bin_steps) applied by build() (noise_sweep.py)
+VAR_NOISE = None                # optional noise dict applied to the variance-normalization rule only (CLI --variance-noise)
 VAR_SCALE = 1.0                 # variance-normalization targets = VAR_SCALE * diag(Sigma_target) (CLI --var-scale)
 
 RESULTS_BASE = os.path.join(HERE, 'results', 'alternative_rules')
@@ -80,7 +81,8 @@ FIG_STEM = os.path.join(HERE, 'figures', 'fig_alternative_rules')
 
 def _suffix():
     return (('' if PROTOCOL == 'single' else f'_{PROTOCOL}') + ('' if FANO == 0 else f'_fano{FANO:g}')
-            + ('' if VAR_SCALE == 1 else f'_varscale{VAR_SCALE:g}'))
+            + ('' if VAR_SCALE == 1 else f'_varscale{VAR_SCALE:g}')
+            + ('' if VAR_NOISE is None else '_varnoise'))
 
 
 def results_path():
@@ -168,9 +170,10 @@ def build(rule, stim_gen, target_cov_path=None):
                            gains_nonneg=True)
     if FANO > 0:   # --fano: Poisson-like noise in the gain pathway, resampled every step
         dyn.noise_kind, dyn.noise_loc, dyn.noise_amp, dyn.noise_bin_steps = 'poisson', 'gain', FANO, 1
-    if NOISE is not None:
-        dyn.noise_kind, dyn.noise_loc = NOISE['kind'], NOISE['loc']
-        dyn.noise_amp, dyn.noise_bin_steps = NOISE['amp'], NOISE['bin_steps']
+    noise = NOISE if NOISE is not None else (VAR_NOISE if rule == 'variance' else None)
+    if noise is not None:
+        dyn.noise_kind, dyn.noise_loc = noise['kind'], noise['loc']
+        dyn.noise_amp, dyn.noise_bin_steps = noise['amp'], noise['bin_steps']
     dyn.first_order = rule == 'first_order'
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True,
                           verbose=False)
@@ -307,6 +310,7 @@ def simulate(smoke=False):
                   target_cov=os.path.basename(ASS.TARGET_COV_PATH if single else AE.TARGET_COV_PATH),
                   frame=os.path.basename(ASS.FRAME_PATH),
                   first_order_contrast=FIRST_ORDER_CONTRAST, rules=RULE_LABEL, fano=FANO, var_scale=VAR_SCALE,
+                  variance_noise=VAR_NOISE,
                   git_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=REPO_ROOT,
                                             capture_output=True, text=True).stdout.strip(),
                   date=datetime.datetime.now().isoformat(timespec='seconds'))
@@ -346,7 +350,8 @@ def plot():
 
     for j, rule in enumerate(RULES):
         ax_c, ax_t = axes[:, j]
-        ax_c.set_title(RULE_LABEL[rule], fontsize=10, fontweight='bold', pad=10)
+        title = RULE_LABEL[rule] + ('\n(Poisson noise)' if (rule == 'variance' and VAR_NOISE is not None) else '')
+        ax_c.set_title(title, fontsize=10, fontweight='bold', pad=10)
 
         norm = d[f'{rule}/crf/no_adaptation'].max()
         for cond in ASS.CONDITIONS:
@@ -402,8 +407,21 @@ if __name__ == '__main__':
                     help="adaptation protocol: 'single' (adapt_single_stimulus.py) or 'ensemble' (adapt_ensembles.py)")
     ap.add_argument('--var-scale', type=float, default=1.0,
                     help='scale factor on the variance-normalization targets only')
+    ap.add_argument('--variance-noise', action='store_true',
+                    help='Poisson-like noise in the gain pathway (rho = 1: noise s.d. equal to the '
+                         'unadapted signal of the adaptor-tuned neuron; the strongest setting of '
+                         'noise_sweep.py) for the variance-normalization rule only')
     a = ap.parse_args()
     FANO = a.fano
+    if a.variance_noise:
+        # rho = 1 at s_ref = unadapted response of the adaptor-tuned cRF neuron to the cRF adaptor
+        _sg = StimulusGenerator(N_RF=ASS.N_RF, N_SETS=ASS.N_SETS, num_angles=ASS.N_RF,
+                                tuning_width=ASS.TUNING_WIDTH)
+        _dyn = build('variance', _sg)
+        _z = _sg.oriented_drive(ASS.ADAPTOR_THETA, ASS.ADAPTOR_CONTRAST, 'adapt CRF only')
+        _sref = float(get_response_offline(_dyn, _z, np.zeros((_z.size,) * 2), rectify=False)[:ASS.N_RF].max())
+        VAR_NOISE = dict(kind='poisson', loc='gain', amp=_sref, bin_steps=to_steps(1.0, ASS.DT))
+        print(f'variance-rule noise: Poisson, gain pathway, F = {_sref:.4f}, 1 ms bins')
     VAR_SCALE = a.var_scale
     PROTOCOL = a.protocol
     if a.smoke:
