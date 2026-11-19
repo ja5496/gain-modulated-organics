@@ -71,13 +71,15 @@ N_TARGET_ANGLES = 180           # orientations averaged to obtain theta_1
 GAIN_SUBSAMPLE = 10             # store every 10th step of the gain trajectories
 FANO = 0.0                      # Fano factor of the Poisson-like noise in the gain pathway (CLI --fano)
 PROTOCOL = 'single'             # 'single' (adapt_single_stimulus.py) or 'ensemble' (adapt_ensembles.py)
+VAR_SCALE = 1.0                 # variance-normalization targets = VAR_SCALE * diag(Sigma_target) (CLI --var-scale)
 
 RESULTS_BASE = os.path.join(HERE, 'results', 'alternative_rules')
 FIG_STEM = os.path.join(HERE, 'figures', 'fig_alternative_rules')
 
 
 def _suffix():
-    return ('' if PROTOCOL == 'single' else f'_{PROTOCOL}') + ('' if FANO == 0 else f'_fano{FANO:g}')
+    return (('' if PROTOCOL == 'single' else f'_{PROTOCOL}') + ('' if FANO == 0 else f'_fano{FANO:g}')
+            + ('' if VAR_SCALE == 1 else f'_varscale{VAR_SCALE:g}'))
 
 
 def results_path():
@@ -144,6 +146,8 @@ def build(rule, stim_gen, target_cov_path=None):
     dyn.first_order = rule == 'first_order'
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True,
                           verbose=False)
+    if rule == 'variance':
+        dyn.theta_t = VAR_SCALE * dyn.theta_t
     if rule == 'first_order':
         # Mean unadapted (g = 0) fixed-point response of the cRF neurons to a large grating at
         # contrast 0.8, averaged over orientations: one target shared by every interneuron.
@@ -271,7 +275,7 @@ def simulate(smoke=False):
                   stimulus_ms=None if single else AE.STIMULUS_DURATION,
                   target_cov=os.path.basename(ASS.TARGET_COV_PATH if single else AE.TARGET_COV_PATH),
                   frame=os.path.basename(ASS.FRAME_PATH),
-                  first_order_contrast=FIRST_ORDER_CONTRAST, rules=RULE_LABEL, fano=FANO,
+                  first_order_contrast=FIRST_ORDER_CONTRAST, rules=RULE_LABEL, fano=FANO, var_scale=VAR_SCALE,
                   git_commit=subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=REPO_ROOT,
                                             capture_output=True, text=True).stdout.strip(),
                   date=datetime.datetime.now().isoformat(timespec='seconds'))
@@ -365,8 +369,11 @@ if __name__ == '__main__':
                     help='Fano factor of the Poisson-like noise in the gain pathway (0 = none)')
     ap.add_argument('--protocol', choices=['single', 'ensemble'], default='single',
                     help="adaptation protocol: 'single' (adapt_single_stimulus.py) or 'ensemble' (adapt_ensembles.py)")
+    ap.add_argument('--var-scale', type=float, default=1.0,
+                    help='scale factor on the variance-normalization targets only')
     a = ap.parse_args()
     FANO = a.fano
+    VAR_SCALE = a.var_scale
     PROTOCOL = a.protocol
     if a.smoke:
         simulate(smoke=True)
