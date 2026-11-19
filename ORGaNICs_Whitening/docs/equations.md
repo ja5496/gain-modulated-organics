@@ -34,7 +34,7 @@ Time constants:
 |---|---|---|---|---|---|
 | 0.2 ms | 15.0 ms | 0.1 ms | 15.0 ms | 2.0 s | 2.0 s |
 
-These are the manuscript's values. `simulation.V1Dynamics_Surround` currently uses $\tau_y = 0.4$ ms, $\tau_u = 5$ ms, $\tau_a = 0.2$ ms, $\tau_v = 30$ ms, $\tau_g = 0.5$ s, $\tau_\mu = 2.0$ s.
+These are the manuscript's values. `simulation.V1Dynamics_Surround` currently uses $\tau_y = 0.4$ ms, $\tau_u = 5$ ms, $\tau_a = 0.2$ ms, $\tau_v = 10$ ms, $\tau_g = 0.5$ s, $\tau_\mu = 2.0$ s.
 
 ## Rectification
 

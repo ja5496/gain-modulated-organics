@@ -41,7 +41,8 @@ import matplotlib.pyplot as plt                                 # noqa: E402
 from simulation import Frame, V1Dynamics_Surround               # noqa: E402
 from stimuli import StimulusGenerator                           # noqa: E402
 from tunings import V1Tunings                                   # noqa: E402
-from response_tools import offline_gain_operator, to_steps      # noqa: E402
+from response_tools import (offline_gain_operator, to_steps, frozen_derivatives,  # noqa: E402
+                            get_response_traced)
 
 # ---- Configuration (as in analysis/power_law.py) ----
 SEED = 0
@@ -58,7 +59,6 @@ PROBE_MS = 100.0              # probe window
 PROBE_THETA_DEG = 45.0        # probe orientation
 PROBE_CONTRAST = 0.8          # as power_law.PROBE_CONTRAST
 N_GAINS_SHOWN = 8             # gains plotted: the largest cRF gains at the start of the probe
-TAU_V = 10.0                  # ms; overrides V1Dynamics_Surround's default tau_v (30 ms)
 
 RESULTS = os.path.join(HERE, 'results', 'fixed_point_analysis.npz')
 FIG_BASE = os.path.join(HERE, 'figures', 'fig_fixed_point_analysis')
@@ -69,7 +69,6 @@ def build():
     frame = Frame(csv_path=FRAME_PATH)
     dyn = V1Dynamics_Surround(tunings, frame, dt=DT, N_RF=N_RF, N_SETS=N_SETS,
                               target_covariance_path=TARGET_COV_PATH, gains_nonneg=True)
-    dyn.tau_v = TAU_V
     dyn.calibrate_theta_t(C_zz_uniform=dyn.uniform_target_covariance, uniform_target=True)
     assert dyn.n_lag == 0, 'this analysis uses no surround delay'
     return dyn
@@ -81,6 +80,23 @@ def analytic_rates(dyn, z, g_cRF, g_surround):
     z_prime = np.linalg.solve(np.eye(z.size) + M, z)
     y_star = z_prime / np.sqrt(dyn.sigma ** 2 + dyn.N_matrix @ z_prime ** 2)
     return y_star, z_prime
+
+
+def fast_spectrum(dyn, z, g_cRF, g_surround, mu_cRF, mu_surround, settle_ms=1000.0):
+    '''Eigenvalues (1/ms) of the Jacobian of the fast subsystem (y, u, a, v; gains frozen) at the
+    fixed point reached by settling the frozen-gain dynamics for settle_ms. Central differences.'''
+    y, u, a, v_c, v_s = get_response_traced(dyn, z, g_cRF, g_surround, mu_cRF, mu_surround,
+                                            n_steps=to_steps(settle_ms, DT, 'settle_ms'))
+    x0 = np.concatenate([y[:, -1], u[:, -1], a[:, -1], v_c[:, -1], v_s[:, -1]])
+    f = lambda x: frozen_derivatives(x, z, dyn, g_cRF, g_surround)
+    residual = np.abs(f(x0)).max()
+    J = np.zeros((x0.size, x0.size))
+    for j in range(x0.size):
+        h = 1e-7 * max(1.0, abs(x0[j]))
+        e = np.zeros_like(x0)
+        e[j] = h
+        J[:, j] = (f(x0 + e) - f(x0 - e)) / (2 * h)
+    return np.linalg.eigvals(J), residual
 
 
 def simulate():
@@ -114,6 +130,18 @@ def simulate():
         np.repeat(z[:, None], probe_steps, axis=1), initial_state=state0)
     assert np.all(g_cRF_hist >= 0) and np.all(g_surround_hist >= 0)
 
+    # Control: the same probe with every gain at zero (single-layer ORGaNICs; tau_g -> inf keeps g = 0)
+    tau_g = dyn.tau_g
+    dyn.tau_g = np.inf
+    try:
+        y_hist_g0 = dyn.run_simulation(np.repeat(z[:, None], probe_steps, axis=1))[0]
+    finally:
+        dyn.tau_g = tau_g
+
+    # Linear stability of the fast subsystem at the fixed point (gains frozen at probe onset)
+    eig, residual = fast_spectrum(dyn, z, adapted['g_cRF'], adapted['g_surround'],
+                                  adapted['mu_cRF'], adapted['mu_surround'])
+
     # Analytical fixed point at every step, with the instantaneous gains
     y_star = np.zeros_like(y_hist)
     zp_min = np.inf
@@ -135,7 +163,8 @@ def simulate():
     np.savez(RESULTS, t_ms=t_ms, rate_cRF=rate[crf], rate_star_cRF=rate_star[crf],
              rate_star0_cRF=(np.maximum(y_star0, 0) ** 2)[crf], g_cRF=g_cRF_hist,
              g_cRF_start=adapted['g_cRF'], mse=mse, mse_frozen=mse0, z_prime_min=zp_min,
-             z_prime0=zp0, theta_t=dyn.theta_t)
+             z_prime0=zp0, theta_t=dyn.theta_t, rate_cRF_g0=(y_hist_g0 ** 2)[crf],
+             eig=eig, fp_residual=residual)
     params = dict(seed=SEED, dt_ms=DT, N_RF=N_RF, N_SETS=N_SETS, frame=os.path.basename(FRAME_PATH),
                   target_cov=os.path.basename(TARGET_COV_PATH), adapt_loc=ADAPT_LOC,
                   adapt_contrast=ADAPT_CONTRAST, stimulus_ms=STIMULUS_MS,
@@ -162,6 +191,18 @@ def report(d):
         i = np.searchsorted(t, tq - 1e-9)
         print(f"  t = {t[i]:5.1f} ms: MSE = {mse[i]:.3e}  RMSE / peak rate = {np.sqrt(mse[i]) / peak:.3e}"
               f"  (frozen-gain fixed point: {d['mse_frozen'][i]:.3e})")
+    eig = d['eig']
+    slow = eig[np.argmax(eig.real)]
+    osc = eig[np.abs(eig.imag) > 1e-9]
+    dom = osc[np.argmax(osc.real)] if osc.size else np.nan
+    print(f"fast subsystem: {eig.size} eigenvalues, max Re = {eig.real.max():.4g} /ms "
+          f"(decay time {-1 / eig.real.max():.3g} ms), residual |f(x*)| = {float(d['fp_residual']):.2e}")
+    print(f"  slowest mode {slow:.4g} /ms; least-damped oscillatory mode {dom:.4g} /ms -> "
+          f"{abs(dom.imag) / (2 * np.pi) * 1e3:.3g} Hz, decay time {-1 / dom.real:.3g} ms")
+    g0r = d['rate_cRF_g0']
+    print(f"g = 0 control: peak transient {g0r.max():.3g}, rate at 100 ms max {g0r[:, -1].max():.3g} "
+          f"(overshoot x{g0r.max() / g0r[:, -1].max():.2g}); adapted: peak {d['rate_cRF'].max():.3g}, "
+          f"x{d['rate_cRF'].max() / d['rate_cRF'][:, -1].max():.2g}")
     g0, g = d['g_cRF_start'], d['g_cRF']
     print(f"cRF gains: {np.sum(g0 > 0)} of {g0.size} positive at probe onset; "
           f"max |g(100 ms) - g(0)| = {np.abs(g[:, -1] - g0).max():.3e} (max g = {g0.max():.3e})")

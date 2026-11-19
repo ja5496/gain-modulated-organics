@@ -121,7 +121,7 @@ class ModelParams:
     tau_y: float = 0.4
     tau_a: float = 0.2
     tau_u: float = 5.0
-    tau_v: float = 30.0
+    tau_v: float = 10.0
     tau_g: float = 500.0
     tau_mu: float = 2000.0
     sigma: float = 0.15
